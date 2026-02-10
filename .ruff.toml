@@ -1,0 +1,12 @@
+# Альтернативный конфиг (если pyproject.toml не используется)
+# Можно удалить, если используется pyproject.toml
+
+line-length = 120
+target-version = "py310"
+
+[lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "B008", "N802", "N803", "N806"]
+
+[lint.isort]
+known-first-party = ["bots", "api", "database", "filters", "middlewares", "services", "celery_app"]

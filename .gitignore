@@ -1,0 +1,21 @@
+env/
+__pycache__/
+.env
+venv
+keys/*.json
+*-schedule*
+exports/*
+!exports/
+alembic.ini
+media/
+migrations/
+*.db
+services/google/secret.json
+.vscode
+.kiro
+cleanup_drive.py
+
+# Файлы IDE
+.idea/
+*.vscode/
+.ruff_cache

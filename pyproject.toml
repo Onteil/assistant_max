@@ -1,0 +1,67 @@
+[project]
+name = "i-tat-bot"
+version = "1.0.0"
+description = "АЙТАТ-Диспетчер: бот для счетов, техподдержки, продлений и оценки"
+requires-python = ">=3.10"
+
+[tool.ruff]
+# Длина строки
+line-length = 120
+
+# Python версия
+target-version = "py310"
+
+# Исключаемые директории
+exclude = [
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+# Включаемые правила
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort (сортировка импортов)
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+]
+
+# Игнорируемые правила
+ignore = [
+    "E501",   # line too long (обрабатывается форматтером)
+    "B008",   # do not perform function calls in argument defaults
+    "N802",   # function name should be lowercase (для aiogram handlers)
+    "N803",   # argument name should be lowercase
+    "N806",   # variable in function should be lowercase
+]
+
+# Разрешить автофикс для всех правил
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.isort]
+# Настройки сортировки импортов
+known-first-party = ["bots", "api", "database", "filters", "middlewares", "services", "celery_app"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+# Игнорировать определенные правила для конкретных файлов
+"__init__.py" = ["F401"]  # unused imports в __init__.py это нормально
+
+[tool.ruff.format]
+# Настройки форматирования (как black)
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
