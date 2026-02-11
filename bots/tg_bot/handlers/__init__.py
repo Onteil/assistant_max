@@ -9,9 +9,13 @@ Handlers Package
 
 from aiogram import Router
 
+from middlewares.check_staff_middleware import StaffMemberCheckMiddleware
+
 from .callbacks import router as callbacks_router
 from .cancel import router as cancel_router
 from .commands import router as commands_router
+from .employee import router as employee_router
+from .employee_messages import router as employee_messages_router
 from .invoice import router as invoice_router
 from .messages import router as messages_router
 from .profile import router as profile_router
@@ -21,12 +25,22 @@ from .support import router as support_router
 # Главный роутер для всего бота
 tg_bot_router = Router(name="tg_bot_main")
 
+# Apply staff member check middleware to employee routers
+# This restricts access to employee interface to staff members only
+staff_check_middleware = StaffMemberCheckMiddleware()
+employee_router.message.middleware(staff_check_middleware)
+employee_router.callback_query.middleware(staff_check_middleware)
+employee_messages_router.message.middleware(staff_check_middleware)
+employee_messages_router.callback_query.middleware(staff_check_middleware)
+
 # Регистрация всех дочерних роутеров
 # Cancel router should be first to handle /cancel in any state
 # Registration router should be second to handle /start command
 tg_bot_router.include_routers(
     cancel_router,
     registration_router,
+    employee_router,
+    employee_messages_router,
     invoice_router,
     support_router,
     profile_router,

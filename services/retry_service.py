@@ -35,7 +35,7 @@ async def queue_api_retry(
     session: AsyncSession,
     operation: str,
     payload: dict[str, Any],
-    tg_user_id: int | None = None
+    telegram_id: int | None = None
 ) -> API_Retry_Queue:
     """
     Queue failed API operation for retry.
@@ -44,7 +44,7 @@ async def queue_api_retry(
         session: Database session
         operation: API operation name (e.g., "register_user", "check_key_conflict")
         payload: Request payload to retry
-        tg_user_id: User ID for context (optional)
+        telegram_id: User ID for context (optional)
     
     Returns:
         Created API_Retry_Queue object
@@ -58,7 +58,7 @@ async def queue_api_retry(
         retry_record = API_Retry_Queue(
             operation=operation,
             payload=payload,
-            tg_user_id=tg_user_id,
+            tg_user_id=telegram_id,
             attempt_count=0,
             status=RetryStatus.PENDING,
             next_retry_at=datetime.utcnow() + RETRY_DELAYS[0],
@@ -70,7 +70,7 @@ async def queue_api_retry(
         
         logger.info(
             f"API operation queued for retry: id={retry_record.id}, "
-            f"operation={operation}, user={tg_user_id}, "
+            f"operation={operation}, user={telegram_id}, "
             f"next_retry={retry_record.next_retry_at}"
         )
         
@@ -79,7 +79,7 @@ async def queue_api_retry(
     except SQLAlchemyError as e:
         logger.error(
             f"Error queuing API retry: operation={operation}, "
-            f"tg_user_id={tg_user_id}, error={e}",
+            f"telegram_id={telegram_id}, error={e}",
             exc_info=True
         )
         raise

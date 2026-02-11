@@ -11,6 +11,7 @@ Requirements: 7.1-7.6, 8.1-8.6, 9.1-9.5, 10.1-10.8, 11.1-11.5
 import logging
 from typing import Any
 
+import httpx
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -93,14 +94,14 @@ async def start_invoice_request(
     
     Requirements: 7.1, 7.2
     """
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     try:
         # Clear any existing state
         await state.clear()
         
         # Get user's organizations
-        organizations = await get_user_organizations(session, tg_user_id)
+        organizations = await get_user_organizations(session, telegram_id)
         
         # Set initial state
         await state.set_state(InvoiceStates.selecting_organization)
@@ -117,13 +118,13 @@ async def start_invoice_request(
         )
         
         logger.info(
-            f"User {tg_user_id} started invoice request, "
+            f"User {telegram_id} started invoice request, "
             f"{len(organizations)} organizations available"
         )
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error starting invoice request for user {tg_user_id}: {e}",
+            f"Database error starting invoice request for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -157,7 +158,7 @@ async def process_organization_selection(
     
     Requirements: 7.3, 7.4
     """
-    tg_user_id = callback.from_user.id
+    telegram_id = callback.from_user.id
     action = callback_data.action
     
     try:
@@ -167,7 +168,7 @@ async def process_organization_selection(
             await state.update_data(organization_inn=inn)
             
             # Move to key selection
-            await proceed_to_key_selection(callback, state, session, tg_user_id)
+            await proceed_to_key_selection(callback, state, session, telegram_id)
         
         elif action == "add_new":
             # User wants to add new INN
@@ -178,12 +179,12 @@ async def process_organization_selection(
         elif action == "skip":
             # Skip organization selection
             await state.update_data(organization_inn=None)
-            await proceed_to_key_selection(callback, state, session, tg_user_id)
+            await proceed_to_key_selection(callback, state, session, telegram_id)
         
         elif action == "page":
             # Pagination
             page = callback_data.page
-            organizations = await get_user_organizations(session, tg_user_id)
+            organizations = await get_user_organizations(session, telegram_id)
             keyboard = await get_organization_keyboard(organizations, page=page)
             
             await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -194,7 +195,7 @@ async def process_organization_selection(
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error in organization selection for user {tg_user_id}: {e}",
+            f"Database error in organization selection for user {telegram_id}: {e}",
             exc_info=True
         )
         await callback.answer("❌ Произошла ошибка", show_alert=True)
@@ -204,13 +205,13 @@ async def proceed_to_key_selection(
     callback: CallbackQuery,
     state: FSMContext,
     session: AsyncSession,
-    tg_user_id: int
+    telegram_id: int
 ):
     """Helper to move to key selection step."""
     await state.set_state(InvoiceStates.selecting_keys)
     
     # Get user's keys
-    keys = await get_user_keys(session, tg_user_id)
+    keys = await get_user_keys(session, telegram_id)
     
     # Get selected key IDs from state
     data = await state.get_data()
@@ -239,13 +240,13 @@ async def process_new_inn(
     Requirements: 7.4, 7.5, 22.1-22.5
     """
     inn = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if inn == BTN_CANCEL:
         # Return to organization selection
         await state.set_state(InvoiceStates.selecting_organization)
-        organizations = await get_user_organizations(session, tg_user_id)
+        organizations = await get_user_organizations(session, telegram_id)
         keyboard = await get_organization_keyboard(organizations, page=0)
         await message.answer(
             INVOICE_SELECT_ORGANIZATION,
@@ -260,12 +261,12 @@ async def process_new_inn(
         await message.answer(
             ERROR_VALIDATION_INN.format(error_details=error_message)
         )
-        logger.warning(f"User {tg_user_id} provided invalid INN: {inn}")
+        logger.warning(f"User {telegram_id} provided invalid INN: {inn}")
         return
     
     # Add organization
     try:
-        await add_user_organization(session, tg_user_id, inn)
+        await add_user_organization(session, telegram_id, inn)
         await session.commit()
         
         # Store in state
@@ -275,7 +276,7 @@ async def process_new_inn(
         await message.answer(INVOICE_INN_ADDED)
         
         await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         data = await state.get_data()
         selected_key_ids = data.get("selected_key_ids", set())
         
@@ -285,7 +286,7 @@ async def process_new_inn(
             reply_markup=keyboard
         )
         
-        logger.info(f"User {tg_user_id} added new INN: {inn}")
+        logger.info(f"User {telegram_id} added new INN: {inn}")
     
     except IntegrityError:
         # INN already exists - this is fine, just use it
@@ -295,7 +296,7 @@ async def process_new_inn(
         await message.answer(INVOICE_INN_ADDED)
         
         await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         data = await state.get_data()
         selected_key_ids = data.get("selected_key_ids", set())
         
@@ -308,7 +309,7 @@ async def process_new_inn(
     except SQLAlchemyError as e:
         await session.rollback()
         logger.error(
-            f"Database error adding INN for user {tg_user_id}: {e}",
+            f"Database error adding INN for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -341,7 +342,7 @@ async def process_key_selection(
     
     Requirements: 8.2, 8.3, 8.4
     """
-    tg_user_id = callback.from_user.id
+    telegram_id = callback.from_user.id
     action = callback_data.action
     
     try:
@@ -360,7 +361,7 @@ async def process_key_selection(
             await state.update_data(selected_key_ids=selected_key_ids)
             
             # Update keyboard
-            keys = await get_user_keys(session, tg_user_id)
+            keys = await get_user_keys(session, telegram_id)
             keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
             
             await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -389,7 +390,7 @@ async def process_key_selection(
         elif action == "page":
             # Pagination
             page = callback_data.page
-            keys = await get_user_keys(session, tg_user_id)
+            keys = await get_user_keys(session, telegram_id)
             keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=page)
             
             await callback.message.edit_reply_markup(reply_markup=keyboard)
@@ -400,7 +401,7 @@ async def process_key_selection(
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error in key selection for user {tg_user_id}: {e}",
+            f"Database error in key selection for user {telegram_id}: {e}",
             exc_info=True
         )
         await callback.answer("❌ Произошла ошибка", show_alert=True)
@@ -420,13 +421,13 @@ async def process_new_key(
     Requirements: 8.4, 18.3, 23.1-23.5
     """
     key_input = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if key_input == BTN_CANCEL:
         # Return to key selection
         await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         data = await state.get_data()
         selected_key_ids = data.get("selected_key_ids", set())
         
@@ -444,7 +445,7 @@ async def process_new_key(
         await message.answer(
             ERROR_VALIDATION_KEY.format(error_details=result)
         )
-        logger.warning(f"User {tg_user_id} provided invalid key format: {key_input}")
+        logger.warning(f"User {telegram_id} provided invalid key format: {key_input}")
         return
     
     normalized_key = result
@@ -454,27 +455,38 @@ async def process_new_key(
     conflict_detected = False
     
     try:
-        # Get user phone for conflict check
-        from services.user_service import get_user_by_tg_id
-        user = await get_user_by_tg_id(session, tg_user_id)
-        phone = user.phone_number if user else ""
-        
         conflict_response = await api_client.check_key_conflict(
-            key_number=normalized_key,
-            telegram_id=tg_user_id,
-            phone=phone
+            grand_key=normalized_key,
+            telegram_id=telegram_id
         )
         
         if conflict_response.get("status") == "conflict":
             conflict_detected = True
             logger.warning(
-                f"Key conflict detected for user {tg_user_id}: "
+                f"Key conflict detected for user {telegram_id}: "
                 f"key={normalized_key}"
             )
     
+    except httpx.HTTPStatusError as e:
+        # HTTP error from API - log and continue with graceful degradation
+        logger.error(
+            f"API HTTP error checking key conflict for user {telegram_id}: "
+            f"status={e.response.status_code}, error={e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # Network/timeout error - log and continue with graceful degradation
+        logger.error(
+            f"API connection error checking key conflict for user {telegram_id}: {e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
     except Exception as e:
         logger.error(
-            f"API error checking key conflict for user {tg_user_id}: {e}",
+            f"Unexpected error checking key conflict for user {telegram_id}: {e}",
             exc_info=True
         )
         # Continue without conflict check (graceful degradation)
@@ -488,7 +500,7 @@ async def process_new_key(
         
         gs_key = await add_user_key(
             session,
-            tg_user_id,
+            telegram_id,
             normalized_key,
             conflict_status
         )
@@ -510,7 +522,7 @@ async def process_new_key(
         selected_key_ids.add(gs_key.id)
         await state.update_data(selected_key_ids=selected_key_ids)
         
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
         
         await message.answer(
@@ -519,7 +531,7 @@ async def process_new_key(
         )
         
         logger.info(
-            f"User {tg_user_id} added new key: {normalized_key}, "
+            f"User {telegram_id} added new key: {normalized_key}, "
             f"conflict={conflict_detected}"
         )
     
@@ -532,7 +544,7 @@ async def process_new_key(
         
         # Return to key selection
         await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         data = await state.get_data()
         selected_key_ids = data.get("selected_key_ids", set())
         
@@ -545,7 +557,7 @@ async def process_new_key(
     except SQLAlchemyError as e:
         await session.rollback()
         logger.error(
-            f"Database error adding key for user {tg_user_id}: {e}",
+            f"Database error adding key for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -570,7 +582,7 @@ async def process_description(
     Requirements: 9.1, 9.2
     """
     description = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if description == BTN_CANCEL:
@@ -579,7 +591,7 @@ async def process_description(
             "❌ Запрос счета отменен.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled invoice request at description step")
+        logger.info(f"User {telegram_id} cancelled invoice request at description step")
         return
     
     # Validate length
@@ -592,7 +604,7 @@ async def process_description(
             )
         )
         logger.warning(
-            f"User {tg_user_id} provided too long description: "
+            f"User {telegram_id} provided too long description: "
             f"{len(description)} chars"
         )
         return
@@ -609,7 +621,7 @@ async def process_description(
         reply_markup=keyboard
     )
     
-    logger.info(f"User {tg_user_id} provided invoice description")
+    logger.info(f"User {telegram_id} provided invoice description")
 
 
 # ========== Delivery Method Selection ==========
@@ -635,7 +647,7 @@ async def process_delivery_method(
     Requirements: 9.3, 9.4
     """
     method = callback_data.method
-    tg_user_id = callback.from_user.id
+    telegram_id = callback.from_user.id
     
     if method == "telegram":
         # Telegram delivery - proceed to create ticket
@@ -648,7 +660,7 @@ async def process_delivery_method(
         await callback.answer()
         
         # Create ticket
-        await create_invoice_ticket(callback.message, state, session, bot, tg_user_id)
+        await create_invoice_ticket(callback.message, state, session, bot, telegram_id)
     
     elif method == "email":
         # Email delivery - prompt for email
@@ -677,7 +689,7 @@ async def process_email(
     Requirements: 9.4, 24.1-24.5
     """
     email = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if email == BTN_CANCEL:
@@ -686,7 +698,7 @@ async def process_email(
             "❌ Запрос счета отменен.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled invoice request at email step")
+        logger.info(f"User {telegram_id} cancelled invoice request at email step")
         return
     
     # Validate email
@@ -696,7 +708,7 @@ async def process_email(
         await message.answer(
             ERROR_VALIDATION_EMAIL.format(error_details=error_message)
         )
-        logger.warning(f"User {tg_user_id} provided invalid email: {email}")
+        logger.warning(f"User {telegram_id} provided invalid email: {email}")
         return
     
     # Store email
@@ -709,7 +721,7 @@ async def process_email(
     )
     
     # Create ticket
-    await create_invoice_ticket(message, state, session, bot, tg_user_id)
+    await create_invoice_ticket(message, state, session, bot, telegram_id)
 
 
 # ========== Ticket Creation ==========
@@ -720,7 +732,7 @@ async def create_invoice_ticket(
     state: FSMContext,
     session: AsyncSession,
     bot: Bot,
-    tg_user_id: int
+    telegram_id: int
 ):
     """
     Creates invoice ticket with all collected data.
@@ -742,14 +754,14 @@ async def create_invoice_ticket(
         # Determine assigned manager
         assigned_manager_id = await determine_assigned_manager(
             session,
-            tg_user_id,
+            telegram_id,
             organization_inn
         )
         
         # Create ticket
         ticket_data = {
             "ticket_type": TicketType.INVOICE,
-            "tg_user_id": tg_user_id,
+            "tg_user_id": telegram_id,
             "assigned_staff_id": assigned_manager_id,
             "organization_inn": organization_inn,
             "description": description,
@@ -815,14 +827,14 @@ async def create_invoice_ticket(
         
         logger.info(
             f"Invoice ticket created: ticket_id={ticket.id}, "
-            f"user={tg_user_id}, manager={assigned_manager_id}, "
+            f"user={telegram_id}, manager={assigned_manager_id}, "
             f"keys_count={len(selected_key_ids)}, work_mode={work_mode.value}"
         )
     
     except SQLAlchemyError as e:
         await session.rollback()
         logger.error(
-            f"Database error creating invoice ticket for user {tg_user_id}: {e}",
+            f"Database error creating invoice ticket for user {telegram_id}: {e}",
             exc_info=True
         )
         
@@ -837,7 +849,7 @@ async def create_invoice_ticket(
     except Exception as e:
         await session.rollback()
         logger.error(
-            f"Unexpected error creating invoice ticket for user {tg_user_id}: {e}",
+            f"Unexpected error creating invoice ticket for user {telegram_id}: {e}",
             exc_info=True
         )
         

@@ -52,3 +52,12 @@ class FormStates(StatesGroup):
     waiting_for_input = State()
     waiting_for_file = State()
     waiting_for_confirmation = State()
+
+
+class EmployeeStates(StatesGroup):
+    """Состояния для интерфейса сотрудника."""
+
+    in_focus = State()  # Сотрудник в режиме фокуса на тикете
+    closing_ticket = State()  # Сотрудник вводит финальный комментарий для закрытия
+    transferring_ticket = State()  # Сотрудник выбирает целевого сотрудника для передачи
+    searching_archive = State()  # Сотрудник вводит критерии поиска в архиве

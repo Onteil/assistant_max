@@ -11,6 +11,7 @@ Requirements: 1.1-1.5, 2.1-2.7, 3.1-3.5, 4.1-4.5, 25.1-25.5
 import logging
 from typing import Any
 
+import httpx
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -72,11 +73,11 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession):
     
     Requirements: 1.1, 5.4, 5.5, 6.1
     """
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     try:
         # Check if user exists
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_tg_id(session, telegram_id)
         
         if user:
             # User exists - check registration status
@@ -87,7 +88,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession):
                     MAIN_MENU,
                     reply_markup=main_menu_keyboard
                 )
-                logger.info(f"Active user {tg_user_id} accessed main menu")
+                logger.info(f"Active user {telegram_id} accessed main menu")
             
             elif user.registration_status.value == "pending":
                 # Show pending message and block menu access
@@ -95,7 +96,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession):
                     REGISTRATION_PENDING,
                     reply_markup=ReplyKeyboardRemove()
                 )
-                logger.info(f"Pending user {tg_user_id} blocked from menu access")
+                logger.info(f"Pending user {telegram_id} blocked from menu access")
             
             else:  # rejected
                 # Allow re-registration for rejected users
@@ -107,7 +108,7 @@ async def cmd_start(message: Message, state: FSMContext, session: AsyncSession):
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error in cmd_start for user {tg_user_id}: {e}",
+            f"Database error in cmd_start for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -152,10 +153,10 @@ async def process_phone_contact(
     Requirements: 1.2, 1.3, 1.4, 21.1-21.5
     """
     contact = message.contact
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Verify contact is from the user themselves
-    if contact.user_id != tg_user_id:
+    if contact.user_id != telegram_id:
         await message.answer(
             "❌ Пожалуйста, поделитесь своим собственным номером телефона.",
             reply_markup=await get_phone_request_keyboard()
@@ -172,7 +173,7 @@ async def process_phone_contact(
             ERROR_VALIDATION_PHONE.format(error_details=result),
             reply_markup=await get_phone_request_keyboard()
         )
-        logger.warning(f"Invalid phone format from user {tg_user_id}: {phone}")
+        logger.warning(f"Invalid phone format from user {telegram_id}: {phone}")
         return
     
     normalized_phone = result
@@ -189,14 +190,14 @@ async def process_phone_contact(
             )
             logger.warning(
                 f"Duplicate phone registration attempt: {normalized_phone} "
-                f"by user {tg_user_id}"
+                f"by user {telegram_id}"
             )
             await state.clear()
             return
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error checking phone duplicate for {tg_user_id}: {e}",
+            f"Database error checking phone duplicate for {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -216,7 +217,7 @@ async def process_phone_contact(
         reply_markup=await get_cancel_keyboard()
     )
     
-    logger.info(f"User {tg_user_id} provided phone: {normalized_phone}")
+    logger.info(f"User {telegram_id} provided phone: {normalized_phone}")
 
 
 @router.message(RegistrationStates.waiting_for_phone, F.text == BTN_CANCEL)
@@ -332,7 +333,7 @@ async def process_gs_key(
     Requirements: 2.5, 2.6, 3.1-3.5, 23.1-23.5
     """
     key_input = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if key_input == BTN_CANCEL:
@@ -341,7 +342,7 @@ async def process_gs_key(
             "❌ Регистрация отменена.\n\nИспользуйте /start для начала регистрации.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled registration at key step")
+        logger.info(f"User {telegram_id} cancelled registration at key step")
         return
     
     # Validate GS_Key format
@@ -352,14 +353,10 @@ async def process_gs_key(
             ERROR_VALIDATION_KEY.format(error_details=result),
             reply_markup=await get_cancel_keyboard()
         )
-        logger.warning(f"User {tg_user_id} provided invalid key format: {key_input}")
+        logger.warning(f"User {telegram_id} provided invalid key format: {key_input}")
         return
     
     normalized_key = result
-    
-    # Get phone from FSM for conflict check
-    data = await state.get_data()
-    phone = data.get("phone_number", "")
     
     # Check for key conflict via CRM API
     api_client = get_itat_client()
@@ -367,22 +364,38 @@ async def process_gs_key(
     
     try:
         conflict_response = await api_client.check_key_conflict(
-            key_number=normalized_key,
-            telegram_id=tg_user_id,
-            phone=phone
+            grand_key=normalized_key,
+            telegram_id=telegram_id
         )
         
         if conflict_response.get("status") == "conflict":
             conflict_detected = True
             logger.warning(
-                f"Key conflict detected for user {tg_user_id}: "
-                f"key={normalized_key}, owner_phone={conflict_response.get('owner_phone')}"
+                f"Key conflict detected for user {telegram_id}: "
+                f"key={normalized_key}, owner={conflict_response.get('owner')}"
             )
     
-    except Exception as e:
-        # API failure - log but continue with registration
+    except httpx.HTTPStatusError as e:
+        # HTTP error from API - log and continue with graceful degradation
         logger.error(
-            f"API error checking key conflict for user {tg_user_id}: {e}",
+            f"API HTTP error checking key conflict for user {telegram_id}: "
+            f"status={e.response.status_code}, error={e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # Network/timeout error - log and continue with graceful degradation
+        logger.error(
+            f"API connection error checking key conflict for user {telegram_id}: {e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
+    except Exception as e:
+        # Unexpected error - log but continue with registration
+        logger.error(
+            f"Unexpected error checking key conflict for user {telegram_id}: {e}",
             exc_info=True
         )
         # Continue without conflict check (graceful degradation)
@@ -417,7 +430,7 @@ async def submit_registration(
     
     Requirements: 4.1-4.5, 25.1-25.5
     """
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Show processing message
     await message.answer(
@@ -435,44 +448,78 @@ async def submit_registration(
     
     # Extract first and last name from full_name
     name_parts = full_name.split(maxsplit=1)
-    surname = name_parts[0] if len(name_parts) > 0 else ""
-    name = name_parts[1] if len(name_parts) > 1 else ""
+    last_name = name_parts[0] if len(name_parts) > 0 else ""
+    first_name = name_parts[1] if len(name_parts) > 1 else ""
     
     # Submit to CRM API
     api_client = get_itat_client()
     api_success = False
+    api_error_message = None
     
     try:
         api_response = await api_client.register_user(
-            tg_user_id=tg_user_id,
+            telegram_id=telegram_id,
             phone=phone_number,
-            name=name,
-            surname=surname,
-            inn=inn,
+            first_name=first_name,
+            last_name=last_name,
             grand_key=gs_key
         )
         
         if api_response.get("status") == "ok":
             api_success = True
-            logger.info(f"CRM registration successful for user {tg_user_id}")
+            logger.info(f"CRM registration successful for user {telegram_id}")
         else:
             logger.warning(
-                f"CRM registration returned non-ok status for user {tg_user_id}: "
+                f"CRM registration returned non-ok status for user {telegram_id}: "
                 f"{api_response}"
             )
     
-    except Exception as e:
-        # API failure - log and continue with local registration (graceful degradation)
+    except httpx.HTTPStatusError as e:
+        # HTTP error from API - provide user-friendly message based on status code
+        status_code = e.response.status_code
         logger.error(
-            f"API error during registration for user {tg_user_id}: {e}",
+            f"API HTTP error during registration for user {telegram_id}: "
+            f"status={status_code}, error={e}",
+            exc_info=True
+        )
+        
+        if status_code == 400:
+            api_error_message = "❌ Ошибка: неверные данные регистрации. Пожалуйста, проверьте введенную информацию."
+        elif status_code == 404:
+            api_error_message = "❌ Ошибка: ключ защиты не найден в системе. Проверьте правильность номера ключа."
+        elif status_code == 409:
+            api_error_message = "❌ Пользователь с такими данными уже зарегистрирован в системе."
+        else:
+            api_error_message = "❌ Ошибка при регистрации в системе. Попробуйте позже или обратитесь в поддержку."
+    
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # Network/timeout error - provide user-friendly message
+        logger.error(
+            f"API connection error during registration for user {telegram_id}: {e}",
+            exc_info=True
+        )
+        api_error_message = "❌ Не удалось связаться с сервером. Проверьте подключение к интернету и попробуйте позже."
+    
+    except Exception as e:
+        # Unexpected error - log and continue with local registration (graceful degradation)
+        logger.error(
+            f"Unexpected error during registration for user {telegram_id}: {e}",
             exc_info=True
         )
         # Continue with local database creation
     
+    # If API error occurred, inform user but continue with local registration
+    if api_error_message:
+        await message.answer(
+            f"{api_error_message}\n\n"
+            "Ваша регистрация будет сохранена локально и синхронизирована позже.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+    
     # Create User record in database
     try:
         user_data = {
-            "tg_user_id": tg_user_id,
+            "tg_user_id": telegram_id,
             "phone_number": phone_number,
             "full_name": full_name,
             "username": message.from_user.username,
@@ -484,7 +531,7 @@ async def submit_registration(
         
         # Add organization association
         from services.user_service import add_user_organization
-        await add_user_organization(session, tg_user_id, inn)
+        await add_user_organization(session, telegram_id, inn)
         
         # Add GS_Key with conflict status
         conflict_status = (
@@ -494,7 +541,7 @@ async def submit_registration(
         
         await add_user_key(
             session,
-            tg_user_id,
+            telegram_id,
             gs_key,
             conflict_status
         )
@@ -503,7 +550,7 @@ async def submit_registration(
         if key_conflict:
             await create_conflict_ticket(
                 session,
-                tg_user_id,
+                telegram_id,
                 gs_key,
                 phone_number
             )
@@ -521,14 +568,14 @@ async def submit_registration(
         )
         
         logger.info(
-            f"Registration completed for user {tg_user_id}: "
+            f"Registration completed for user {telegram_id}: "
             f"phone={phone_number}, key={gs_key}, conflict={key_conflict}"
         )
     
     except IntegrityError as e:
         await session.rollback()
         logger.error(
-            f"Integrity error during registration for user {tg_user_id}: {e}",
+            f"Integrity error during registration for user {telegram_id}: {e}",
             exc_info=True
         )
         
@@ -551,7 +598,7 @@ async def submit_registration(
     except SQLAlchemyError as e:
         await session.rollback()
         logger.error(
-            f"Database error during registration for user {tg_user_id}: {e}",
+            f"Database error during registration for user {telegram_id}: {e}",
             exc_info=True
         )
         
@@ -566,7 +613,7 @@ async def submit_registration(
 
 async def create_conflict_ticket(
     session: AsyncSession,
-    tg_user_id: int,
+    telegram_id: int,
     key_number: str,
     phone_number: str
 ):
@@ -582,10 +629,10 @@ async def create_conflict_ticket(
         ticket = Ticket(
             ticket_type=TicketType.RENEWAL,  # Using RENEWAL type for admin tasks
             ticket_status=TicketStatus.NEW,
-            tg_user_id=tg_user_id,
+            tg_user_id=telegram_id,
             description=(
                 f"⚠️ Конфликт ключа при регистрации\n\n"
-                f"Пользователь: {tg_user_id}\n"
+                f"Пользователь: {telegram_id}\n"
                 f"Телефон: {phone_number}\n"
                 f"Ключ: {key_number}\n\n"
                 f"Требуется проверка и разрешение конфликта."
@@ -598,12 +645,12 @@ async def create_conflict_ticket(
         
         logger.info(
             f"Conflict ticket created: ticket_id={ticket.id}, "
-            f"user={tg_user_id}, key={key_number}"
+            f"user={telegram_id}, key={key_number}"
         )
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Error creating conflict ticket for user {tg_user_id}: {e}",
+            f"Error creating conflict ticket for user {telegram_id}: {e}",
             exc_info=True
         )
         # Don't raise - conflict ticket creation failure shouldn't block registration

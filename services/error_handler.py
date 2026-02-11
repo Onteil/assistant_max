@@ -115,7 +115,7 @@ async def handle_api_error(
     operation: str,
     payload: dict[str, Any],
     session: AsyncSession,
-    tg_user_id: int | None = None
+    telegram_id: int | None = None
 ) -> tuple[bool, str]:
     """
     Handle API errors with retry queue and user notification.
@@ -125,7 +125,7 @@ async def handle_api_error(
         operation: API operation name (e.g., "register_user", "check_key_conflict")
         payload: Request payload for retry
         session: Database session for retry queue
-        tg_user_id: User ID for context (optional)
+        telegram_id: User ID for context (optional)
     
     Returns:
         tuple[bool, str]: (should_retry, user_message)
@@ -137,7 +137,7 @@ async def handle_api_error(
     # Log error with context
     context = {
         "operation": operation,
-        "tg_user_id": tg_user_id,
+        "telegram_id": telegram_id,
         "payload_keys": list(payload.keys()) if payload else []
     }
     log_error_with_context(logger, error, context, f"API call: {operation}")
@@ -161,9 +161,9 @@ async def handle_api_error(
                 session=session,
                 operation=operation,
                 payload=payload,
-                tg_user_id=tg_user_id
+                telegram_id=telegram_id
             )
-            logger.info(f"API operation queued for retry: {operation}, user={tg_user_id}")
+            logger.info(f"API operation queued for retry: {operation}, user={telegram_id}")
         except Exception as retry_error:
             logger.error(
                 f"Failed to queue retry: {retry_error}",

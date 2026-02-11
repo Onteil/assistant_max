@@ -596,3 +596,208 @@ HELP_TEXT = """
 
 По всем вопросам обращайтесь в техподдержку.
 """
+
+
+# ========== Интерфейс сотрудника ==========
+
+EMPLOYEE_MENU_TEXT = """
+👨‍💼 Меню сотрудника
+
+Выберите действие:
+"""
+
+EMPLOYEE_MENU = """
+👨‍💼 Меню сотрудника
+
+Выберите действие:
+"""
+
+EMPLOYEE_ACTIVE_TICKETS = """
+📥 Активные тикеты
+
+{tickets_list}
+"""
+
+EMPLOYEE_NO_ACTIVE_TICKETS = """
+📥 Активные тикеты
+
+У вас нет активных тикетов.
+"""
+
+EMPLOYEE_NO_ACTIVE_TICKETS_TEXT = """
+📥 Активные тикеты
+
+У вас нет активных тикетов.
+"""
+
+EMPLOYEE_SETTINGS = """
+⚙️ Настройки сотрудника
+
+ФИО: {full_name}
+Должность: {position}
+Роль: {role}
+
+Подпись: {signature}
+"""
+
+EMPLOYEE_SETTINGS_TEXT = """
+⚙️ Настройки сотрудника
+
+ФИО: {full_name}
+Должность: {position}
+Роль: {role}
+
+Подпись: {signature}
+"""
+
+EMPLOYEE_ARCHIVE_SEARCH_PROMPT = """
+🗄 Поиск в архиве
+
+Введите критерии поиска:
+- Номер тикета (например: 123)
+- Имя клиента (например: Иванов)
+- Диапазон дат (например: 2026-01-01 to 2026-01-31)
+"""
+
+EMPLOYEE_ARCHIVE_SEARCH_RESULTS = """
+🗄 Результаты поиска
+
+Найдено тикетов: {count}
+
+{results_list}
+"""
+
+EMPLOYEE_ARCHIVE_NO_RESULTS = """
+🗄 Результаты поиска
+
+По вашему запросу ничего не найдено.
+"""
+
+EMPLOYEE_TICKET_CARD = """
+🎫 Тикет #{ticket_id}
+
+Тип: {ticket_type}
+Клиент: {client_name}
+Статус: {status}
+Время: {elapsed_time}
+
+{ticket_details}
+
+{attachments_info}
+"""
+
+EMPLOYEE_TICKET_INVOICE_DETAILS = """
+Организация: {organization_name}
+ИНН: {inn}
+{gs_keys}
+Описание: {description}
+"""
+
+EMPLOYEE_TICKET_SUPPORT_DETAILS = """
+Проблема: {problem_description}
+{gs_key}
+"""
+
+EMPLOYEE_TICKET_ATTACHMENTS = """
+📎 Вложений: {count}
+"""
+
+EMPLOYEE_TICKET_TAKEN = """
+✅ Тикет взят в работу
+
+Вы вошли в режим фокуса.
+Все ваши сообщения будут отправлены клиенту.
+"""
+
+EMPLOYEE_TICKET_WAITING = """
+⏳ Статус изменен на "Ожидание клиента"
+
+Тикет переведен в режим ожидания ответа от клиента.
+"""
+
+EMPLOYEE_TICKET_CLOSE_PROMPT = """
+✅ Закрытие тикета
+
+Введите финальный комментарий для закрытия тикета:
+"""
+
+EMPLOYEE_TICKET_CLOSED = """
+✅ Тикет закрыт
+
+Тикет #{ticket_id} успешно закрыт.
+Вы вышли из режима фокуса.
+"""
+
+EMPLOYEE_TICKET_TRANSFER_PROMPT = """
+🔄 Передача тикета
+
+Выберите сотрудника для передачи тикета:
+"""
+
+EMPLOYEE_TICKET_TRANSFERRED = """
+🔄 Тикет передан
+
+Тикет #{ticket_id} передан сотруднику {employee_name}.
+Вы вышли из режима фокуса.
+"""
+
+EMPLOYEE_TICKET_HISTORY = """
+📁 История тикета #{ticket_id}
+
+{history_content}
+"""
+
+EMPLOYEE_FOCUS_EXITED = """
+❌ Выход из режима фокуса
+
+Вы вышли из режима фокуса.
+Для отправки сообщений выберите тикет.
+"""
+
+EMPLOYEE_MESSAGE_SENT = """
+✅ Сообщение отправлено клиенту
+"""
+
+EMPLOYEE_MESSAGE_NO_FOCUS = """
+⚠️ Выберите тикет
+
+Вы не находитесь в режиме фокуса.
+Выберите тикет из списка активных для отправки сообщений.
+"""
+
+EMPLOYEE_NEW_TICKET_NOTIFICATION = """
+🔔 Новый тикет назначен
+
+{ticket_card}
+"""
+
+EMPLOYEE_TRANSFER_NOTIFICATION = """
+🔔 Тикет передан вам
+
+{ticket_card}
+
+Тикет передан от: {source_employee}
+"""
+
+EMPLOYEE_CLIENT_MESSAGE_NOTIFICATION = """
+💬 Новое сообщение от клиента
+
+Тикет #{ticket_id}
+Клиент: {client_name}
+
+{message_preview}
+"""
+
+# ========== Кнопки интерфейса сотрудника ==========
+
+BTN_ACTIVE_TICKETS = "📥 Активные тикеты"
+BTN_ARCHIVE_SEARCH = "🗄 Архив обращений"
+BTN_EMPLOYEE_SETTINGS = "⚙️ Настройки"
+BTN_ADMIN_PANEL = "🔐 Админ-панель"
+
+BTN_TAKE_TICKET = "Взять в работу"
+BTN_CLOSE_TICKET = "✅ Закрыть"
+BTN_SET_WAITING = "⏳ Ждем клиента"
+BTN_TRANSFER_TICKET = "🔄 Передать"
+BTN_VIEW_HISTORY = "📁 История"
+BTN_EXIT_FOCUS = "❌ Выйти из фокуса"

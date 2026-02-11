@@ -10,6 +10,7 @@ Requirements: 16.1-16.7, 17.1-17.7, 18.1-18.8, 19.1-19.7, 20.1-20.5
 import logging
 from datetime import datetime
 
+import httpx
 from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -82,25 +83,25 @@ async def show_profile(message: Message, session: AsyncSession):
     
     Requirements: 16.1-16.7
     """
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     try:
         # Get user data
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_tg_id(session, telegram_id)
         
         if not user:
             await message.answer(
                 "❌ Пользователь не найден.\n"
                 "Пожалуйста, пройдите регистрацию с помощью /start"
             )
-            logger.warning(f"Profile requested for non-existent user: {tg_user_id}")
+            logger.warning(f"Profile requested for non-existent user: {telegram_id}")
             return
         
         # Get organizations
-        organizations = await get_user_organizations(session, tg_user_id)
+        organizations = await get_user_organizations(session, telegram_id)
         
         # Get keys
-        keys = await get_user_keys(session, tg_user_id)
+        keys = await get_user_keys(session, telegram_id)
         
         # Format organizations list
         if organizations:
@@ -170,11 +171,11 @@ async def show_profile(message: Message, session: AsyncSession):
             reply_markup=keyboard
         )
         
-        logger.info(f"Profile displayed for user: {tg_user_id}")
+        logger.info(f"Profile displayed for user: {telegram_id}")
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error displaying profile for user {tg_user_id}: {e}",
+            f"Database error displaying profile for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -205,7 +206,7 @@ async def handle_profile_action(
     Requirements: 17.1, 18.1, 19.1, 20.1
     """
     action = callback_data.action
-    tg_user_id = callback.from_user.id
+    telegram_id = callback.from_user.id
     
     try:
         if action == "add_inn":
@@ -218,15 +219,15 @@ async def handle_profile_action(
             await request_phone_change(callback, state)
         
         elif action == "toggle_notif":
-            await toggle_notifications(callback, session, tg_user_id)
+            await toggle_notifications(callback, session, telegram_id)
         
         else:
             await callback.answer("❌ Неизвестное действие")
-            logger.warning(f"Unknown profile action: {action} from user {tg_user_id}")
+            logger.warning(f"Unknown profile action: {action} from user {telegram_id}")
     
     except Exception as e:
         logger.error(
-            f"Error handling profile action {action} for user {tg_user_id}: {e}",
+            f"Error handling profile action {action} for user {telegram_id}: {e}",
             exc_info=True
         )
         await callback.answer("❌ Произошла ошибка", show_alert=True)
@@ -264,7 +265,7 @@ async def process_new_inn(
     Requirements: 17.2, 17.3, 17.4, 17.5, 17.6, 17.7, 22.1-22.5
     """
     inn = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if inn == BTN_CANCEL:
@@ -273,7 +274,7 @@ async def process_new_inn(
             "❌ Добавление организации отменено.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled INN addition")
+        logger.info(f"User {telegram_id} cancelled INN addition")
         return
     
     # Validate INN format
@@ -283,21 +284,21 @@ async def process_new_inn(
         await message.answer(
             ERROR_VALIDATION_INN.format(error_details=error_message)
         )
-        logger.warning(f"User {tg_user_id} provided invalid INN: {inn}")
+        logger.warning(f"User {telegram_id} provided invalid INN: {inn}")
         return
     
     # Add organization
     try:
         # Check if already exists for this user
-        existing_orgs = await get_user_organizations(session, tg_user_id)
+        existing_orgs = await get_user_organizations(session, telegram_id)
         if any(org.inn == inn for org in existing_orgs):
             await message.answer(PROFILE_INN_DUPLICATE)
             await state.clear()
-            logger.info(f"User {tg_user_id} attempted to add duplicate INN: {inn}")
+            logger.info(f"User {telegram_id} attempted to add duplicate INN: {inn}")
             return
         
         # Add organization
-        organization = await add_user_organization(session, tg_user_id, inn)
+        organization = await add_user_organization(session, telegram_id, inn)
         await session.commit()
         
         # Clear state
@@ -309,7 +310,7 @@ async def process_new_inn(
             reply_markup=ReplyKeyboardRemove()
         )
         
-        logger.info(f"User {tg_user_id} added organization: {inn}")
+        logger.info(f"User {telegram_id} added organization: {inn}")
     
     except IntegrityError:
         # Organization already exists - this is fine
@@ -321,14 +322,14 @@ async def process_new_inn(
             reply_markup=ReplyKeyboardRemove()
         )
         
-        logger.info(f"User {tg_user_id} added existing organization: {inn}")
+        logger.info(f"User {telegram_id} added existing organization: {inn}")
     
     except SQLAlchemyError as e:
         await session.rollback()
         await state.clear()
         
         logger.error(
-            f"Database error adding organization for user {tg_user_id}: {e}",
+            f"Database error adding organization for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -371,7 +372,7 @@ async def process_new_key(
     Requirements: 18.2, 18.3, 18.4, 18.5, 18.6, 18.7, 18.8, 23.1-23.5
     """
     key_input = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if key_input == BTN_CANCEL:
@@ -380,7 +381,7 @@ async def process_new_key(
             "❌ Добавление ключа отменено.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled key addition")
+        logger.info(f"User {telegram_id} cancelled key addition")
         return
     
     # Validate key format
@@ -390,7 +391,7 @@ async def process_new_key(
         await message.answer(
             ERROR_VALIDATION_KEY.format(error_details=result)
         )
-        logger.warning(f"User {tg_user_id} provided invalid key format: {key_input}")
+        logger.warning(f"User {telegram_id} provided invalid key format: {key_input}")
         return
     
     normalized_key = result
@@ -400,32 +401,47 @@ async def process_new_key(
     conflict_detected = False
     
     try:
-        # Get user phone for conflict check
-        user = await get_user_by_tg_id(session, tg_user_id)
-        phone = user.phone_number if user else ""
-        
         conflict_response = await api_client.check_key_conflict(
-            key_number=normalized_key,
-            telegram_id=tg_user_id,
-            phone=phone
+            grand_key=normalized_key,
+            telegram_id=telegram_id
         )
         
         if conflict_response.get("status") == "conflict":
             conflict_detected = True
             logger.warning(
-                f"Key conflict detected for user {tg_user_id}: "
+                f"Key conflict detected for user {telegram_id}: "
                 f"key={normalized_key}"
             )
     
+    except httpx.HTTPStatusError as e:
+        # HTTP error from API - log and continue with graceful degradation
+        logger.error(
+            f"API HTTP error checking key conflict for user {telegram_id}: "
+            f"status={e.response.status_code}, error={e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # Network/timeout error - log and continue with graceful degradation
+        logger.error(
+            f"API connection error checking key conflict for user {telegram_id}: {e}",
+            exc_info=True
+        )
+        # Continue without conflict check (graceful degradation)
+    
     except Exception as e:
         logger.error(
-            f"API error checking key conflict for user {tg_user_id}: {e}",
+            f"Unexpected error checking key conflict for user {telegram_id}: {e}",
             exc_info=True
         )
         # Continue without conflict check (graceful degradation)
     
     # Add key to user's profile
     try:
+        # Get user for phone number (needed for ticket)
+        user = await get_user_by_tg_id(session, telegram_id)
+        
         conflict_status = (
             KeyConflictStatus.PENDING_REVIEW if conflict_detected
             else KeyConflictStatus.NONE
@@ -433,7 +449,7 @@ async def process_new_key(
         
         gs_key = await add_user_key(
             session,
-            tg_user_id,
+            telegram_id,
             normalized_key,
             conflict_status
         )
@@ -442,7 +458,7 @@ async def process_new_key(
         if conflict_detected:
             await create_key_conflict_ticket(
                 session,
-                tg_user_id,
+                telegram_id,
                 normalized_key,
                 user.phone_number if user else ""
             )
@@ -465,7 +481,7 @@ async def process_new_key(
             )
         
         logger.info(
-            f"User {tg_user_id} added key: {normalized_key}, "
+            f"User {telegram_id} added key: {normalized_key}, "
             f"conflict={conflict_detected}"
         )
     
@@ -479,14 +495,14 @@ async def process_new_key(
             reply_markup=ReplyKeyboardRemove()
         )
         
-        logger.info(f"User {tg_user_id} attempted to add duplicate key: {normalized_key}")
+        logger.info(f"User {telegram_id} attempted to add duplicate key: {normalized_key}")
     
     except SQLAlchemyError as e:
         await session.rollback()
         await state.clear()
         
         logger.error(
-            f"Database error adding key for user {tg_user_id}: {e}",
+            f"Database error adding key for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -498,7 +514,7 @@ async def process_new_key(
 
 async def create_key_conflict_ticket(
     session: AsyncSession,
-    tg_user_id: int,
+    telegram_id: int,
     key_number: str,
     phone_number: str
 ):
@@ -511,10 +527,10 @@ async def create_key_conflict_ticket(
         ticket = Ticket(
             ticket_type=TicketType.RENEWAL,  # Using RENEWAL type for admin tasks
             ticket_status=TicketStatus.NEW,
-            tg_user_id=tg_user_id,
+            tg_user_id=telegram_id,
             description=(
                 f"⚠️ Конфликт ключа при добавлении в профиль\n\n"
-                f"Пользователь: {tg_user_id}\n"
+                f"Пользователь: {telegram_id}\n"
                 f"Телефон: {phone_number}\n"
                 f"Ключ: {key_number}\n\n"
                 f"Требуется проверка и разрешение конфликта."
@@ -526,12 +542,12 @@ async def create_key_conflict_ticket(
         
         logger.info(
             f"Key conflict ticket created: ticket_id={ticket.id}, "
-            f"user={tg_user_id}, key={key_number}"
+            f"user={telegram_id}, key={key_number}"
         )
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Error creating key conflict ticket for user {tg_user_id}: {e}",
+            f"Error creating key conflict ticket for user {telegram_id}: {e}",
             exc_info=True
         )
         # Don't raise - conflict ticket creation failure shouldn't block key addition
@@ -570,7 +586,7 @@ async def process_phone_change_request(
     Requirements: 19.3, 19.4, 19.5, 19.6, 19.7, 21.1-21.5
     """
     new_phone = message.text.strip()
-    tg_user_id = message.from_user.id
+    telegram_id = message.from_user.id
     
     # Check for cancel
     if new_phone == BTN_CANCEL:
@@ -579,7 +595,7 @@ async def process_phone_change_request(
             "❌ Изменение телефона отменено.",
             reply_markup=ReplyKeyboardRemove()
         )
-        logger.info(f"User {tg_user_id} cancelled phone change request")
+        logger.info(f"User {telegram_id} cancelled phone change request")
         return
     
     # Validate phone format
@@ -589,14 +605,14 @@ async def process_phone_change_request(
         await message.answer(
             ERROR_VALIDATION_PHONE.format(error_details=result)
         )
-        logger.warning(f"User {tg_user_id} provided invalid phone format: {new_phone}")
+        logger.warning(f"User {telegram_id} provided invalid phone format: {new_phone}")
         return
     
     normalized_phone = result
     
     # Get current user data
     try:
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_tg_id(session, telegram_id)
         
         if not user:
             await message.answer(
@@ -612,11 +628,11 @@ async def process_phone_change_request(
         ticket = Ticket(
             ticket_type=TicketType.RENEWAL,  # Using RENEWAL type for admin tasks
             ticket_status=TicketStatus.NEW,
-            tg_user_id=tg_user_id,
+            tg_user_id=telegram_id,
             description=(
                 f"📱 Запрос на изменение номера телефона\n\n"
                 f"Пользователь: {user.full_name}\n"
-                f"Telegram ID: {tg_user_id}\n"
+                f"Telegram ID: {telegram_id}\n"
                 f"Текущий номер: {current_phone}\n"
                 f"Новый номер: {normalized_phone}\n\n"
                 f"Требуется одобрение администратора."
@@ -639,7 +655,7 @@ async def process_phone_change_request(
         )
         
         logger.info(
-            f"Phone change request created: user={tg_user_id}, "
+            f"Phone change request created: user={telegram_id}, "
             f"ticket_id={ticket.id}, old={current_phone}, new={normalized_phone}"
         )
     
@@ -648,7 +664,7 @@ async def process_phone_change_request(
         await state.clear()
         
         logger.error(
-            f"Database error creating phone change request for user {tg_user_id}: {e}",
+            f"Database error creating phone change request for user {telegram_id}: {e}",
             exc_info=True
         )
         await message.answer(
@@ -664,7 +680,7 @@ async def process_phone_change_request(
 async def toggle_notifications(
     callback: CallbackQuery,
     session: AsyncSession,
-    tg_user_id: int
+    telegram_id: int
 ):
     """
     Toggle notification preferences.
@@ -676,11 +692,11 @@ async def toggle_notifications(
     """
     try:
         # Get user
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_tg_id(session, telegram_id)
         
         if not user:
             await callback.answer("❌ Пользователь не найден", show_alert=True)
-            logger.warning(f"Toggle notifications for non-existent user: {tg_user_id}")
+            logger.warning(f"Toggle notifications for non-existent user: {telegram_id}")
             return
         
         # Toggle preference
@@ -711,7 +727,7 @@ async def toggle_notifications(
         await callback.answer()
         
         logger.info(
-            f"Notifications toggled for user {tg_user_id}: "
+            f"Notifications toggled for user {telegram_id}: "
             f"{old_value} -> {user.notification_preferences}"
         )
     
@@ -719,7 +735,7 @@ async def toggle_notifications(
         await session.rollback()
         
         logger.error(
-            f"Database error toggling notifications for user {tg_user_id}: {e}",
+            f"Database error toggling notifications for user {telegram_id}: {e}",
             exc_info=True
         )
         await callback.answer(

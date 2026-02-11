@@ -33,6 +33,7 @@ from database.models import (
     WorkMode,
     ticket_keys,
 )
+from services.validation_service import classify_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -460,6 +461,164 @@ async def send_staff_notification(
         return False
 
 
+async def send_employee_ticket_notification(
+    bot: Bot,
+    session: AsyncSession,
+    employee_id: int,
+    ticket: Ticket,
+    is_transfer: bool = False,
+    source_employee_name: str | None = None
+) -> bool:
+    """
+    Send employee interface notification with full ticket card and action buttons.
+    
+    This function sends a notification to an employee when a new ticket is assigned
+    or when a ticket is transferred to them. The notification includes the full
+    ticket card with inline action buttons for immediate interaction.
+    
+    Args:
+        bot: Aiogram Bot instance
+        session: Database session
+        employee_id: Employee's Telegram ID
+        ticket: Ticket object
+        is_transfer: True if this is a transfer notification, False for new assignment
+        source_employee_name: Name of employee who transferred the ticket (optional)
+    
+    Returns:
+        True if notification sent successfully, False otherwise
+    
+    Requirements: 10.6, 18.2, 18.4
+    """
+    try:
+        from services.employee_service import format_ticket_card, get_ticket_action_keyboard
+        
+        # Format ticket card
+        ticket_card_text = await format_ticket_card(ticket, session)
+        
+        # Add notification header
+        if is_transfer:
+            if source_employee_name:
+                header = f"🔄 <b>Тикет #{ticket.id} передан вам от {source_employee_name}</b>\n\n"
+            else:
+                header = f"🔄 <b>Тикет #{ticket.id} передан вам</b>\n\n"
+        else:
+            header = f"🔔 <b>Новый тикет #{ticket.id} назначен вам</b>\n\n"
+        
+        message_text = header + ticket_card_text
+        
+        # Get action keyboard
+        keyboard = await get_ticket_action_keyboard(ticket)
+        
+        # Send notification with ticket card and action buttons
+        await bot.send_message(
+            chat_id=employee_id,
+            text=message_text,
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+        
+        logger.info(
+            f"Employee ticket notification sent: ticket_id={ticket.id}, "
+            f"employee_id={employee_id}, is_transfer={is_transfer}"
+        )
+        return True
+    
+    except Exception as e:
+        logger.error(
+            f"Error sending employee ticket notification: ticket_id={ticket.id}, "
+            f"employee_id={employee_id}, is_transfer={is_transfer}, error={e}",
+            exc_info=True
+        )
+        return False
+
+
+async def send_new_ticket_assignment_notification(
+    bot: Bot,
+    session: AsyncSession,
+    employee_id: int,
+    ticket: Ticket
+) -> bool:
+    """
+    Send notification to employee when a new ticket is assigned to them.
+    
+    Sends a notification with the full ticket card and action buttons,
+    allowing the employee to immediately take action on the new ticket.
+    
+    Args:
+        bot: Aiogram Bot instance
+        session: Database session
+        employee_id: Employee's Telegram ID
+        ticket: Ticket object
+    
+    Returns:
+        True if notification sent successfully, False otherwise
+    
+    Requirements: 10.6, 18.2
+    """
+    return await send_employee_ticket_notification(
+        bot=bot,
+        session=session,
+        employee_id=employee_id,
+        ticket=ticket,
+        is_transfer=False
+    )
+
+
+async def send_ticket_transfer_notification(
+    bot: Bot,
+    session: AsyncSession,
+    target_employee_id: int,
+    ticket: Ticket,
+    source_employee_id: int | None = None
+) -> bool:
+    """
+    Send notification to employee when a ticket is transferred to them.
+    
+    Sends a notification with the full ticket card, action buttons, and
+    indication that the ticket was transferred from another employee.
+    
+    Args:
+        bot: Aiogram Bot instance
+        session: Database session
+        target_employee_id: Target employee's Telegram ID
+        ticket: Ticket object
+        source_employee_id: Source employee's Telegram ID (optional)
+    
+    Returns:
+        True if notification sent successfully, False otherwise
+    
+    Requirements: 18.3, 18.4
+    """
+    try:
+        # Get source employee name if provided
+        source_employee_name = None
+        if source_employee_id:
+            result = await session.execute(
+                select(Staff_Member.full_name).where(
+                    Staff_Member.tg_user_id == source_employee_id
+                )
+            )
+            source_employee_name = result.scalar_one_or_none()
+        
+        return await send_employee_ticket_notification(
+            bot=bot,
+            session=session,
+            employee_id=target_employee_id,
+            ticket=ticket,
+            is_transfer=True,
+            source_employee_name=source_employee_name
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error sending ticket transfer notification: ticket_id={ticket.id}, "
+            f"target_employee_id={target_employee_id}, "
+            f"source_employee_id={source_employee_id}, error={e}",
+            exc_info=True
+        )
+        return False
+
+
 async def add_ticket_message(
     session: AsyncSession,
     ticket_id: int,
@@ -527,6 +686,336 @@ async def add_ticket_message(
     except SQLAlchemyError as e:
         logger.error(
             f"Database error adding ticket message: ticket_id={ticket_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+# ========== Employee Ticket Operations ==========
+
+
+async def take_ticket_into_work(
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int
+) -> Ticket:
+    """
+    Take ticket into work.
+    
+    Changes ticket status from NEW to IN_PROGRESS, stops escalation timer,
+    and logs the action.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID
+        employee_id: Employee's Telegram ID
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket not found or invalid status
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 3.4, 4.1, 12.2
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Update ticket status and stop escalation timer
+        old_status = ticket.ticket_status
+        ticket.ticket_status = TicketStatus.IN_PROGRESS
+        ticket.escalated_at = None
+        ticket.updated_at = datetime.utcnow()
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.TICKET_ASSIGNED,
+            ticket_id=ticket_id,
+            staff_id=employee_id,
+            action_details={
+                "old_status": old_status.value,
+                "new_status": TicketStatus.IN_PROGRESS.value,
+                "action": "take_into_work"
+            }
+        )
+        
+        logger.info(
+            f"Ticket taken into work: ticket_id={ticket_id}, employee_id={employee_id}, "
+            f"old_status={old_status.value}"
+        )
+        
+        return ticket
+    
+    except ValueError as e:
+        logger.error(f"Validation error taking ticket into work: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error taking ticket into work: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def set_ticket_waiting_client(
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int
+) -> Ticket:
+    """
+    Set ticket status to WAITING_CLIENT.
+    
+    Changes ticket status to WAITING_CLIENT and logs the action.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID
+        employee_id: Employee's Telegram ID
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket not found
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 3.6
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Update ticket status
+        old_status = ticket.ticket_status
+        ticket.ticket_status = TicketStatus.WAITING_CLIENT
+        ticket.updated_at = datetime.utcnow()
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.STATUS_CHANGED,
+            ticket_id=ticket_id,
+            staff_id=employee_id,
+            action_details={
+                "old_status": old_status.value,
+                "new_status": TicketStatus.WAITING_CLIENT.value
+            }
+        )
+        
+        logger.info(
+            f"Ticket status changed to WAITING_CLIENT: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, old_status={old_status.value}"
+        )
+        
+        return ticket
+    
+    except ValueError as e:
+        logger.error(f"Validation error setting ticket waiting client: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error setting ticket waiting client: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def close_ticket(
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int,
+    final_comment: str
+) -> Ticket:
+    """
+    Close ticket with final comment.
+    
+    Stores final comment as a message, changes status to CLOSED,
+    sets closed_at timestamp, and logs the action.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID
+        employee_id: Employee's Telegram ID
+        final_comment: Final comment text
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket not found
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 3.5, 7.3, 14.2
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Store final comment as message
+        await add_ticket_message(
+            session=session,
+            ticket_id=ticket_id,
+            sender_type=SenderType.STAFF,
+            sender_id=employee_id,
+            message_text=final_comment,
+            message_type=MessageType.TEXT
+        )
+        
+        # Update ticket status and set closed_at
+        old_status = ticket.ticket_status
+        ticket.ticket_status = TicketStatus.CLOSED
+        ticket.closed_at = datetime.utcnow()
+        ticket.updated_at = datetime.utcnow()
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.TICKET_CLOSED,
+            ticket_id=ticket_id,
+            staff_id=employee_id,
+            action_details={
+                "old_status": old_status.value,
+                "final_comment_length": len(final_comment)
+            }
+        )
+        
+        logger.info(
+            f"Ticket closed: ticket_id={ticket_id}, employee_id={employee_id}, "
+            f"old_status={old_status.value}"
+        )
+        
+        return ticket
+    
+    except ValueError as e:
+        logger.error(f"Validation error closing ticket: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error closing ticket: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def transfer_ticket(
+    session: AsyncSession,
+    ticket_id: int,
+    source_employee_id: int,
+    target_employee_id: int
+) -> Ticket:
+    """
+    Transfer ticket to another employee.
+    
+    Updates assigned_staff_id and logs the transfer action with both
+    source and target employee IDs.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID
+        source_employee_id: Source employee's Telegram ID
+        target_employee_id: Target employee's Telegram ID
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket not found or target employee invalid
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 8.2, 8.3, 8.4, 8.5, 8.6
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Verify target employee exists
+        result = await session.execute(
+            select(Staff_Member).where(Staff_Member.tg_user_id == target_employee_id)
+        )
+        target_employee = result.scalar_one_or_none()
+        
+        if not target_employee:
+            error_msg = f"Target employee not found: employee_id={target_employee_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Update ticket assignment
+        old_assigned_staff_id = ticket.assigned_staff_id
+        ticket.assigned_staff_id = target_employee_id
+        ticket.updated_at = datetime.utcnow()
+        
+        # Log transfer action
+        await _log_action(
+            session=session,
+            action_type=ActionType.TICKET_ASSIGNED,
+            ticket_id=ticket_id,
+            staff_id=target_employee_id,
+            action_details={
+                "action": "transfer",
+                "source_employee_id": source_employee_id,
+                "target_employee_id": target_employee_id,
+                "old_assigned_staff_id": old_assigned_staff_id
+            }
+        )
+        
+        logger.info(
+            f"Ticket transferred: ticket_id={ticket_id}, "
+            f"source_employee_id={source_employee_id}, "
+            f"target_employee_id={target_employee_id}"
+        )
+        
+        return ticket
+    
+    except ValueError as e:
+        logger.error(f"Validation error transferring ticket: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error transferring ticket: ticket_id={ticket_id}, "
+            f"source_employee_id={source_employee_id}, "
+            f"target_employee_id={target_employee_id}, error={e}",
             exc_info=True
         )
         raise
@@ -627,6 +1116,379 @@ async def _log_action(
         logger.error(
             f"Database error logging action: action_type={action_type.value}, "
             f"tg_user_id={tg_user_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+# ========== Employee Messaging Functions ==========
+
+
+async def send_message_to_client(
+    bot: Bot,
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int,
+    message_text: str,
+    file_id: str | None = None,
+    file_type: Any | None = None
+) -> Message:
+    """
+    Send message from employee to client.
+    
+    Appends employee signature to message_text, sends message to client via bot,
+    stores message in Messages table with sender_type STAFF, and logs the action.
+    If file_id is provided, stores file attachment and sends file to client.
+    
+    Args:
+        bot: Aiogram Bot instance
+        session: Database session
+        ticket_id: Ticket ID
+        employee_id: Employee's Telegram ID
+        message_text: Message text (signature will be appended)
+        file_id: Telegram file ID (optional)
+        file_type: FileType enum value (optional, required if file_id provided)
+    
+    Returns:
+        Created Message object
+    
+    Raises:
+        ValueError: If ticket not found or employee not found
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 4.2, 4.3, 4.4, 5.1, 5.2, 6.5, 6.6
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Get employee signature
+        from services.employee_service import get_employee_signature
+        signature = await get_employee_signature(session, employee_id)
+        
+        # Append signature to message
+        message_with_signature = f"{message_text}\n\n{signature}"
+        
+        # Send message to client
+        try:
+            if file_id:
+                # Send file with caption
+                from database.models import FileType
+                
+                if file_type == FileType.IMAGE:
+                    await bot.send_photo(
+                        chat_id=ticket.tg_user_id,
+                        photo=file_id,
+                        caption=message_with_signature
+                    )
+                else:
+                    await bot.send_document(
+                        chat_id=ticket.tg_user_id,
+                        document=file_id,
+                        caption=message_with_signature
+                    )
+                
+                logger.info(
+                    f"File sent to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}, file_type={file_type}"
+                )
+            else:
+                # Send text message
+                await bot.send_message(
+                    chat_id=ticket.tg_user_id,
+                    text=message_with_signature
+                )
+                
+                logger.info(
+                    f"Message sent to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}"
+                )
+        
+        except Exception as e:
+            logger.error(
+                f"Error sending message to client via Telegram: ticket_id={ticket_id}, "
+                f"client_id={ticket.tg_user_id}, error={e}",
+                exc_info=True
+            )
+            raise
+        
+        # Store message in database
+        message = await add_ticket_message(
+            session=session,
+            ticket_id=ticket_id,
+            sender_type=SenderType.STAFF,
+            sender_id=employee_id,
+            message_text=message_text,  # Store original message without signature
+            message_type=MessageType.DOCUMENT if file_id else MessageType.TEXT
+        )
+        
+        # Store file attachment if provided
+        if file_id:
+            from database.models import File_Attachment, UploaderType
+            
+            file_attachment = File_Attachment(
+                ticket_id=ticket_id,
+                message_id=message.id,
+                file_type=file_type,
+                telegram_file_id=file_id,
+                uploader_id=employee_id,
+                uploader_type=UploaderType.STAFF,
+                uploaded_at=datetime.utcnow()
+            )
+            
+            session.add(file_attachment)
+            await session.flush()
+            
+            logger.debug(
+                f"File attachment stored: ticket_id={ticket_id}, "
+                f"message_id={message.id}, file_type={file_type}"
+            )
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.MESSAGE_SENT,
+            ticket_id=ticket_id,
+            staff_id=employee_id,
+            action_details={
+                "message_type": "file" if file_id else "text",
+                "has_signature": True
+            }
+        )
+        
+        return message
+    
+    except ValueError as e:
+        logger.error(f"Validation error sending message to client: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error sending message to client: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def handle_client_message_to_ticket(
+    bot: Bot,
+    session: AsyncSession,
+    ticket_id: int,
+    client_message: Message,
+    employee_focused_ticket_id: int | None = None
+) -> None:
+    """
+    Handle incoming client message to ticket.
+    
+    Stores message in Messages table with sender_type USER, changes ticket status
+    from WAITING_CLIENT to IN_PROGRESS if applicable, forwards message to assigned
+    employee, and logs the action.
+    
+    If employee is in focus mode on a different ticket, sends a notification
+    without changing their focus.
+    
+    Args:
+        bot: Aiogram Bot instance
+        session: Database session
+        ticket_id: Ticket ID
+        client_message: Aiogram Message object from client
+        employee_focused_ticket_id: Optional ticket ID that employee is currently focused on
+    
+    Raises:
+        ValueError: If ticket not found
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 6.1, 6.3, 6.7, 13.4
+    """
+    try:
+        # Get ticket
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Determine message type and text
+        message_text = ""
+        message_type = MessageType.TEXT
+        file_id = None
+        file_type = None
+        
+        if client_message.text:
+            message_text = client_message.text
+            message_type = MessageType.TEXT
+        elif client_message.photo:
+            message_text = client_message.caption or "📷 Фото"
+            message_type = MessageType.PHOTO
+            file_id = client_message.photo[-1].file_id
+            from database.models import FileType
+            file_type = FileType.IMAGE
+        elif client_message.document:
+            message_text = client_message.caption or f"📎 {client_message.document.file_name or 'Документ'}"
+            message_type = MessageType.DOCUMENT
+            file_id = client_message.document.file_id
+            from database.models import FileType
+            
+            # Classify file type based on extension
+            file_name = client_message.document.file_name or ""
+            file_type = classify_file_type(file_name)
+        
+        # Store message in database
+        message = await add_ticket_message(
+            session=session,
+            ticket_id=ticket_id,
+            sender_type=SenderType.USER,
+            sender_id=client_message.from_user.id,
+            message_text=message_text,
+            message_type=message_type
+        )
+        
+        # Store file attachment if present
+        if file_id:
+            from database.models import File_Attachment, UploaderType
+            
+            file_attachment = File_Attachment(
+                ticket_id=ticket_id,
+                message_id=message.id,
+                file_type=file_type,
+                telegram_file_id=file_id,
+                file_name=client_message.document.file_name if client_message.document else None,
+                file_size=client_message.document.file_size if client_message.document else None,
+                uploader_id=client_message.from_user.id,
+                uploader_type=UploaderType.USER,
+                uploaded_at=datetime.utcnow()
+            )
+            
+            session.add(file_attachment)
+            await session.flush()
+            
+            logger.debug(
+                f"Client file attachment stored: ticket_id={ticket_id}, "
+                f"message_id={message.id}, file_type={file_type}"
+            )
+        
+        # If ticket status is WAITING_CLIENT, change to IN_PROGRESS
+        if ticket.ticket_status == TicketStatus.WAITING_CLIENT:
+            old_status = ticket.ticket_status
+            ticket.ticket_status = TicketStatus.IN_PROGRESS
+            ticket.updated_at = datetime.utcnow()
+            
+            await _log_action(
+                session=session,
+                action_type=ActionType.STATUS_CHANGED,
+                ticket_id=ticket_id,
+                tg_user_id=client_message.from_user.id,
+                action_details={
+                    "old_status": old_status.value,
+                    "new_status": TicketStatus.IN_PROGRESS.value,
+                    "reason": "client_response"
+                }
+            )
+            
+            logger.info(
+                f"Ticket status changed from WAITING_CLIENT to IN_PROGRESS: "
+                f"ticket_id={ticket_id}"
+            )
+        
+        # Forward message to assigned employee
+        if ticket.assigned_staff_id:
+            try:
+                # Check if employee is in focus mode on a different ticket
+                is_non_focused_notification = (
+                    employee_focused_ticket_id is not None and 
+                    employee_focused_ticket_id != ticket_id
+                )
+                
+                # Build context message for employee
+                if is_non_focused_notification:
+                    # Employee is focused on a different ticket - send notification
+                    context_text = (
+                        f"🔔 Новое сообщение на тикете #{ticket_id} (не в фокусе):\n\n"
+                        f"{message_text}\n\n"
+                        f"💡 Вы сейчас в фокусе на тикете #{employee_focused_ticket_id}. "
+                        f"Используйте /employee для переключения."
+                    )
+                else:
+                    # Normal notification
+                    context_text = (
+                        f"💬 Новое сообщение от клиента (Тикет #{ticket_id}):\n\n"
+                        f"{message_text}"
+                    )
+                
+                if file_id:
+                    # Forward file with context
+                    from database.models import FileType
+                    
+                    if file_type == FileType.IMAGE:
+                        await bot.send_photo(
+                            chat_id=ticket.assigned_staff_id,
+                            photo=file_id,
+                            caption=context_text
+                        )
+                    else:
+                        await bot.send_document(
+                            chat_id=ticket.assigned_staff_id,
+                            document=file_id,
+                            caption=context_text
+                        )
+                else:
+                    # Send text message
+                    await bot.send_message(
+                        chat_id=ticket.assigned_staff_id,
+                        text=context_text
+                    )
+                
+                logger.info(
+                    f"Client message forwarded to employee: ticket_id={ticket_id}, "
+                    f"employee_id={ticket.assigned_staff_id}, "
+                    f"non_focused={is_non_focused_notification}"
+                )
+            
+            except Exception as e:
+                logger.error(
+                    f"Error forwarding client message to employee: ticket_id={ticket_id}, "
+                    f"employee_id={ticket.assigned_staff_id}, error={e}",
+                    exc_info=True
+                )
+                # Don't fail the operation if forwarding fails
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.MESSAGE_SENT,
+            ticket_id=ticket_id,
+            tg_user_id=client_message.from_user.id,
+            action_details={
+                "message_type": message_type.value,
+                "has_file": file_id is not None
+            }
+        )
+        
+        logger.info(
+            f"Client message handled: ticket_id={ticket_id}, "
+            f"client_id={client_message.from_user.id}, message_type={message_type.value}"
+        )
+    
+    except ValueError as e:
+        logger.error(f"Validation error handling client message: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error handling client message: ticket_id={ticket_id}, error={e}",
             exc_info=True
         )
         raise

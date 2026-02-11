@@ -54,6 +54,7 @@ from services.ticket_service import (
     send_staff_notification,
 )
 from services.user_service import get_user_by_tg_id, get_user_keys
+from services.validation_service import classify_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -372,12 +373,8 @@ async def process_problem_description_document(
     file_id = document.file_id
     file_name = document.file_name or "document"
     
-    # Determine file type
-    file_type = FileType.DOCUMENT
-    if file_name.lower().endswith('.pdf'):
-        file_type = FileType.PDF
-    elif file_name.lower().endswith(('.jpg', '.jpeg', '.png', '.gif')):
-        file_type = FileType.IMAGE
+    # Classify file type based on extension
+    file_type = classify_file_type(file_name)
     
     # Get caption if provided
     caption = message.caption.strip() if message.caption else f"Документ: {file_name}"

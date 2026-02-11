@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 
 def test_handlers_import():
@@ -36,6 +37,8 @@ def test_individual_routers():
         from bots.tg_bot.handlers.commands import router as commands_router
         from bots.tg_bot.handlers.callbacks import router as callbacks_router
         from bots.tg_bot.handlers.messages import router as messages_router
+        from bots.tg_bot.handlers.employee import router as employee_router
+        from bots.tg_bot.handlers.employee_messages import router as employee_messages_router
         
         routers = [
             ("registration", registration_router),
@@ -46,6 +49,8 @@ def test_individual_routers():
             ("commands", commands_router),
             ("callbacks", callbacks_router),
             ("messages", messages_router),
+            ("employee", employee_router),
+            ("employee_messages", employee_messages_router),
         ]
         
         print("✅ All individual routers imported successfully:")
@@ -85,6 +90,7 @@ def test_middleware_configuration():
     """Test that middlewares are properly configured."""
     try:
         from loaders import main_dp
+        from middlewares.check_staff_middleware import StaffMemberCheckMiddleware
         
         # Check that dispatcher has middlewares
         assert main_dp is not None
@@ -97,6 +103,11 @@ def test_middleware_configuration():
         print("   - ErrorHandler")
         print("   - StateClearerMiddleware (outer)")
         print("   - AlbumMiddleware")
+        print("   - StaffMemberCheckMiddleware (on employee routers)")
+        
+        # Verify staff middleware can be imported
+        assert StaffMemberCheckMiddleware is not None
+        print("   ✓ StaffMemberCheckMiddleware imported successfully")
         
         return True
     except Exception as e:

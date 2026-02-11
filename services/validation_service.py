@@ -3,11 +3,13 @@ Validation Service
 
 Provides validation functions for user input data.
 Validates phone numbers, INN, GS_Key, and email formats.
+Provides file type classification for attachments.
 
-Requirements: 21.1-21.5, 22.1-22.5, 23.1-23.5, 24.1-24.5
+Requirements: 21.1-21.5, 22.1-22.5, 23.1-23.5, 24.1-24.5, 15.6, 15.7, 15.8
 """
 
 import re
+from database.models import FileType
 
 
 def validate_phone_number(phone: str) -> tuple[bool, str | None]:
@@ -175,3 +177,46 @@ def validate_email(email: str) -> tuple[bool, str | None]:
         return False, "Неверный формат email адреса"
     
     return True, None
+
+
+
+def classify_file_type(file_name: str | None) -> FileType:
+    """
+    Classify file type based on file name extension.
+    
+    Classifies files into categories:
+    - PDF: .pdf files
+    - IMAGE: .jpg, .jpeg, .png, .gif, .bmp, .webp files
+    - DOCUMENT: .doc, .docx, .xls, .xlsx, .txt, .rtf files
+    - OTHER: all other file types
+    
+    Args:
+        file_name: File name with extension (can be None)
+    
+    Returns:
+        FileType enum value (PDF, IMAGE, DOCUMENT, or OTHER)
+    
+    Requirements: 15.6, 15.7, 15.8
+    """
+    if not file_name:
+        return FileType.OTHER
+    
+    # Normalize to lowercase for comparison
+    file_name_lower = file_name.lower()
+    
+    # PDF files
+    if file_name_lower.endswith('.pdf'):
+        return FileType.PDF
+    
+    # Image files
+    image_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.ico')
+    if file_name_lower.endswith(image_extensions):
+        return FileType.IMAGE
+    
+    # Document files
+    document_extensions = ('.doc', '.docx', '.xls', '.xlsx', '.txt', '.rtf', '.odt', '.ods')
+    if file_name_lower.endswith(document_extensions):
+        return FileType.DOCUMENT
+    
+    # All other file types
+    return FileType.OTHER
