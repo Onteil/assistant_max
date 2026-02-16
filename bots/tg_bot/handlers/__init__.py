@@ -9,7 +9,7 @@ Handlers Package
 
 from aiogram import Router
 
-from middlewares.check_staff_middleware import StaffMemberCheckMiddleware
+from bots.tg_bot.middlewares.check_staff_middleware import StaffMemberCheckMiddleware
 
 from .callbacks import router as callbacks_router
 from .cancel import router as cancel_router

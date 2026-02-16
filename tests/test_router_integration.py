@@ -90,7 +90,7 @@ def test_middleware_configuration():
     """Test that middlewares are properly configured."""
     try:
         from loaders import main_dp
-        from middlewares.check_staff_middleware import StaffMemberCheckMiddleware
+        from bots.tg_bot.middlewares.check_staff_middleware import StaffMemberCheckMiddleware
         
         # Check that dispatcher has middlewares
         assert main_dp is not None

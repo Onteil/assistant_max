@@ -533,7 +533,7 @@ class LoggingMiddleware(BaseMiddleware):
 
 ```python
 # handlers/admin.py
-from filters.is_admin import IsAdminFilter
+from bots.tg_bot.filters.is_admin import IsAdminFilter
 
 admin_router = Router(name="admin")
 admin_router.message.filter(IsAdminFilter())
