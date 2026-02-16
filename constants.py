@@ -18,6 +18,9 @@ DB_URL = os.getenv("DB_URL")
 HTTP_PROXY = os.getenv("HTTP_PROXY")
 HTTPS_PROXY = os.getenv("HTTPS_PROXY")
 
+# Bot tokens - MAX is the primary bot token after migration
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
+# Legacy Telegram bot token (kept for backward compatibility during transition)
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 HOST = os.getenv("HOST")
 
@@ -33,8 +36,10 @@ COUNT_WORKERS = int(os.getenv("COUNT_WORKERS"))
 
 DEBUG = literal_eval(os.getenv("DEBUG"))
 
+# Webhook paths - MAX webhook is the primary webhook after migration
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")
-WEBHOOK_PATH_MAIN = os.getenv("WEBHOOK_PATH_MAIN")
+WEBHOOK_PATH_MAIN = os.getenv("WEBHOOK_PATH_MAIN")  # MAX webhook path (primary)
+WEBHOOK_PATH_MAX = os.getenv("WEBHOOK_PATH_MAX")    # Alias for MAX webhook path
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL")

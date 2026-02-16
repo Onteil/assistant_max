@@ -19,7 +19,7 @@ def verify_employee_routers():
         from bots.tg_bot.handlers import tg_bot_router
         from bots.tg_bot.handlers.employee import router as employee_router
         from bots.tg_bot.handlers.employee_messages import router as employee_messages_router
-        from middlewares.check_staff_middleware import StaffMemberCheckMiddleware
+        from bots.tg_bot.middlewares.check_staff_middleware import StaffMemberCheckMiddleware
         
         print("=" * 60)
         print("Employee Router Middleware Verification")

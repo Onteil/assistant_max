@@ -23,8 +23,17 @@ from constants import (
     PROJECT_HOST,
     PROJECT_PORT,
     WEBHOOK_PATH_MAIN,
+    WEBHOOK_PATH_MAX,
 )
-from loaders import bot_session, close_bot_sessions, delete_all_webhooks, main_dp, set_all_webhooks
+from loaders import (
+    bot_session,
+    close_bot_sessions,
+    delete_all_webhooks,
+    main_dp,
+    max_bot,
+    max_dp,
+    set_all_webhooks,
+)
 
 ROOT_PATH = "" if IS_LOCAL_BOT else "/i-tat"
 
@@ -41,7 +50,20 @@ async def error_handler(event: ErrorEvent):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Выполняется при старте и остановке приложения.
+    FastAPI lifespan context manager for application startup and shutdown.
+    
+    Startup sequence:
+    1. Initialize all bot components (on_init)
+    2. Set up webhooks for all bots (set_all_webhooks)
+    
+    Shutdown sequence:
+    1. Delete all webhooks (delete_all_webhooks)
+    2. Close all bot sessions and connections (close_bot_sessions)
+    
+    This ensures proper resource management and graceful shutdown.
+    
+    Requirements: 2.6, 2.7 - Configure background task processing and lifecycle management
+    Requirements: 12.2, 12.6 - Webhook lifecycle management and session cleanup
     """
     logging.info("Application startup...")
     await on_init()
@@ -92,10 +114,30 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 async def on_init():
-    # await run_webhook(BOT_TOKEN)
+    """
+    Initialize all bot components in correct order.
+    
+    Initialization sequence:
+    1. Include routers in dispatchers
+    2. Register handlers
+    3. Set up middleware (already done in loaders.py)
+    4. Configure FSM storage (already done in loaders.py)
+    
+    This function is called during FastAPI lifespan startup.
+    
+    Requirements: 2.6, 2.7 - Initialize components and configure background task processing
+    """
+    # Initialize Telegram bot (legacy)
     main_dp.include_router(main_bot_router)
-    # access_dp.include_router(access_bot_router)
-    # main_dp.include_router(channel_router)
+    
+    # MAX bot initialization is already complete in loaders.py:
+    # - MAX bot instance created
+    # - Dispatcher initialized with FSM storage
+    # - Middleware registered
+    # - Handlers registered via register_max_handlers()
+    # - Router included in dispatcher
+    
+    logging.info("All bot components initialized successfully")
 
 
 async def main_feed_update(token, update):
@@ -116,6 +158,102 @@ async def main_telegram_update(
     background_tasks.add_task(main_feed_update, MAIN_BOT_TOKEN, update_data)
 
     return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+async def max_feed_update(update_data: dict):
+    """
+    Process MAX webhook update using maxapi Dispatcher.
+    
+    This function is executed as a FastAPI background task to enable
+    non-blocking webhook processing. The webhook endpoint returns immediately
+    while updates are processed asynchronously.
+    
+    Processing flow:
+    1. Parse raw webhook data using maxapi process_update_webhook
+    2. Handle the event using MAX dispatcher
+    3. Dispatcher routes to appropriate handlers via middleware chain
+    
+    Args:
+        update_data: Raw update data from MAX webhook
+    
+    Requirements: 2.6 - Background task processing for webhook handling
+    Requirements: 2.4, 2.5 - MAX update parsing and routing
+    """
+    if not max_bot or not max_dp:
+        logging.error("MAX bot not initialized, cannot process update")
+        return
+    
+    try:
+        # Use maxapi's process_update_webhook to parse the update
+        from maxapi.methods.types.getted_updates import process_update_webhook
+        
+        # Process the webhook update
+        event_object = await process_update_webhook(
+            event_json=update_data,
+            bot=max_bot
+        )
+        
+        # Handle the event using the dispatcher
+        # This triggers the middleware chain and routes to appropriate handlers
+        await max_dp.handle(event_object)
+        
+        logging.debug(f"MAX update processed: {event_object.update_type}")
+    except Exception as e:
+        logging.error(f"Error processing MAX update: {e}", exc_info=True)
+
+
+@app.post(WEBHOOK_PATH_MAX, include_in_schema=False)
+async def max_webhook_update(
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> Response:
+    """
+    MAX messenger webhook endpoint.
+    
+    Receives incoming updates from MAX messenger and processes them
+    using maxapi Dispatcher in background tasks for non-blocking operation.
+    
+    Processing flow:
+    1. Validate MAX bot is initialized
+    2. Parse JSON from request body
+    3. Add update processing to background tasks (non-blocking)
+    4. Return HTTP 200 OK immediately
+    
+    Background task processing enables:
+    - Fast webhook response times (< 100ms)
+    - Concurrent update handling
+    - Prevents webhook timeout issues
+    
+    Returns:
+        HTTP 200 OK for valid requests
+        HTTP 503 if MAX bot not configured
+        HTTP 500 for internal errors
+    
+    Requirements: 2.1, 2.2, 2.3 - MAX webhook endpoint with validation
+    Requirements: 2.6, 2.7 - Background task processing configuration
+    """
+    if not max_bot or not max_dp:
+        logging.error("MAX bot not initialized")
+        return Response(
+            content="MAX bot not configured",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    
+    try:
+        # Get JSON from request body
+        update_data = await request.json()
+        
+        # Process update in background task (non-blocking)
+        # This allows the webhook to return immediately
+        background_tasks.add_task(max_feed_update, update_data)
+        
+        return Response(status_code=status.HTTP_200_OK)
+    except Exception as e:
+        logging.error(f"Error handling MAX webhook: {e}", exc_info=True)
+        return Response(
+            content="Internal server error",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
 
 if __name__ == "__main__":
