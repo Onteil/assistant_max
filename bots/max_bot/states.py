@@ -19,6 +19,7 @@ class RegistrationStates(StatesGroup):
 
     waiting_for_phone = State()
     waiting_for_name = State()
+    waiting_for_email = State()
     waiting_for_inn = State()
     waiting_for_key = State()
 
@@ -32,6 +33,7 @@ class InvoiceStates(StatesGroup):
     adding_new_key = State()
     entering_description = State()
     selecting_delivery = State()
+    confirming_email = State()
     entering_email = State()
 
 
@@ -40,6 +42,7 @@ class SupportStates(StatesGroup):
 
     entering_problem = State()
     selecting_key_context = State()
+    adding_new_key = State()
 
 
 class ProfileStates(StatesGroup):
@@ -48,6 +51,7 @@ class ProfileStates(StatesGroup):
     adding_inn = State()
     adding_key = State()
     changing_phone = State()
+    changing_email = State()
 
 
 class FormStates(StatesGroup):
@@ -65,3 +69,59 @@ class EmployeeStates(StatesGroup):
     closing_ticket = State()  # Employee entering final comment for closing
     transferring_ticket = State()  # Employee selecting target employee for transfer
     searching_archive = State()  # Employee entering search criteria in archive
+    archive_custom_search = State()  # Employee entering custom search criteria in archive
+    manager_closing_ticket = State()  # Manager entering final comment for closing ticket
+    manager_transferring_ticket = State()  # Manager selecting employee for transfer
+
+
+class CalendarStates(StatesGroup):
+    """States for calendar management."""
+
+    managing_calendar = State()  # Administrator managing calendar (text commands active)
+    confirming_add_rule = State()  # Administrator confirming rule addition
+    confirming_delete_rule = State()  # Administrator confirming rule deletion
+    entering_clear_period = State()  # Administrator entering period to clear
+
+
+class EmployeeManagementStates(StatesGroup):
+    """States for employee management."""
+
+    adding_employee_id = State()  # Administrator entering MAX user ID
+    adding_employee_name = State()  # Administrator entering employee full name
+    adding_employee_role = State()  # Administrator selecting employee role
+    editing_employee_name = State()  # Administrator editing employee name
+    editing_employee_signature = State()  # Administrator editing employee signature
+
+
+class OperationsStates(StatesGroup):
+    """States for operations management."""
+
+    creating_broadcast_content = State()  # Administrator entering broadcast message content
+    selecting_broadcast_target = State()  # Administrator selecting target audience
+    confirming_broadcast = State()  # Administrator confirming broadcast send
+
+
+class NPSStates(StatesGroup):
+    """States for NPS survey flow."""
+
+    waiting_for_feedback = State()  # User entering feedback comment for low rating (0-7)
+
+
+
+class SettingsStates(StatesGroup):
+    """States for settings configuration."""
+
+    entering_timeout_value = State()  # Administrator entering timeout value
+    entering_escalation_chat_id = State()  # Administrator entering escalation channel chat ID
+    entering_duty_account_id = State()  # Administrator entering duty support account ID
+    entering_nps_frequency = State()  # Administrator entering NPS frequency value
+    entering_nps_trigger_timing = State()  # Administrator entering NPS trigger timing value
+    entering_renewal_reminder_days = State()  # Administrator entering renewal reminder days
+    entering_renewal_reminder_days = State()  # Administrator entering renewal reminder days
+
+
+class AdminCreationStates(StatesGroup):
+    """States for admin creation flow."""
+
+    waiting_for_phone = State()  # Waiting for phone number
+    waiting_for_full_name = State()  # Waiting for full name

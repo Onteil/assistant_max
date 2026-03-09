@@ -11,7 +11,14 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+# Import InlineKeyboardButton and InlineKeyboardMarkup from appropriate bot framework
+# This will be imported in the specific handler files
+try:
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+except ImportError:
+    # Fallback for when aiogram is not available
+    InlineKeyboardButton = None
+    InlineKeyboardMarkup = None
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -34,15 +41,56 @@ from database.models import (
 logger = logging.getLogger(__name__)
 
 
+# ========== Staff Member Retrieval ==========
+
+
+async def get_staff_by_max_user_id(session: AsyncSession, max_user_id: int) -> Staff_Member | None:
+    """
+    Retrieve staff member by MAX user ID.
+    
+    Args:
+        session: Database session
+        max_user_id: MAX messenger user ID
+    
+    Returns:
+        Staff_Member object if found, None otherwise
+    
+    Raises:
+        SQLAlchemyError: If database operation fails
+    """
+    try:
+        stmt = select(Staff_Member).where(
+            Staff_Member.max_user_id == max_user_id,
+            Staff_Member.is_active == True
+        )
+        result = await session.execute(stmt)
+        staff = result.scalar_one_or_none()
+        
+        if staff:
+            logger.debug(f"Staff member found: max_user_id={max_user_id}, staff_id={staff.id}")
+        else:
+            logger.debug(f"Staff member not found: max_user_id={max_user_id}")
+        
+        return staff
+    
+    except Exception as e:
+        logger.error(
+            f"Error retrieving staff member: max_user_id={max_user_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
 # ========== Active Tickets Query ==========
 
 
 async def get_employee_active_tickets(
     session: AsyncSession,
-    employee_id: int
+    employee_id: int,
+    ticket_type_filter: str | None = None
 ) -> list[Ticket]:
     """
-    Get all active tickets assigned to employee.
+    Get all active tickets assigned to employee with optional type filter.
     
     Returns tickets with status NEW, IN_PROGRESS, or WAITING_CLIENT,
     ordered by created_at ascending (oldest first).
@@ -50,6 +98,7 @@ async def get_employee_active_tickets(
     Args:
         session: Database session
         employee_id: Telegram user ID of the employee
+        ticket_type_filter: Optional filter ('invoice', 'technical_support', 'renewal', or None for all)
     
     Returns:
         List of active Ticket objects ordered by created_at
@@ -57,18 +106,42 @@ async def get_employee_active_tickets(
     Requirements: 1.2
     """
     try:
+        # First, get the staff member record to get their internal ID
+        staff_stmt = select(Staff_Member).where(
+            Staff_Member.tg_user_id == employee_id,
+            Staff_Member.is_active == True
+        )
+        staff_result = await session.execute(staff_stmt)
+        staff_member = staff_result.scalar_one_or_none()
+        
+        if not staff_member:
+            logger.warning(f"No active staff member found for tg_user_id {employee_id}")
+            return []
+        
+        # Build query conditions
+        conditions = [
+            Ticket.assigned_staff_id == staff_member.id,
+            Ticket.ticket_status.in_([
+                TicketStatus.NEW,
+                TicketStatus.IN_PROGRESS,
+                TicketStatus.WAITING_CLIENT
+            ])
+        ]
+        
+        # Add type filter if specified
+        if ticket_type_filter:
+            type_map = {
+                "invoice": TicketType.INVOICE,
+                "technical_support": TicketType.TECHNICAL_SUPPORT,
+                "renewal": TicketType.RENEWAL
+            }
+            if ticket_type_filter in type_map:
+                conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+        
+        # Now query tickets using the staff member's internal ID
         stmt = (
             select(Ticket)
-            .where(
-                and_(
-                    Ticket.assigned_staff_id == employee_id,
-                    Ticket.ticket_status.in_([
-                        TicketStatus.NEW,
-                        TicketStatus.IN_PROGRESS,
-                        TicketStatus.WAITING_CLIENT
-                    ])
-                )
-            )
+            .where(and_(*conditions))
             .order_by(Ticket.created_at.asc())
             .options(
                 selectinload(Ticket.user),
@@ -80,7 +153,10 @@ async def get_employee_active_tickets(
         result = await session.execute(stmt)
         tickets = result.scalars().all()
         
-        logger.info(f"Retrieved {len(tickets)} active tickets for employee {employee_id}")
+        logger.info(
+            f"Retrieved {len(tickets)} active tickets for employee {employee_id} "
+            f"(staff_id={staff_member.id}, filter={ticket_type_filter})"
+        )
         return list(tickets)
         
     except Exception as e:
@@ -116,16 +192,10 @@ async def format_ticket_card(
     Requirements: 2.1, 2.2, 2.3, 2.4, 2.6
     """
     try:
-        # Ticket header
-        ticket_type_text = "Счет" if ticket.ticket_type == TicketType.INVOICE else "ТП"
+        # Ticket header - unified format
         lines = [
-            f"🎫 Тикет #{ticket.id} ({ticket_type_text})",
-            ""
+            f"✅ Работа с заявкой #{ticket.id}",
         ]
-        
-        # Client information
-        client_name = ticket.user.full_name or ticket.user.first_name or "Неизвестно"
-        lines.append(f"👤 Клиент: {client_name}")
         
         # Status
         status_emoji = {
@@ -147,38 +217,34 @@ async def format_ticket_card(
         lines.append(f"{emoji} Статус: {status}")
         lines.append("")
         
-        # Type-specific fields
-        if ticket.ticket_type == TicketType.INVOICE:
-            # Invoice type: show organization INN and GS keys if available
-            if ticket.organization_inn:
-                org_name = ticket.organization.organization_name if ticket.organization else ""
-                if org_name:
-                    lines.append(f"🏢 Организация: {org_name}")
-                lines.append(f"📋 ИНН: {ticket.organization_inn}")
-            
-            if ticket.gs_keys:
-                key_numbers = [key.key_number for key in ticket.gs_keys]
-                lines.append(f"🔑 Ключи ГС: {', '.join(key_numbers)}")
-            
-            if ticket.description:
-                lines.append(f"📝 Описание: {ticket.description}")
-        
-        elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
-            # Technical support type: show problem description and related GS key
-            if ticket.description:
-                lines.append(f"❓ Проблема: {ticket.description}")
-            
-            if ticket.gs_keys:
-                key_numbers = [key.key_number for key in ticket.gs_keys]
-                lines.append(f"🔑 Связанный ключ: {', '.join(key_numbers)}")
-        
+        # Client information
+        client_name = ticket.user.full_name or ticket.user.first_name or "Неизвестно"
+        lines.append(f"👤 Клиент: {client_name}")
         lines.append("")
+        
+        # INN (if available)
+        if ticket.organization_inn:
+            lines.append(f"📋 ИНН: {ticket.organization_inn}")
+        
+        # GS Keys (if available)
+        if ticket.gs_keys:
+            key_numbers = [key.key_number for key in ticket.gs_keys]
+            lines.append(f"🔑 Ключи ГС: {', '.join(key_numbers)}")
+        
+        # Add blank line after INN/Keys if they exist
+        if ticket.organization_inn or ticket.gs_keys:
+            lines.append("")
+        
+        # Description (if available)
+        if ticket.description:
+            lines.append(f"📝 Описание: {ticket.description}")
         
         # Elapsed time
         elapsed = await calculate_ticket_elapsed_time(ticket)
         lines.append(f"⏱ Время: {elapsed}")
+        lines.append("")
         
-        # File attachment count
+        # File attachment count (if any)
         stmt = select(File_Attachment).where(File_Attachment.ticket_id == ticket.id)
         result = await session.execute(stmt)
         attachments = result.scalars().all()
@@ -201,9 +267,9 @@ async def get_ticket_action_keyboard(
     """
     Generate inline keyboard for ticket based on current status.
     
-    Status NEW: [Взять в работу] [🔄 Передать] [📁 История] [❌ Выйти из фокуса]
-    Status IN_PROGRESS: [✅ Закрыть] [⏳ Ждем клиента] [🔄 Передать] [📁 История] [❌ Выйти из фокуса]
-    Status WAITING_CLIENT: [✅ Закрыть] [🔄 Передать] [📁 История] [❌ Выйти из фокуса]
+    Status NEW: [Взять в работу] [🔄 Передать] [📁 История] [🔙 Назад к списку]
+    Status IN_PROGRESS: [✅ Закрыть] [⏳ Ждем клиента] [🔄 Передать] [📁 История] [🔙 Назад к списку]
+    Status WAITING_CLIENT: [✅ Закрыть] [🔄 Передать] [📁 История] [🔙 Назад к списку]
     
     Args:
         ticket: Ticket object
@@ -211,7 +277,7 @@ async def get_ticket_action_keyboard(
     Returns:
         InlineKeyboardMarkup with action buttons
     
-    Requirements: 3.1, 3.2, 3.3
+    Requirements: 3.1, 3.2, 3.3, 6.4, 6.5, 6.6, 7.1
     """
     try:
         # Import here to avoid circular import
@@ -248,9 +314,9 @@ async def get_ticket_action_keyboard(
             ])
             buttons.append([
                 InlineKeyboardButton(
-                    text="❌ Выйти из фокуса",
+                    text="🔙 Назад к списку",
                     callback_data=TicketActionCallback(
-                        action="exit_focus",
+                        action="back_to_list",
                         ticket_id=ticket.id
                     ).pack()
                 )
@@ -292,9 +358,9 @@ async def get_ticket_action_keyboard(
             ])
             buttons.append([
                 InlineKeyboardButton(
-                    text="❌ Выйти из фокуса",
+                    text="🔙 Назад к списку",
                     callback_data=TicketActionCallback(
-                        action="exit_focus",
+                        action="back_to_list",
                         ticket_id=ticket.id
                     ).pack()
                 )
@@ -329,9 +395,9 @@ async def get_ticket_action_keyboard(
             ])
             buttons.append([
                 InlineKeyboardButton(
-                    text="❌ Выйти из фокуса",
+                    text="🔙 Назад к списку",
                     callback_data=TicketActionCallback(
-                        action="exit_focus",
+                        action="back_to_list",
                         ticket_id=ticket.id
                     ).pack()
                 )
@@ -359,7 +425,7 @@ async def get_employee_signature(
     
     Args:
         session: Database session
-        employee_id: Telegram user ID of the employee
+        employee_id: Internal staff member ID (primary key)
     
     Returns:
         Formatted signature string
@@ -370,7 +436,7 @@ async def get_employee_signature(
     Requirements: 5.1
     """
     try:
-        stmt = select(Staff_Member).where(Staff_Member.tg_user_id == employee_id)
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
         result = await session.execute(stmt)
         employee = result.scalar_one_or_none()
         
@@ -632,7 +698,7 @@ async def format_ticket_history(
         page_items = timeline_items[start_idx:end_idx]
         
         # Format history text
-        lines = [f"📁 История тикета #{ticket_id}", ""]
+        lines = [f"📁 История заявки #{ticket_id}", ""]
         
         if not page_items:
             lines.append("История пуста")
@@ -718,7 +784,7 @@ async def format_ticket_history(
                             else:
                                 target_name = "Неизвестно"
                             
-                            lines.append(f"🔄 Тикет передан: {source_name} → {target_name} ({timestamp})")
+                            lines.append(f"🔄 Заявка передана: {source_name} → {target_name} ({timestamp})")
                         else:
                             # This is an initial assignment
                             staff_id = log.staff_id
@@ -730,10 +796,10 @@ async def format_ticket_history(
                             else:
                                 staff_name = "Неизвестно"
                             
-                            lines.append(f"✅ Тикет назначен: {staff_name} ({timestamp})")
+                            lines.append(f"✅ Заявка назначен: {staff_name} ({timestamp})")
                     
                     elif log.action_type == ActionType.TICKET_CLOSED:
-                        lines.append(f"✅ Тикет закрыт ({timestamp})")
+                        lines.append(f"✅ Заявка закрыт ({timestamp})")
                     
                     lines.append("")
         
@@ -842,12 +908,17 @@ async def search_closed_tickets(
         # Base query for closed tickets
         query = (
             select(Ticket)
-            .join(User, Ticket.tg_user_id == User.tg_user_id)
+            .join(User, Ticket.user_id == User.id)
             .where(
                 or_(
                     Ticket.ticket_status == TicketStatus.CLOSED,
                     Ticket.ticket_status == TicketStatus.CANCELLED
                 )
+            )
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys)
             )
         )
         
@@ -948,7 +1019,7 @@ async def format_archive_search_results(
     """
     try:
         if not tickets:
-            return "Тикеты не найдены."
+            return "Заявкаы не найдены."
         
         result_lines = []
         
@@ -983,6 +1054,1530 @@ async def format_archive_search_results(
     except Exception as e:
         logger.error(
             f"Error formatting archive search results: error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def get_closed_tickets_by_filter(
+    session: AsyncSession,
+    filter_type: str = "day"
+) -> list[Ticket]:
+    """
+    Get closed tickets by time filter.
+
+    Args:
+        session: Database session
+        filter_type: Filter type ('day', 'week', 'month')
+
+    Returns:
+        List of closed tickets matching the filter
+
+    Requirements: Archive with filters
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import select, or_
+    from database.models import Ticket, TicketStatus
+
+    try:
+        # Calculate date range based on filter
+        now = datetime.now()
+
+        if filter_type == "day":
+            date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif filter_type == "week":
+            date_from = now - timedelta(days=7)
+        elif filter_type == "month":
+            date_from = now - timedelta(days=30)
+        else:
+            # Default to day
+            date_from = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        logger.info(f"Getting closed tickets with filter: {filter_type}, date_from: {date_from}")
+
+        # Query closed tickets
+        query = (
+            select(Ticket)
+            .join(User, Ticket.user_id == User.id)
+            .where(
+                or_(
+                    Ticket.ticket_status == TicketStatus.CLOSED,
+                    Ticket.ticket_status == TicketStatus.CANCELLED
+                )
+            )
+            .where(Ticket.closed_at >= date_from)
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys)
+            )
+            .order_by(Ticket.closed_at.desc())
+        )
+
+        result = await session.execute(query)
+        tickets = list(result.scalars().all())
+
+        logger.info(f"Found {len(tickets)} closed tickets with filter: {filter_type}")
+        return tickets
+
+    except Exception as e:
+        logger.error(
+            f"Error getting closed tickets by filter: filter_type={filter_type}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def format_archive_header(
+    tickets_count: int,
+    current_filter: str = "day"
+) -> str:
+    """
+    Format header text for archive list.
+
+    Args:
+        tickets_count: Total number of tickets
+        current_filter: Current filter type
+
+    Returns:
+        Formatted header text
+    """
+    filter_text_map = {
+        "day": "День",
+        "week": "Неделя",
+        "month": "Месяц",
+        "custom": "Произвольный"
+    }
+
+    filter_text = filter_text_map.get(current_filter, "День")
+
+    header_lines = [
+        f"🗄 <b>Архив обращений</b>",
+        f"Фильтр: {filter_text} • Найдено: {tickets_count}",
+        ""
+    ]
+
+    return "\n".join(header_lines)
+
+
+async def get_archive_keyboard(
+    tickets: list[Ticket],
+    current_filter: str = "day",
+    current_page: int = 0
+) -> InlineKeyboardMarkup:
+    """
+    Generate inline keyboard for archive list with filters and pagination.
+
+    Args:
+        tickets: List of closed tickets (already filtered)
+        current_filter: Current filter type ('day', 'week', 'month', 'custom')
+        current_page: Current page number (0-indexed)
+
+    Returns:
+        InlineKeyboardMarkup with filters, ticket list, and pagination
+    """
+    try:
+        from bots.tg_bot.callback_datas import ArchiveSearchCallback
+        from database.models import TicketType
+
+        buttons = []
+
+        # Filter buttons row
+        filter_buttons = []
+
+        # Day filter
+        day_text = "🟢 День" if current_filter == "day" else "День"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=day_text,
+                callback_data=ArchiveSearchCallback(
+                    action="filter",
+                    filter_type="day",
+                    page=0
+                ).pack()
+            )
+        )
+
+        # Week filter
+        week_text = "🟢 Неделя" if current_filter == "week" else "Неделя"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=week_text,
+                callback_data=ArchiveSearchCallback(
+                    action="filter",
+                    filter_type="week",
+                    page=0
+                ).pack()
+            )
+        )
+
+        # Month filter
+        month_text = "🟢 Месяц" if current_filter == "month" else "Месяц"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=month_text,
+                callback_data=ArchiveSearchCallback(
+                    action="filter",
+                    filter_type="month",
+                    page=0
+                ).pack()
+            )
+        )
+
+        # Custom search button (magnifying glass emoji)
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text="🔍",
+                callback_data=ArchiveSearchCallback(
+                    action="custom_search"
+                ).pack()
+            )
+        )
+
+        buttons.append(filter_buttons)
+
+        # Pagination: 5 tickets per page
+        TICKETS_PER_PAGE = 5
+        start_idx = current_page * TICKETS_PER_PAGE
+        end_idx = start_idx + TICKETS_PER_PAGE
+        page_tickets = tickets[start_idx:end_idx]
+
+        # Ticket type emoji mapping
+        ticket_type_emoji = {
+            TicketType.INVOICE: "💰",
+            TicketType.TECHNICAL_SUPPORT: "🔧",
+            TicketType.RENEWAL: "🔄"
+        }
+
+        # Ticket buttons (5 rows)
+        for ticket in page_tickets:
+            # Get ticket type emoji
+            type_emoji = ticket_type_emoji.get(ticket.ticket_type, "📋")
+
+            # Get client name
+            client_name = ticket.user.full_name or ticket.user.first_name or "Неизвестно"
+
+            # Format date
+            date_str = ticket.closed_at.strftime("%d.%m") if ticket.closed_at else "Не указано"
+
+            # Build ticket button text
+            ticket_text = f"{type_emoji} #{ticket.id} {client_name} ({date_str})"
+
+            # Single button per row
+            buttons.append([
+                InlineKeyboardButton(
+                    text=ticket_text,
+                    callback_data=ArchiveSearchCallback(
+                        action="view_ticket",
+                        ticket_id=ticket.id,
+                        filter_type=current_filter,
+                        page=current_page
+                    ).pack()
+                )
+            ])
+
+        # Pagination buttons
+        total_pages = (len(tickets) + TICKETS_PER_PAGE - 1) // TICKETS_PER_PAGE if tickets else 1
+        if total_pages > 1:
+            pagination_row = []
+
+            if current_page > 0:
+                pagination_row.append(
+                    InlineKeyboardButton(
+                        text="◀️",
+                        callback_data=ArchiveSearchCallback(
+                            action="page",
+                            filter_type=current_filter,
+                            page=current_page - 1
+                        ).pack()
+                    )
+                )
+
+            if current_page < total_pages - 1:
+                pagination_row.append(
+                    InlineKeyboardButton(
+                        text="▶️",
+                        callback_data=ArchiveSearchCallback(
+                            action="page",
+                            filter_type=current_filter,
+                            page=current_page + 1
+                        ).pack()
+                    )
+                )
+
+            if pagination_row:
+                buttons.append(pagination_row)
+
+        # Cancel button
+        buttons.append([
+            InlineKeyboardButton(
+                text="❌ Отменить операцию",
+                callback_data=ArchiveSearchCallback(action="cancel").pack()
+            )
+        ])
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+        logger.info(
+            f"Generated archive keyboard: "
+            f"tickets_count={len(tickets)}, filter={current_filter}, "
+            f"page={current_page}"
+        )
+
+        return keyboard
+
+    except Exception as e:
+        logger.error(
+            f"Error generating archive keyboard: error={e}",
+            exc_info=True
+        )
+        raise
+
+
+
+# ========== Active Tickets Inline Keyboard ==========
+
+
+def get_ticket_status_emoji(
+    ticket: Ticket,
+    has_unread: bool,
+    is_focused: bool
+) -> str:
+    """
+    Determine emoji for ticket status display in inline keyboard.
+    
+    Priority:
+    1. Unread messages (🔴)
+    2. Ticket status (🆕/🟢/⏳)
+    3. Focus indicator (🎯 added to base emoji)
+    
+    Args:
+        ticket: Ticket object
+        has_unread: Whether ticket has unread messages from client
+        is_focused: Whether this ticket is currently in focus
+    
+    Returns:
+        Emoji string for status display
+    
+    Requirements: Active Tickets Inline Keyboard
+    """
+    # Priority 1: Unread messages
+    if has_unread:
+        emoji = "🔴"
+    # Priority 2: Ticket status
+    elif ticket.ticket_status == TicketStatus.NEW:
+        emoji = "🆕"
+    elif ticket.ticket_status == TicketStatus.IN_PROGRESS:
+        emoji = "🟢"
+    elif ticket.ticket_status == TicketStatus.WAITING_CLIENT:
+        emoji = "⏳"
+    else:
+        emoji = "📋"
+    
+    # Add focus indicator if applicable
+    if is_focused:
+        emoji = f"🎯{emoji}"
+    
+    return emoji
+
+
+async def has_unread_messages(
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int
+) -> tuple[bool, int]:
+    """
+    Check if ticket has unread messages from client.
+    
+    A message is considered unread if:
+    - It was sent by the client (sender_type = USER)
+    - It was sent after the last message from the employee
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID to check
+        employee_id: Employee's Telegram user ID
+    
+    Returns:
+        Tuple of (has_unread: bool, unread_count: int)
+    
+    Requirements: Active Tickets Inline Keyboard
+    """
+    try:
+        from sqlalchemy import select, and_, func
+        from database.models import Message, SenderType
+        
+        # Get last message from employee
+        employee_msg_stmt = (
+            select(Message)
+            .where(
+                and_(
+                    Message.ticket_id == ticket_id,
+                    Message.sender_type == SenderType.STAFF,
+                    Message.sender_id == employee_id
+                )
+            )
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+        )
+        employee_msg_result = await session.execute(employee_msg_stmt)
+        last_employee_msg = employee_msg_result.scalar_one_or_none()
+        
+        # If employee never sent a message, check if client sent any
+        if not last_employee_msg:
+            client_msg_stmt = (
+                select(func.count(Message.id))
+                .where(
+                    and_(
+                        Message.ticket_id == ticket_id,
+                        Message.sender_type == SenderType.USER
+                    )
+                )
+            )
+            client_msg_result = await session.execute(client_msg_stmt)
+            unread_count = client_msg_result.scalar() or 0
+            return (unread_count > 0, unread_count)
+        
+        # Count client messages after last employee message
+        unread_stmt = (
+            select(func.count(Message.id))
+            .where(
+                and_(
+                    Message.ticket_id == ticket_id,
+                    Message.sender_type == SenderType.USER,
+                    Message.sent_at > last_employee_msg.sent_at
+                )
+            )
+        )
+        unread_result = await session.execute(unread_stmt)
+        unread_count = unread_result.scalar() or 0
+        
+        logger.debug(
+            f"Unread messages check: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, unread_count={unread_count}"
+        )
+        
+        return (unread_count > 0, unread_count)
+        
+    except Exception as e:
+        logger.error(
+            f"Error checking unread messages: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        # Return False on error to avoid blocking UI
+        return (False, 0)
+
+
+async def get_active_tickets_keyboard(
+    tickets: list[Ticket],
+    focused_ticket_id: int | None,
+    employee_id: int,
+    session: AsyncSession,
+    current_filter: str = "all",
+    current_page: int = 0
+) -> InlineKeyboardMarkup:
+    """
+    Generate inline keyboard for active tickets list with filters and pagination.
+    
+    Args:
+        tickets: List of active tickets (already filtered)
+        focused_ticket_id: ID of currently focused ticket (if any)
+        employee_id: Employee's Telegram user ID
+        session: Database session
+        current_filter: Current filter type ('all', 'invoice', 'technical_support', 'renewal')
+        current_page: Current page number (0-indexed)
+    
+    Returns:
+        InlineKeyboardMarkup with filters, ticket list, and pagination
+    
+    Requirements: Active Tickets Inline Keyboard with Filters
+    """
+    try:
+        from bots.tg_bot.callback_datas import TicketListCallback, TicketActionCallback
+        from database.models import TicketType
+        
+        buttons = []
+        
+        # Filter buttons row
+        filter_buttons = []
+        
+        # Invoice filter
+        invoice_text = "🟢 💰 Счёт" if current_filter == "invoice" else "💰 Счёт"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=invoice_text,
+                callback_data=TicketListCallback(
+                    action="filter",
+                    filter_type="invoice",
+                    page=0
+                ).pack()
+            )
+        )
+        
+        # Technical Support filter
+        ts_text = "🟢 🔧 ТП" if current_filter == "technical_support" else "🔧 ТП"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=ts_text,
+                callback_data=TicketListCallback(
+                    action="filter",
+                    filter_type="technical_support",
+                    page=0
+                ).pack()
+            )
+        )
+        
+        # Renewal filter
+        renewal_text = "🟢 🔄 Продление" if current_filter == "renewal" else "🔄 Продление"
+        filter_buttons.append(
+            InlineKeyboardButton(
+                text=renewal_text,
+                callback_data=TicketListCallback(
+                    action="filter",
+                    filter_type="renewal",
+                    page=0
+                ).pack()
+            )
+        )
+        
+        buttons.append(filter_buttons)
+        
+        # Pagination: 4 tickets per page
+        TICKETS_PER_PAGE = 4
+        start_idx = current_page * TICKETS_PER_PAGE
+        end_idx = start_idx + TICKETS_PER_PAGE
+        page_tickets = tickets[start_idx:end_idx]
+        
+        # Ticket type emoji mapping
+        ticket_type_emoji = {
+            TicketType.INVOICE: "💰",
+            TicketType.TECHNICAL_SUPPORT: "🔧",
+            TicketType.RENEWAL: "🔄"
+        }
+        
+        # Ticket buttons
+        for ticket in page_tickets:
+            # Check for unread messages
+            has_unread, unread_count = await has_unread_messages(
+                session, ticket.id, employee_id
+            )
+            
+            # Determine if this ticket is focused
+            is_focused = (focused_ticket_id == ticket.id)
+            
+            # Get status emoji
+            status_emoji = get_ticket_status_emoji(ticket, has_unread, is_focused)
+            
+            # Get ticket type emoji
+            type_emoji = ticket_type_emoji.get(ticket.ticket_type, "📋")
+            
+            # Get client name
+            client_name = ticket.user.full_name or ticket.user.first_name or "Неизвестно"
+            
+            # Format date
+            date_str = ticket.created_at.strftime("%d.%m.%Y")
+            
+            # Build ticket button text with type emoji
+            ticket_text = f"{type_emoji} {status_emoji} #{ticket.id} {client_name} ({date_str})"
+            
+            # Add unread count if applicable
+            if has_unread and unread_count > 0:
+                ticket_text += f" ({unread_count})"
+            
+            # Single button per row
+            buttons.append([
+                InlineKeyboardButton(
+                    text=ticket_text,
+                    callback_data=TicketListCallback(
+                        action="focus_ticket",
+                        ticket_id=ticket.id,
+                        filter_type=current_filter,
+                        page=current_page
+                    ).pack()
+                )
+            ])
+        
+        # Pagination buttons
+        total_pages = (len(tickets) + TICKETS_PER_PAGE - 1) // TICKETS_PER_PAGE
+        if total_pages > 1:
+            pagination_row = []
+            
+            if current_page > 0:
+                pagination_row.append(
+                    InlineKeyboardButton(
+                        text="◀️ Назад",
+                        callback_data=TicketListCallback(
+                            action="page",
+                            filter_type=current_filter,
+                            page=current_page - 1
+                        ).pack()
+                    )
+                )
+            
+            pagination_row.append(
+                InlineKeyboardButton(
+                    text=f"📄 {current_page + 1}/{total_pages}",
+                    callback_data="noop"
+                )
+            )
+            
+            if current_page < total_pages - 1:
+                pagination_row.append(
+                    InlineKeyboardButton(
+                        text="Вперёд ▶️",
+                        callback_data=TicketListCallback(
+                            action="page",
+                            filter_type=current_filter,
+                            page=current_page + 1
+                        ).pack()
+                    )
+                )
+            
+            buttons.append(pagination_row)
+        
+        # Add "Exit Focus" button if in focus mode
+        if focused_ticket_id:
+            buttons.append([
+                InlineKeyboardButton(
+                    text="❌ Снять фокус",
+                    callback_data=TicketActionCallback(
+                        action="exit_focus",
+                        ticket_id=focused_ticket_id
+                    ).pack()
+                )
+            ])
+        
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        logger.info(
+            f"Generated active tickets keyboard: "
+            f"tickets_count={len(tickets)}, filter={current_filter}, "
+            f"page={current_page}, focused_ticket_id={focused_ticket_id}"
+        )
+        
+        return keyboard
+        
+    except Exception as e:
+        logger.error(
+            f"Error generating active tickets keyboard: error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def format_active_tickets_header(
+    tickets_count: int,
+    focused_ticket_id: int | None,
+    current_filter: str = "all"
+) -> str:
+    """
+    Format header text for active tickets list.
+    
+    Args:
+        tickets_count: Number of active tickets (filtered)
+        focused_ticket_id: ID of currently focused ticket (if any)
+        current_filter: Current filter type ('all', 'invoice', 'technical_support', 'renewal')
+    
+    Returns:
+        Formatted header text
+    
+    Requirements: Active Tickets Inline Keyboard with Filters
+    """
+    filter_names = {
+        "all": "Все",
+        "invoice": "💰 Счёт",
+        "technical_support": "🔧 ТП",
+        "renewal": "🔄 Продление"
+    }
+    
+    filter_text = filter_names.get(current_filter, "Все")
+    
+    header_lines = [
+        f"📥 <b>Активные заявки</b>",
+        f"Фильтр: {filter_text} • Найдено: {tickets_count}",
+        ""
+    ]
+    
+    if focused_ticket_id:
+        header_lines.append(f"🎯 <b>В фокусе:</b> Заявка #{focused_ticket_id}")
+        header_lines.append("")
+    
+    header_lines.append("🔹 <b>Фильтры:</b> выберите тип заявок (повторное нажатие отключает)")
+    
+    if tickets_count > 0:
+        header_lines.append("🔹 <b>Заявки:</b> нажмите для входа в режим работы")
+    else:
+        header_lines.append("🔹 <i>Нет заявок выбранного типа</i>")
+    
+    return "\n".join(header_lines)
+
+
+# ========== Admin Panel - Employee Management ==========
+
+
+async def create_staff_member(
+    session: AsyncSession,
+    tg_user_id: int,
+    full_name: str,
+    position: str,
+    staff_role: StaffRole
+) -> Staff_Member:
+    """
+    Create new staff member record.
+    
+    Args:
+        session: Database session
+        tg_user_id: Telegram user ID
+        full_name: Employee full name
+        position: Employee signature text
+        staff_role: Employee role (MANAGER, TECHNICAL_SUPPORT, DUTY_ENGINEER, ADMINISTRATOR)
+    
+    Returns:
+        Created Staff_Member object
+    
+    Raises:
+        ValueError: If tg_user_id is already registered as active staff member
+    
+    Requirements: 2.7
+    """
+    try:
+        # Check if user is already registered as active staff member
+        existing_stmt = select(Staff_Member).where(
+            Staff_Member.tg_user_id == tg_user_id,
+            Staff_Member.is_active == True
+        )
+        existing_result = await session.execute(existing_stmt)
+        existing_staff = existing_result.scalar_one_or_none()
+        
+        if existing_staff:
+            raise ValueError(
+                f"Telegram ID {tg_user_id} is already registered as active staff member "
+                f"(ID: {existing_staff.id}, Name: {existing_staff.full_name})"
+            )
+        
+        # Create new staff member
+        new_staff = Staff_Member(
+            tg_user_id=tg_user_id,
+            full_name=full_name,
+            position=position,
+            staff_role=staff_role,
+            is_active=True
+        )
+        
+        session.add(new_staff)
+        await session.flush()  # Flush to get the ID
+        await session.refresh(new_staff)
+        
+        logger.info(
+            f"Created new staff member: id={new_staff.id}, tg_user_id={tg_user_id}, "
+            f"full_name={full_name}, role={staff_role.value}"
+        )
+        
+        return new_staff
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error creating staff member: tg_user_id={tg_user_id}, "
+            f"full_name={full_name}, role={staff_role.value}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+
+async def update_staff_signature(
+    session: AsyncSession,
+    employee_id: int,
+    new_signature: str
+) -> Staff_Member:
+    """
+    Update employee signature (position field).
+    
+    Args:
+        session: Database session
+        employee_id: Staff member internal ID
+        new_signature: New signature text
+    
+    Returns:
+        Updated Staff_Member object
+    
+    Raises:
+        ValueError: If employee not found
+    
+    Requirements: 4.2
+    """
+    try:
+        # Fetch employee
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+        
+        if not employee:
+            raise ValueError(f"Employee with ID {employee_id} not found")
+        
+        # Update signature
+        old_signature = employee.position
+        employee.position = new_signature
+        
+        await session.flush()
+        await session.refresh(employee)
+        
+        logger.info(
+            f"Updated staff signature: employee_id={employee_id}, "
+            f"old_signature='{old_signature}', new_signature='{new_signature}'"
+        )
+        
+        return employee
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error updating staff signature: employee_id={employee_id}, "
+            f"new_signature='{new_signature}', error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def update_staff_name(
+    session: AsyncSession,
+    employee_id: int,
+    new_name: str
+) -> Staff_Member:
+    """
+    Update employee name (full_name field).
+    
+    Args:
+        session: Database session
+        employee_id: Staff member internal ID
+        new_name: New full name
+    
+    Returns:
+        Updated Staff_Member object
+    
+    Raises:
+        ValueError: If employee not found
+    
+    Requirements: 4.2
+    """
+    try:
+        # Fetch employee
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+        
+        if not employee:
+            raise ValueError(f"Employee with ID {employee_id} not found")
+        
+        # Update name
+        old_name = employee.full_name
+        employee.full_name = new_name
+        
+        await session.flush()
+        await session.refresh(employee)
+        
+        logger.info(
+            f"Updated staff name: employee_id={employee_id}, "
+            f"old_name='{old_name}', new_name='{new_name}'"
+        )
+        
+        return employee
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error updating staff name: employee_id={employee_id}, "
+            f"new_name='{new_name}', error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def update_staff_role(
+    session: AsyncSession,
+    employee_id: int,
+    new_role: StaffRole
+) -> Staff_Member:
+    """
+    Update employee role.
+    
+    Args:
+        session: Database session
+        employee_id: Staff member internal ID
+        new_role: New staff role
+    
+    Returns:
+        Updated Staff_Member object
+    
+    Raises:
+        ValueError: If employee not found
+    
+    Requirements: 4.4
+    """
+    try:
+        # Fetch employee
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+        
+        if not employee:
+            raise ValueError(f"Employee with ID {employee_id} not found")
+        
+        # Update role
+        old_role = employee.staff_role
+        employee.staff_role = new_role
+        
+        await session.flush()
+        await session.refresh(employee)
+        
+        logger.info(
+            f"Updated staff role: employee_id={employee_id}, "
+            f"old_role={old_role.value}, new_role={new_role.value}"
+        )
+        
+        return employee
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error updating staff role: employee_id={employee_id}, "
+            f"new_role={new_role.value}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def deactivate_staff_member(
+    session: AsyncSession,
+    employee_id: int
+) -> tuple[Staff_Member, int]:
+    """
+    Deactivate staff member and reassign their tickets.
+    
+    Sets is_active to False and reassigns all active tickets to status NEW
+    with no assignee.
+    
+    Args:
+        session: Database session
+        employee_id: Staff member internal ID
+    
+    Returns:
+        Tuple of (deactivated_employee, reassigned_ticket_count)
+    
+    Raises:
+        ValueError: If employee not found
+    
+    Requirements: 5.2, 5.3
+    """
+    try:
+        # Fetch employee
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+        
+        if not employee:
+            raise ValueError(f"Employee with ID {employee_id} not found")
+        
+        # Deactivate employee
+        employee.is_active = False
+        
+        # Find all active tickets assigned to this employee
+        from database.models import Ticket, TicketStatus
+        
+        tickets_stmt = select(Ticket).where(
+            and_(
+                Ticket.assigned_staff_id == employee_id,
+                Ticket.ticket_status.in_([
+                    TicketStatus.NEW,
+                    TicketStatus.IN_PROGRESS,
+                    TicketStatus.WAITING_CLIENT
+                ])
+            )
+        )
+        tickets_result = await session.execute(tickets_stmt)
+        active_tickets = tickets_result.scalars().all()
+        
+        # Reassign all active tickets
+        reassigned_count = 0
+        for ticket in active_tickets:
+            ticket.ticket_status = TicketStatus.NEW
+            ticket.assigned_staff_id = None
+            reassigned_count += 1
+        
+        await session.flush()
+        await session.refresh(employee)
+        
+        logger.info(
+            f"Deactivated staff member: employee_id={employee_id}, "
+            f"full_name='{employee.full_name}', reassigned_tickets={reassigned_count}"
+        )
+        
+        return employee, reassigned_count
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error deactivating staff member: employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def set_backup_manager(
+    session: AsyncSession,
+    employee_id: int,
+    slot: int,
+    backup_id: int | None
+) -> Staff_Member:
+    """
+    Set or remove backup manager for slot 1 or 2.
+    
+    Args:
+        session: Database session
+        employee_id: Staff member internal ID
+        slot: Backup slot number (1 or 2)
+        backup_id: Backup manager's internal ID (None to remove)
+    
+    Returns:
+        Updated Staff_Member object
+    
+    Raises:
+        ValueError: If employee not found or invalid slot number
+    
+    Requirements: 6.4
+    """
+    try:
+        # Validate slot number
+        if slot not in [1, 2]:
+            raise ValueError(f"Invalid slot number: {slot}. Must be 1 or 2.")
+        
+        # Fetch employee
+        stmt = select(Staff_Member).where(Staff_Member.id == employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+        
+        if not employee:
+            raise ValueError(f"Employee with ID {employee_id} not found")
+        
+        # If backup_id is provided, validate it exists and is active
+        if backup_id is not None:
+            backup_stmt = select(Staff_Member).where(
+                Staff_Member.id == backup_id,
+                Staff_Member.is_active == True
+            )
+            backup_result = await session.execute(backup_stmt)
+            backup_manager = backup_result.scalar_one_or_none()
+            
+            if not backup_manager:
+                raise ValueError(
+                    f"Backup manager with ID {backup_id} not found or inactive"
+                )
+        
+        # Update the appropriate backup manager field
+        if slot == 1:
+            old_backup_id = employee.backup_manager_1_id
+            employee.backup_manager_1_id = backup_id
+        else:  # slot == 2
+            old_backup_id = employee.backup_manager_2_id
+            employee.backup_manager_2_id = backup_id
+        
+        await session.flush()
+        await session.refresh(employee)
+        
+        action = "removed" if backup_id is None else "assigned"
+        logger.info(
+            f"Backup manager {action} for slot {slot}: employee_id={employee_id}, "
+            f"old_backup_id={old_backup_id}, new_backup_id={backup_id}"
+        )
+        
+        return employee
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error setting backup manager: employee_id={employee_id}, "
+            f"slot={slot}, backup_id={backup_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+
+async def transfer_ticket(
+    session: AsyncSession,
+    ticket_id: int,
+    from_staff_id: int,
+    to_staff_id: int,
+    admin_id: int
+) -> Ticket:
+    """
+    Transfer ticket from one staff member to another.
+    
+    Updates the ticket's assigned_staff_id and logs the action.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID to transfer
+        from_staff_id: Current assigned staff member's internal ID
+        to_staff_id: New assigned staff member's internal ID
+        admin_id: Administrator's internal ID performing the transfer
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket or staff members not found
+    
+    Requirements: 7.3, 7.4, 7.5
+    """
+    try:
+        # Fetch ticket
+        ticket_stmt = select(Ticket).where(Ticket.id == ticket_id)
+        ticket_result = await session.execute(ticket_stmt)
+        ticket = ticket_result.scalar_one_or_none()
+        
+        if not ticket:
+            raise ValueError(f"Ticket with ID {ticket_id} not found")
+        
+        # Verify from_staff exists
+        from_staff_stmt = select(Staff_Member).where(Staff_Member.id == from_staff_id)
+        from_staff_result = await session.execute(from_staff_stmt)
+        from_staff = from_staff_result.scalar_one_or_none()
+        
+        if not from_staff:
+            raise ValueError(f"Source staff member with ID {from_staff_id} not found")
+        
+        # Verify to_staff exists and is active
+        to_staff_stmt = select(Staff_Member).where(
+            Staff_Member.id == to_staff_id,
+            Staff_Member.is_active == True
+        )
+        to_staff_result = await session.execute(to_staff_stmt)
+        to_staff = to_staff_result.scalar_one_or_none()
+        
+        if not to_staff:
+            raise ValueError(
+                f"Target staff member with ID {to_staff_id} not found or inactive"
+            )
+        
+        # Update ticket assignment
+        old_staff_id = ticket.assigned_staff_id
+        ticket.assigned_staff_id = to_staff_id
+        
+        await session.flush()
+        await session.refresh(ticket)
+        
+        # Log the transfer action
+        action_log = Action_Log(
+            action_type=ActionType.TICKET_ASSIGNED,
+            staff_id=admin_id,
+            ticket_id=ticket_id,
+            action_details={
+                "source_staff_id": from_staff.tg_user_id,
+                "target_staff_id": to_staff.tg_user_id,
+                "source_staff_name": from_staff.full_name,
+                "target_staff_name": to_staff.full_name,
+                "transferred_by_admin": True
+            }
+        )
+        session.add(action_log)
+        
+        await session.flush()
+        
+        logger.info(
+            f"Transferred ticket {ticket_id}: "
+            f"from_staff={from_staff.full_name} (id={from_staff_id}) → "
+            f"to_staff={to_staff.full_name} (id={to_staff_id}), "
+            f"admin_id={admin_id}"
+        )
+        
+        return ticket
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error transferring ticket: ticket_id={ticket_id}, "
+            f"from_staff_id={from_staff_id}, to_staff_id={to_staff_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def transfer_all_clients(
+    session: AsyncSession,
+    from_manager_id: int,
+    to_manager_id: int
+) -> int:
+    """
+    Transfer all clients from one manager to another via i-TAT API.
+    
+    This function sends an API request to update the assigned manager
+    for all INNs associated with the source manager.
+    
+    Args:
+        session: Database session
+        from_manager_id: Source manager's internal ID
+        to_manager_id: Target manager's internal ID
+    
+    Returns:
+        Count of transferred INNs
+    
+    Raises:
+        ValueError: If managers not found or invalid roles
+        Exception: If API request fails
+    
+    Requirements: 8.3
+    """
+    try:
+        # Fetch source manager
+        from_manager_stmt = select(Staff_Member).where(
+            Staff_Member.id == from_manager_id,
+            Staff_Member.is_active == True
+        )
+        from_manager_result = await session.execute(from_manager_stmt)
+        from_manager = from_manager_result.scalar_one_or_none()
+        
+        if not from_manager:
+            raise ValueError(
+                f"Source manager with ID {from_manager_id} not found or inactive"
+            )
+        
+        # Verify source is a manager
+        if from_manager.staff_role != StaffRole.MANAGER:
+            raise ValueError(
+                f"Source staff member (ID {from_manager_id}) is not a manager. "
+                f"Role: {from_manager.staff_role.value}"
+            )
+        
+        # Fetch target manager
+        to_manager_stmt = select(Staff_Member).where(
+            Staff_Member.id == to_manager_id,
+            Staff_Member.is_active == True
+        )
+        to_manager_result = await session.execute(to_manager_stmt)
+        to_manager = to_manager_result.scalar_one_or_none()
+        
+        if not to_manager:
+            raise ValueError(
+                f"Target manager with ID {to_manager_id} not found or inactive"
+            )
+        
+        # Verify target is a manager
+        if to_manager.staff_role != StaffRole.MANAGER:
+            raise ValueError(
+                f"Target staff member (ID {to_manager_id}) is not a manager. "
+                f"Role: {to_manager.staff_role.value}"
+            )
+        
+        # Get all unique INNs from tickets assigned to source manager
+        from database.models import Ticket
+        
+        inn_stmt = (
+            select(Ticket.organization_inn)
+            .where(
+                and_(
+                    Ticket.assigned_staff_id == from_manager_id,
+                    Ticket.organization_inn.isnot(None)
+                )
+            )
+            .distinct()
+        )
+        inn_result = await session.execute(inn_stmt)
+        inns = [row[0] for row in inn_result.all()]
+        
+        if not inns:
+            logger.info(
+                f"No clients (INNs) found for manager {from_manager.full_name} "
+                f"(id={from_manager_id})"
+            )
+            return 0
+        
+        logger.info(
+            f"Transferring {len(inns)} clients from {from_manager.full_name} "
+            f"to {to_manager.full_name}"
+        )
+        
+        # TODO: Implement i-TAT API call for client transfer
+        # For now, this is a placeholder that simulates the API call
+        # The actual API endpoint needs to be added to i_tat_service.py
+        
+        # Placeholder implementation:
+        # In a real implementation, this would call:
+        # from services.i_tat_service import get_itat_client
+        # client = get_itat_client()
+        # response = await client.transfer_clients(
+        #     from_manager_tg_id=from_manager.tg_user_id,
+        #     to_manager_tg_id=to_manager.tg_user_id,
+        #     inns=inns
+        # )
+        
+        # For now, we'll just log the operation
+        logger.warning(
+            f"Client transfer API not yet implemented. "
+            f"Would transfer {len(inns)} INNs from manager {from_manager.tg_user_id} "
+            f"to manager {to_manager.tg_user_id}"
+        )
+        
+        # Return the count of INNs that would be transferred
+        transferred_count = len(inns)
+        
+        logger.info(
+            f"Client transfer completed: "
+            f"from_manager={from_manager.full_name} (id={from_manager_id}), "
+            f"to_manager={to_manager.full_name} (id={to_manager_id}), "
+            f"transferred_count={transferred_count}"
+        )
+        
+        return transferred_count
+        
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error transferring clients: from_manager_id={from_manager_id}, "
+            f"to_manager_id={to_manager_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+
+async def format_archived_ticket_details(
+    ticket: Ticket,
+    session: AsyncSession
+) -> str:
+    """
+    Format full archived ticket details including client info and ticket details.
+    
+    Does NOT include message history (handled separately due to length).
+    
+    Args:
+        ticket: Ticket object to format
+        session: Database session
+    
+    Returns:
+        Formatted ticket details as string
+    """
+    try:
+        from database.models import File_Attachment, Staff_Member
+        
+        lines = [
+            f"📋 <b>АРХИВНАЯ ЗАЯВКА #{ticket.id}</b>",
+            ""
+        ]
+        
+        # Ticket type
+        ticket_type_map = {
+            TicketType.INVOICE: "💰 Счет",
+            TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
+            TicketType.RENEWAL: "🔄 Продление подписки"
+        }
+        ticket_type_str = ticket_type_map.get(ticket.ticket_type, str(ticket.ticket_type.value))
+        lines.append(f"<b>Тип:</b> {ticket_type_str}")
+        
+        # Status
+        status_map = {
+            TicketStatus.CLOSED: "✅ Закрыто",
+            TicketStatus.CANCELLED: "❌ Отменено"
+        }
+        status_str = status_map.get(ticket.ticket_status, str(ticket.ticket_status.value))
+        lines.append(f"<b>Статус:</b> {status_str}")
+        lines.append("")
+        
+        # Client information
+        lines.append("<b>👤 ИНФОРМАЦИЯ О КЛИЕНТЕ</b>")
+        client_name = ticket.user.full_name or ticket.user.first_name or "Неизвестно"
+        lines.append(f"Имя: {client_name}")
+        
+        if ticket.user.phone_number:
+            lines.append(f"Телефон: {ticket.user.phone_number}")
+        
+        if ticket.user.email:
+            lines.append(f"Email: {ticket.user.email}")
+        
+        lines.append(f"Telegram ID: {ticket.user.tg_user_id}")
+        lines.append("")
+        
+        # Organization info
+        if ticket.organization_inn:
+            lines.append("<b>🏢 ОРГАНИЗАЦИЯ</b>")
+            lines.append(f"ИНН: {ticket.organization_inn}")
+                        
+            lines.append("")
+        
+        # GS Keys
+        if ticket.gs_keys:
+            lines.append("<b>🔑 КЛЮЧИ ГС</b>")
+            for key in ticket.gs_keys:
+                lines.append(f"• {key.key_number}")
+            lines.append("")
+        
+        # Description
+        if ticket.description:
+            lines.append("<b>📝 ОПИСАНИЕ</b>")
+            lines.append(ticket.description)
+            lines.append("")
+        
+        # Assigned staff
+        if ticket.assigned_staff_id:
+            stmt = select(Staff_Member).where(Staff_Member.id == ticket.assigned_staff_id)
+            result = await session.execute(stmt)
+            staff = result.scalar_one_or_none()
+            
+            if staff:
+                lines.append(f"<b>👨‍💼 Исполнитель:</b> {staff.full_name}")
+                lines.append("")
+        
+        # Dates
+        lines.append("<b>📅 ДАТЫ</b>")
+        lines.append(f"Создано: {ticket.created_at.strftime('%d.%m.%Y %H:%M')}")
+        
+        if ticket.closed_at:
+            lines.append(f"Закрыто: {ticket.closed_at.strftime('%d.%m.%Y %H:%M')}")
+            
+            # Calculate duration
+            duration = ticket.closed_at - ticket.created_at
+            days = duration.days
+            hours = duration.seconds // 3600
+            minutes = (duration.seconds % 3600) // 60
+            
+            duration_parts = []
+            if days > 0:
+                duration_parts.append(f"{days}д")
+            if hours > 0:
+                duration_parts.append(f"{hours}ч")
+            if minutes > 0:
+                duration_parts.append(f"{minutes}м")
+            
+            duration_str = " ".join(duration_parts) if duration_parts else "< 1м"
+            lines.append(f"Длительность: {duration_str}")
+        
+        lines.append("")
+        
+        # File attachments
+        stmt = select(File_Attachment).where(File_Attachment.ticket_id == ticket.id)
+        result = await session.execute(stmt)
+        attachments = list(result.scalars().all())
+        
+        if attachments:
+            lines.append(f"<b>📎 ВЛОЖЕНИЯ ({len(attachments)})</b>")
+            for att in attachments[:5]:  # Show first 5
+                file_type = att.file_type.value if att.file_type else "unknown"
+                lines.append(f"• {att.file_name} ({file_type})")
+            
+            if len(attachments) > 5:
+                lines.append(f"... и еще {len(attachments) - 5}")
+            
+            lines.append("")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.error(
+            f"Error formatting archived ticket details: ticket_id={ticket.id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def format_ticket_message_history(
+    ticket: Ticket,
+    session: AsyncSession
+) -> str:
+    """
+    Format ticket message history as text.
+    
+    Args:
+        ticket: Ticket object
+        session: Database session
+    
+    Returns:
+        Formatted message history as string
+    """
+    try:
+        from database.models import Message, SenderType, Staff_Member
+        from sqlalchemy.orm import selectinload
+        
+        # Get all messages for this ticket with file attachments
+        stmt = (
+            select(Message)
+            .where(Message.ticket_id == ticket.id)
+            .options(selectinload(Message.file_attachments))
+            .order_by(Message.sent_at.asc())
+        )
+        result = await session.execute(stmt)
+        messages = list(result.scalars().all())
+        
+        if not messages:
+            return "История переписки пуста."
+        
+        lines = [
+            f"💬 ИСТОРИЯ ПЕРЕПИСКИ - Заявка #{ticket.id}",
+            f"Всего сообщений: {len(messages)}",
+            "=" * 50,
+            ""
+        ]
+        
+        for msg in messages:
+            # Format timestamp
+            timestamp = msg.sent_at.strftime("%d.%m.%Y %H:%M:%S")
+            
+            # Determine sender
+            if msg.sender_type == SenderType.USER:
+                sender_name = ticket.user.full_name or ticket.user.first_name or "Клиент"
+                sender_label = f"👤 {sender_name}"
+            elif msg.sender_type == SenderType.STAFF:
+                # Get staff member name by internal ID
+                if msg.sender_id:
+                    stmt = select(Staff_Member).where(Staff_Member.id == msg.sender_id)
+                    result = await session.execute(stmt)
+                    staff = result.scalar_one_or_none()
+                    
+                    if staff:
+                        sender_label = f"👨‍💼 {staff.full_name}"
+                    else:
+                        sender_label = "👨‍💼 Сотрудник"
+                else:
+                    sender_label = "👨‍💼 Сотрудник"
+            elif msg.sender_type == SenderType.SYSTEM:
+                sender_label = "🤖 Система"
+            else:
+                sender_label = "❓ Неизвестно"
+            
+            # Format message
+            lines.append(f"[{timestamp}] {sender_label}")
+            
+            if msg.message_text:
+                # Indent message text
+                message_lines = msg.message_text.split('\n')
+                for line in message_lines:
+                    lines.append(f"  {line}")
+            
+            # Check for file attachments
+            if msg.file_attachments:
+                for attachment in msg.file_attachments:
+                    file_type = attachment.file_type.value if attachment.file_type else "unknown"
+                    lines.append(f"  📎 [Вложение: {attachment.file_name} ({file_type})]")
+            
+            lines.append("")  # Empty line between messages
+        
+        lines.append("=" * 50)
+        lines.append(f"Конец истории переписки")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.error(
+            f"Error formatting ticket message history: ticket_id={ticket.id}, error={e}",
             exc_info=True
         )
         raise

@@ -1,0 +1,49 @@
+[Unit]
+Description=i-TAT Bot Celery Worker
+After=network.target postgresql.service redis.service
+Wants=postgresql.service redis.service
+
+[Service]
+Type=forking
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/i-tat-bot
+Environment="PATH=/opt/i-tat-bot/venv/bin"
+ExecStart=/opt/i-tat-bot/venv/bin/celery \
+    -A celery_app.celery_config \
+    worker \
+    --loglevel=info \
+    --pool=solo \
+    --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications \
+    --concurrency=4 \
+    --max-tasks-per-child=1000 \
+    --time-limit=300 \
+    --soft-time-limit=240 \
+    --pidfile=/var/run/celery/i-tat-worker.pid \
+    --logfile=/var/log/celery/i-tat-worker.log
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/i-tat-bot/media /opt/i-tat-bot/logs /var/run/celery /var/log/celery
+
+# Resource limits
+LimitNOFILE=65536
+TimeoutStartSec=60
+TimeoutStopSec=120
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=i-tat-celery-worker
+
+[Install]
+WantedBy=multi-user.target

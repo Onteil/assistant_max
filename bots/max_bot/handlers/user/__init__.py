@@ -10,19 +10,19 @@ Contains handlers for user-related functionality:
 
 from .cancel import cmd_cancel, handle_cancel_button
 from .commands import (
-    handle_invoice_button,
-    handle_profile_button,
-    handle_support_button,
-    help_command,
+    cmd_help,
+    cmd_cancel as cmd_cancel_command,
+    handle_main_menu,
+    handle_cancel_button as handle_cancel_button_command,
 )
 from .registration import cmd_start
 
 __all__ = [
     "cmd_cancel",
     "handle_cancel_button",
-    "handle_invoice_button",
-    "handle_profile_button",
-    "handle_support_button",
-    "help_command",
+    "cmd_help",
+    "cmd_cancel_command",
+    "handle_main_menu",
+    "handle_cancel_button_command",
     "cmd_start",
 ]

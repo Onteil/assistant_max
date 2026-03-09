@@ -85,7 +85,7 @@ class PermissionCheckMiddleware(BaseMiddleware):
             f"У вас нет прав для выполнения команды `/{command_name}`.\n\n"
             "Обратитесь к Главному администратору для получения доступа."
         )
-        await event.answer(rejection_text, parse_mode="Markdown")
+        await event.answer(rejection_text, parse_mode="HTML")
 
         # Прерываем дальнейшую обработку
         return

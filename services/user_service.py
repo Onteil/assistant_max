@@ -54,7 +54,7 @@ async def get_user_by_tg_id(session: AsyncSession, tg_user_id: int) -> User | No
         user = result.scalar_one_or_none()
         
         if user:
-            logger.debug(f"User found: tg_user_id={tg_user_id}")
+            logger.debug(f"User found: tg_user_id={tg_user_id}, user_id={user.id}")
         else:
             logger.debug(f"User not found: tg_user_id={tg_user_id}")
         
@@ -68,6 +68,185 @@ async def get_user_by_tg_id(session: AsyncSession, tg_user_id: int) -> User | No
         raise
 
 
+async def get_user_by_max_id(session: AsyncSession, max_user_id: int) -> User | None:
+    """
+    Retrieve user by MAX messenger ID.
+    
+    Args:
+        session: Database session
+        max_user_id: MAX messenger user ID
+    
+    Returns:
+        User object if found, None otherwise
+    
+    Raises:
+        SQLAlchemyError: If database operation fails
+    """
+    try:
+        result = await session.execute(
+            select(User).where(User.max_user_id == max_user_id)
+        )
+        user = result.scalar_one_or_none()
+        
+        if user:
+            logger.debug(f"User found: max_user_id={max_user_id}, user_id={user.id}")
+        else:
+            logger.debug(f"User not found: max_user_id={max_user_id}")
+        
+        return user
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error retrieving user: max_user_id={max_user_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
+    """
+    Retrieve user by internal user ID.
+    
+    Args:
+        session: Database session
+        user_id: Internal user ID (primary key)
+    
+    Returns:
+        User object if found, None otherwise
+    
+    Raises:
+        SQLAlchemyError: If database operation fails
+    """
+    try:
+        result = await session.execute(
+            select(User).where(User.id == user_id)
+        )
+        user = result.scalar_one_or_none()
+        
+        if user:
+            logger.debug(f"User found: user_id={user_id}")
+        else:
+            logger.debug(f"User not found: user_id={user_id}")
+        
+        return user
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error retrieving user: user_id={user_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def get_user_by_phone(session: AsyncSession, phone_number: str) -> User | None:
+    """
+    Retrieve user by phone number.
+    
+    Args:
+        session: Database session
+        phone_number: User's phone number
+    
+    Returns:
+        User object if found, None otherwise
+    
+    Raises:
+        SQLAlchemyError: If database operation fails
+    """
+    try:
+        result = await session.execute(
+            select(User).where(User.phone_number == phone_number)
+        )
+        user = result.scalar_one_or_none()
+        
+        if user:
+            logger.debug(f"User found by phone: phone={phone_number}, user_id={user.id}")
+        else:
+            logger.debug(f"User not found by phone: phone={phone_number}")
+        
+        return user
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error retrieving user by phone: phone={phone_number}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def upsert_max_messenger_data(
+    session: AsyncSession,
+    user_id: int,
+    max_user_id: int,
+    max_chat_id: int
+) -> None:
+    """
+    Create or update MAX messenger data for a user.
+    
+    This function ensures that MAX messenger data is always up-to-date
+    when a user interacts with the bot (e.g., /start command).
+    
+    Args:
+        session: Database session
+        user_id: Internal user ID
+        max_user_id: MAX user identifier
+        max_chat_id: MAX chat identifier for sending messages
+    
+    Raises:
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 15.3
+    """
+    try:
+        from database.models import MAX_Messenger_Data
+        
+        # Check if record exists
+        result = await session.execute(
+            select(MAX_Messenger_Data).where(MAX_Messenger_Data.user_id == user_id)
+        )
+        existing = result.scalar_one_or_none()
+        
+        if existing:
+            # Update existing record if chat_id changed
+            if existing.max_chat_id != max_chat_id or existing.max_user_id != max_user_id:
+                existing.max_user_id = max_user_id
+                existing.max_chat_id = max_chat_id
+                existing.updated_at = datetime.utcnow()
+                await session.flush()
+                
+                logger.info(
+                    f"MAX messenger data updated: user_id={user_id}, "
+                    f"max_user_id={max_user_id}, max_chat_id={max_chat_id}"
+                )
+            else:
+                logger.debug(
+                    f"MAX messenger data unchanged: user_id={user_id}, "
+                    f"max_user_id={max_user_id}, max_chat_id={max_chat_id}"
+                )
+        else:
+            # Create new record
+            max_data = MAX_Messenger_Data(
+                user_id=user_id,
+                max_user_id=max_user_id,
+                max_chat_id=max_chat_id
+            )
+            
+            session.add(max_data)
+            await session.flush()
+            
+            logger.info(
+                f"MAX messenger data created: user_id={user_id}, "
+                f"max_user_id={max_user_id}, max_chat_id={max_chat_id}"
+            )
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error upserting MAX messenger data: user_id={user_id}, "
+            f"max_user_id={max_user_id}, max_chat_id={max_chat_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
 async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
     """
     Create new user record with PENDING status.
@@ -75,7 +254,9 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
     Args:
         session: Database session
         user_data: Dictionary containing user fields:
-            - tg_user_id (int, required)
+            - tg_user_id (int, optional) - Telegram user ID
+            - max_user_id (int, optional) - MAX user ID
+            - max_chat_id (int, optional) - MAX chat ID (required if max_user_id provided)
             - phone_number (str, required)
             - full_name (str, required)
             - username (str, optional)
@@ -90,11 +271,12 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
         IntegrityError: If phone number already exists or constraint violated
         SQLAlchemyError: If database operation fails
     
-    Requirements: 1.5, 4.4
+    Requirements: 1.5, 4.4, 15.3
     """
     try:
         user = User(
-            tg_user_id=user_data["tg_user_id"],
+            tg_user_id=user_data.get("tg_user_id"),  # Can be None initially
+            max_user_id=user_data.get("max_user_id"),  # Can be None initially
             phone_number=user_data["phone_number"],
             full_name=user_data["full_name"],
             username=user_data.get("username"),
@@ -107,21 +289,80 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
         session.add(user)
         await session.flush()
         
+        # Create MAX messenger data if MAX user ID and chat ID provided
+        max_user_id = user_data.get("max_user_id")
+        max_chat_id = user_data.get("max_chat_id")
+        
+        if max_user_id and max_chat_id:
+            from database.models import MAX_Messenger_Data
+            from sqlalchemy import select
+            
+            # Check for orphaned max_messenger_data record before creating new one
+            # This prevents IntegrityError if orphaned record exists
+            result = await session.execute(
+                select(MAX_Messenger_Data).where(
+                    MAX_Messenger_Data.max_user_id == max_user_id
+                )
+            )
+            existing_max_data = result.scalar_one_or_none()
+            
+            if existing_max_data:
+                # Check if it's truly orphaned (user_id doesn't match our new user)
+                if existing_max_data.user_id != user.id:
+                    logger.warning(
+                        f"Found existing max_messenger_data for max_user_id={max_user_id}: "
+                        f"id={existing_max_data.id}, user_id={existing_max_data.user_id}. "
+                        f"Updating to new user_id={user.id}"
+                    )
+                    # Update existing record instead of creating new one
+                    existing_max_data.user_id = user.id
+                    existing_max_data.max_chat_id = max_chat_id
+                    await session.flush()
+                    
+                    logger.info(
+                        f"MAX messenger data updated: id={existing_max_data.id}, "
+                        f"user_id={user.id}, max_user_id={max_user_id}, max_chat_id={max_chat_id}"
+                    )
+                else:
+                    # Record already exists for this user, just update chat_id if needed
+                    if existing_max_data.max_chat_id != max_chat_id:
+                        existing_max_data.max_chat_id = max_chat_id
+                        await session.flush()
+                        logger.info(f"MAX messenger data chat_id updated: id={existing_max_data.id}")
+            else:
+                # No existing record, create new one
+                max_data = MAX_Messenger_Data(
+                    user_id=user.id,
+                    max_user_id=max_user_id,
+                    max_chat_id=max_chat_id
+                )
+                
+                session.add(max_data)
+                await session.flush()
+                
+                logger.info(
+                    f"MAX messenger data created: user_id={user.id}, "
+                    f"max_user_id={max_user_id}, max_chat_id={max_chat_id}"
+                )
+        
         # Log user registration action
         await _log_action(
             session=session,
             action_type=ActionType.USER_REGISTERED,
-            tg_user_id=user.tg_user_id,
+            user_id=user.id,
             action_details={
                 "phone_number": user.phone_number,
                 "full_name": user.full_name,
                 "registration_status": user.registration_status.value,
+                "tg_user_id": user.tg_user_id,
+                "max_user_id": user.max_user_id,
             }
         )
         
         logger.info(
-            f"User created: tg_user_id={user.tg_user_id}, "
-            f"phone={user.phone_number}, status={user.registration_status.value}"
+            f"User created: user_id={user.id}, tg_user_id={user.tg_user_id}, "
+            f"max_user_id={user.max_user_id}, phone={user.phone_number}, "
+            f"status={user.registration_status.value}"
         )
         
         return user
@@ -129,6 +370,7 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
     except IntegrityError as e:
         logger.error(
             f"Integrity error creating user: tg_user_id={user_data.get('tg_user_id')}, "
+            f"max_user_id={user_data.get('max_user_id')}, "
             f"phone={user_data.get('phone_number')}, error={e}",
             exc_info=True
         )
@@ -137,7 +379,7 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
     except SQLAlchemyError as e:
         logger.error(
             f"Database error creating user: tg_user_id={user_data.get('tg_user_id')}, "
-            f"error={e}",
+            f"max_user_id={user_data.get('max_user_id')}, error={e}",
             exc_info=True
         )
         raise
@@ -145,7 +387,7 @@ async def create_user(session: AsyncSession, user_data: dict[str, Any]) -> User:
 
 async def update_user_status(
     session: AsyncSession,
-    tg_user_id: int,
+    user_id: int,
     status: RegistrationStatus
 ) -> User:
     """
@@ -153,7 +395,7 @@ async def update_user_status(
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
+        user_id: Internal user ID (primary key)
         status: New registration status
     
     Returns:
@@ -166,10 +408,10 @@ async def update_user_status(
     Requirements: 5.1, 5.3
     """
     try:
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_id(session, user_id)
         
         if not user:
-            error_msg = f"User not found for status update: tg_user_id={tg_user_id}"
+            error_msg = f"User not found for status update: user_id={user_id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
         
@@ -179,7 +421,7 @@ async def update_user_status(
         await session.flush()
         
         logger.info(
-            f"User status updated: tg_user_id={tg_user_id}, "
+            f"User status updated: user_id={user_id}, "
             f"old_status={old_status.value}, new_status={status.value}"
         )
         
@@ -187,7 +429,7 @@ async def update_user_status(
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error updating user status: tg_user_id={tg_user_id}, "
+            f"Database error updating user status: user_id={user_id}, "
             f"status={status.value}, error={e}",
             exc_info=True
         )
@@ -199,14 +441,14 @@ async def update_user_status(
 
 async def get_user_organizations(
     session: AsyncSession,
-    tg_user_id: int
+    user_id: int
 ) -> list[Organization]:
     """
     Retrieve all organizations associated with user.
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
+        user_id: Internal user ID (primary key)
     
     Returns:
         List of Organization objects
@@ -219,25 +461,25 @@ async def get_user_organizations(
     try:
         result = await session.execute(
             select(User)
-            .where(User.tg_user_id == tg_user_id)
+            .where(User.id == user_id)
             .options(selectinload(User.organizations))
         )
         user = result.scalar_one_or_none()
         
         if not user:
-            logger.warning(f"User not found for organizations query: tg_user_id={tg_user_id}")
+            logger.warning(f"User not found for organizations query: user_id={user_id}")
             return []
         
         organizations = user.organizations
         logger.debug(
-            f"Retrieved {len(organizations)} organizations for user: tg_user_id={tg_user_id}"
+            f"Retrieved {len(organizations)} organizations for user: user_id={user_id}"
         )
         
         return organizations
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error retrieving user organizations: tg_user_id={tg_user_id}, "
+            f"Database error retrieving user organizations: user_id={user_id}, "
             f"error={e}",
             exc_info=True
         )
@@ -246,7 +488,7 @@ async def get_user_organizations(
 
 async def add_user_organization(
     session: AsyncSession,
-    tg_user_id: int,
+    user_id: int,
     inn: str
 ) -> Organization:
     """
@@ -257,7 +499,7 @@ async def add_user_organization(
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
+        user_id: Internal user ID (primary key)
         inn: Organization INN (10 or 12 digits)
     
     Returns:
@@ -272,9 +514,9 @@ async def add_user_organization(
     """
     try:
         # Verify user exists
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_id(session, user_id)
         if not user:
-            error_msg = f"User not found for organization addition: tg_user_id={tg_user_id}"
+            error_msg = f"User not found for organization addition: user_id={user_id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
         
@@ -293,7 +535,7 @@ async def add_user_organization(
         # Check if association already exists
         result = await session.execute(
             select(user_organizations).where(
-                user_organizations.c.tg_user_id == tg_user_id,
+                user_organizations.c.user_id == user_id,
                 user_organizations.c.organization_inn == inn
             )
         )
@@ -301,14 +543,14 @@ async def add_user_organization(
         
         if existing:
             logger.warning(
-                f"Organization association already exists: tg_user_id={tg_user_id}, inn={inn}"
+                f"Organization association already exists: user_id={user_id}, inn={inn}"
             )
             return organization
         
         # Create association
         await session.execute(
             user_organizations.insert().values(
-                tg_user_id=tg_user_id,
+                user_id=user_id,
                 organization_inn=inn,
                 added_at=datetime.utcnow()
             )
@@ -316,14 +558,14 @@ async def add_user_organization(
         await session.flush()
         
         logger.info(
-            f"Organization association created: tg_user_id={tg_user_id}, inn={inn}"
+            f"Organization association created: user_id={user_id}, inn={inn}"
         )
         
         return organization
     
     except IntegrityError as e:
         logger.error(
-            f"Integrity error adding user organization: tg_user_id={tg_user_id}, "
+            f"Integrity error adding user organization: user_id={user_id}, "
             f"inn={inn}, error={e}",
             exc_info=True
         )
@@ -331,7 +573,7 @@ async def add_user_organization(
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error adding user organization: tg_user_id={tg_user_id}, "
+            f"Database error adding user organization: user_id={user_id}, "
             f"inn={inn}, error={e}",
             exc_info=True
         )
@@ -341,13 +583,13 @@ async def add_user_organization(
 # ========== GS_Key Management ==========
 
 
-async def get_user_keys(session: AsyncSession, tg_user_id: int) -> list[GS_Key]:
+async def get_user_keys(session: AsyncSession, user_id: int) -> list[GS_Key]:
     """
     Retrieve all GS_Keys associated with user.
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
+        user_id: Internal user ID (primary key)
     
     Returns:
         List of GS_Key objects
@@ -360,20 +602,20 @@ async def get_user_keys(session: AsyncSession, tg_user_id: int) -> list[GS_Key]:
     try:
         result = await session.execute(
             select(GS_Key)
-            .where(GS_Key.tg_user_id == tg_user_id)
+            .where(GS_Key.user_id == user_id)
             .order_by(GS_Key.created_at.desc())
         )
         keys = result.scalars().all()
         
         logger.debug(
-            f"Retrieved {len(keys)} GS_Keys for user: tg_user_id={tg_user_id}"
+            f"Retrieved {len(keys)} GS_Keys for user: user_id={user_id}"
         )
         
         return list(keys)
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error retrieving user keys: tg_user_id={tg_user_id}, error={e}",
+            f"Database error retrieving user keys: user_id={user_id}, error={e}",
             exc_info=True
         )
         raise
@@ -381,7 +623,7 @@ async def get_user_keys(session: AsyncSession, tg_user_id: int) -> list[GS_Key]:
 
 async def add_user_key(
     session: AsyncSession,
-    tg_user_id: int,
+    user_id: int,
     key_number: str,
     conflict_status: KeyConflictStatus = KeyConflictStatus.NONE
 ) -> GS_Key:
@@ -390,7 +632,7 @@ async def add_user_key(
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
+        user_id: Internal user ID (primary key)
         key_number: GS_Key number (e.g., MG123456)
         conflict_status: Conflict status (default: NONE)
     
@@ -406,16 +648,16 @@ async def add_user_key(
     """
     try:
         # Verify user exists
-        user = await get_user_by_tg_id(session, tg_user_id)
+        user = await get_user_by_id(session, user_id)
         if not user:
-            error_msg = f"User not found for key addition: tg_user_id={tg_user_id}"
+            error_msg = f"User not found for key addition: user_id={user_id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
         
         # Create GS_Key record
         gs_key = GS_Key(
             key_number=key_number,
-            tg_user_id=tg_user_id,
+            user_id=user_id,
             conflict_status=conflict_status,
             conflict_reported_at=datetime.utcnow() if conflict_status == KeyConflictStatus.PENDING_REVIEW else None
         )
@@ -425,30 +667,41 @@ async def add_user_key(
         
         # Log key conflict if detected
         if conflict_status == KeyConflictStatus.PENDING_REVIEW:
+            # Get existing key owner to log in action details
+            stmt = select(GS_Key).where(GS_Key.key_number == key_number).where(GS_Key.id != gs_key.id)
+            result = await session.execute(stmt)
+            existing_key = result.scalar_one_or_none()
+            
+            action_details_dict = {
+                "key_number": key_number,
+                "conflict_status": conflict_status.value,
+                "conflict_reported_at": gs_key.conflict_reported_at.isoformat() if gs_key.conflict_reported_at else None,
+                "new_user_id": user_id  # Store new user ID for later retrieval
+            }
+            
+            if existing_key:
+                action_details_dict["existing_user_id"] = existing_key.user_id
+            
             await _log_action(
                 session=session,
                 action_type=ActionType.KEY_CONFLICT_DETECTED,
-                tg_user_id=tg_user_id,
-                action_details={
-                    "key_number": key_number,
-                    "conflict_status": conflict_status.value,
-                    "conflict_reported_at": gs_key.conflict_reported_at.isoformat() if gs_key.conflict_reported_at else None
-                }
+                user_id=user_id,
+                action_details=action_details_dict
             )
             logger.warning(
-                f"GS_Key created with conflict: tg_user_id={tg_user_id}, "
+                f"GS_Key created with conflict: user_id={user_id}, "
                 f"key_number={key_number}, conflict_status={conflict_status.value}"
             )
         else:
             logger.info(
-                f"GS_Key created: tg_user_id={tg_user_id}, key_number={key_number}"
+                f"GS_Key created: user_id={user_id}, key_number={key_number}"
             )
         
         return gs_key
     
     except IntegrityError as e:
         logger.error(
-            f"Integrity error adding user key: tg_user_id={tg_user_id}, "
+            f"Integrity error adding user key: user_id={user_id}, "
             f"key_number={key_number}, error={e}",
             exc_info=True
         )
@@ -456,7 +709,7 @@ async def add_user_key(
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error adding user key: tg_user_id={tg_user_id}, "
+            f"Database error adding user key: user_id={user_id}, "
             f"key_number={key_number}, error={e}",
             exc_info=True
         )
@@ -469,7 +722,7 @@ async def add_user_key(
 async def _log_action(
     session: AsyncSession,
     action_type: ActionType,
-    tg_user_id: int | None = None,
+    user_id: int | None = None,
     ticket_id: int | None = None,
     staff_id: int | None = None,
     action_details: dict[str, Any] | None = None
@@ -482,7 +735,7 @@ async def _log_action(
     Args:
         session: Database session
         action_type: Type of action being logged
-        tg_user_id: User ID (optional)
+        user_id: Internal user ID (optional)
         ticket_id: Ticket ID (optional)
         staff_id: Staff member ID (optional)
         action_details: Additional details as JSON (optional)
@@ -498,7 +751,7 @@ async def _log_action(
     try:
         action_log = Action_Log(
             action_type=action_type,
-            tg_user_id=tg_user_id,
+            user_id=user_id,
             ticket_id=ticket_id,
             staff_id=staff_id,
             action_details=action_details,
@@ -509,7 +762,7 @@ async def _log_action(
         await session.flush()
         
         logger.debug(
-            f"Action logged: type={action_type.value}, tg_user_id={tg_user_id}, "
+            f"Action logged: type={action_type.value}, user_id={user_id}, "
             f"ticket_id={ticket_id}"
         )
         
@@ -518,7 +771,7 @@ async def _log_action(
     except SQLAlchemyError as e:
         logger.error(
             f"Database error logging action: action_type={action_type.value}, "
-            f"tg_user_id={tg_user_id}, error={e}",
+            f"user_id={user_id}, error={e}",
             exc_info=True
         )
         raise

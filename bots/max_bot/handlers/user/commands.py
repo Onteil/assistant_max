@@ -1,129 +1,303 @@
 """
 Command Handlers for MAX Bot
 
-Handles bot commands and main menu button interactions.
-Migrated from Telegram bot to MAX messenger.
+Handles general commands and main menu routing:
+- /help command - Display help text with available commands
+- /cancel command - Clear FSM state and display cancellation message
+- Main menu button routing - Route button presses to appropriate handlers
 
-Pattern: Command handling
-- Use Command filter for commands
-- Always clear state when starting new flow
-- Use FSMContext for state management
-- Log important actions
+Migrated from Telegram bot to MAX messenger using maxapi.
+
+Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7
 """
 
 import logging
 
-from maxapi.types import Message
-from maxapi.context import FSMContext
+from maxapi import F
+from maxapi.context import MemoryContext
+from maxapi.types import MessageCreated
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.max_bot.texts import HELP_TEXT
+from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_keyboard
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+from bots.max_bot.texts import (
+    FLOW_CANCELLED,
+    HELP_TEXT,
+    MAIN_MENU,
+    MENU_INVOICE,
+    MENU_PROFILE,
+    MENU_RENEWAL,
+    MENU_SUPPORT,
+)
+from database.models import RegistrationStatus
+from services.user_service import get_user_by_max_id
 
 logger = logging.getLogger(__name__)
 
 
-async def help_command(message: Message, messenger_adapter):
-    """
-    Handler for /help command.
-    
-    Shows help information about bot usage.
-    Migrated from Telegram bot to MAX messenger.
-    Uses messenger_adapter for sending messages.
-    
-    Requirements: 9.1, 9.2, 9.7
-    """
-    chat_id = message.chat.chat_id
-    user_id = message.from_user.user_id
+# ========== /help Command Handler ==========
 
+
+async def cmd_help(
+    event: MessageCreated,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle /help command - display help text with available commands.
+    
+    Shows:
+    - Available commands (/start, /help, /cancel)
+    - Main bot functions (invoices, support, renewal, profile)
+    - Contact information
+    
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Includes commands_info marker for automatic command registration
+    
+    Args:
+        event: MessageCreated event from maxapi
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    commands_info: Показать справку и доступные команды
+    
+    Requirements: 5.1
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    
+    logger.info(f"User {max_user_id} requested help")
+    
     await messenger_adapter.send_message(
         chat_id=chat_id,
         text=HELP_TEXT,
-        keyboard=None,
         parse_mode="HTML"
     )
-    logger.info(f"User {user_id} requested help")
 
 
-# Main menu button handlers - delegate to specific handlers
+# ========== /my_id Command Handler ==========
 
-async def handle_invoice_button(
-    message: Message,
-    state: FSMContext,
-    session: AsyncSession,
-    messenger_adapter
-):
+
+async def cmd_my_id(
+    event: MessageCreated,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handle "Get Invoice" button from main menu.
+    Handle /my_id command - display user's MAX user ID.
     
-    Delegates to invoice handler's start_invoice_request.
-    Migrated from Telegram bot to MAX messenger.
+    Shows the user's MAX user ID which is needed for:
+    - Adding staff members to the system
+    - Troubleshooting and support
+    - Administrative operations
     
-    Requirements: 9.2, 9.7
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Includes commands_info marker for automatic command registration
+    
+    Args:
+        event: MessageCreated event from maxapi
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    commands_info: Узнать свой MAX ID для регистрации в системе
+    
+    Requirements: Employee Management
     """
-    # TODO: Import and delegate to invoice handler when migrated
-    # from .invoice import start_invoice_request
-    # await start_invoice_request(message, state, session, messenger_adapter)
-
-    chat_id = message.chat.chat_id
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    
+    logger.info(f"User {max_user_id} requested their MAX ID")
+    
+    # Format message with user ID
+    message_text = (
+        "🆔 <b>Ваш MAX ID</b>\n\n"
+        f"<code>{max_user_id}</code>\n\n"
+        "<i>Этот ID используется для добавления сотрудников в систему. "
+        "Скопируйте его и отправьте администратору.</i>"
+    )
+    
     await messenger_adapter.send_message(
         chat_id=chat_id,
-        text="💰 Функция получения счета будет доступна после миграции invoice handler",
-        keyboard=None,
+        text=message_text,
         parse_mode="HTML"
     )
-    logger.info(f"User {message.from_user.user_id} requested invoice (not yet migrated)")
 
 
-async def handle_support_button(
-    message: Message,
-    state: FSMContext,
+# ========== /cancel Command Handler ==========
+
+
+async def cmd_cancel(
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handle "Technical Support" button from main menu.
+    Handle /cancel command - clear FSM state and display cancellation message.
     
-    Delegates to support handler's start_support_request.
-    Migrated from Telegram bot to MAX messenger.
+    Works in all FSM states:
+    - Clears FSM state completely
+    - Returns user to main menu (if registered and active)
+    - Ensures no partial data is persisted
+    - Deletes any partially created records if applicable
     
-    Requirements: 9.2, 9.7
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Clears FSM state using context.clear()
+    - Retrieves current state using context.get_state()
+    - Includes commands_info marker for automatic command registration
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    commands_info: Отменить текущую операцию и вернуться в главное меню
+    
+    Requirements: 5.6, 1.16, 2.16, 3.18, 4.16
     """
-    # TODO: Import and delegate to support handler when migrated
-    # from .support import start_support_request
-    # await start_support_request(message, state, session, messenger_adapter)
-
-    chat_id = message.chat.chat_id
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="🆘 Функция техподдержки будет доступна после миграции support handler",
-        keyboard=None,
-        parse_mode="HTML"
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    
+    # Get current state for logging
+    current_state = await context.get_state()
+    
+    # Clear FSM state completely
+    await context.clear()
+    
+    logger.info(
+        f"User {max_user_id} cancelled operation, "
+        f"previous state: {current_state or 'None'}"
     )
-    logger.info(f"User {message.from_user.user_id} requested support (not yet migrated)")
+    
+    # Check if user is registered and active
+    try:
+        user = await get_user_by_max_id(session, max_user_id)
+        
+        if user and user.registration_status == RegistrationStatus.ACTIVE:
+            # Show main menu for active users
+            main_menu_keyboard = await get_main_menu_keyboard()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=FLOW_CANCELLED + "\n\n" + MAIN_MENU,
+                keyboard=main_menu_keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            # Just show cancellation message for non-active users
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=FLOW_CANCELLED + "\n\nИспользуйте /start для начала работы.",
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
+        logger.error(
+            f"Error in cancel handler for user {max_user_id}: {e}",
+            exc_info=True
+        )
+        # Fallback - just clear state and show cancellation
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=FLOW_CANCELLED,
+            parse_mode="HTML"
+        )
 
 
-async def handle_profile_button(
-    message: Message,
+# ========== Main Menu Button Routing ==========
+
+
+async def handle_main_menu(
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handle "My Profile" button from main menu.
+    Route main menu button presses to appropriate handlers.
     
-    Delegates to profile handler's show_profile.
-    Migrated from Telegram bot to MAX messenger.
+    Routes based on button text:
+    - "💰 Получить счет" → Invoice handler
+    - "🆘 Техподдержка" → Support handler
+    - "🔄 Продление" → Renewal handler
+    - "👤 Мой профиль" → Profile handler
     
-    Requirements: 9.2, 9.7
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 5.3, 5.4, 5.5, 5.6, 5.7
     """
-    # TODO: Import and delegate to profile handler when migrated
-    # from .profile import show_profile
-    # await show_profile(message, session, messenger_adapter)
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    message_text = event.message.body.text or ""
+    
+    logger.info(f"User {max_user_id} pressed main menu button: {message_text}")
+    
+    # Import handlers here to avoid circular imports
+    from bots.max_bot.handlers.tickets.invoice import cmd_invoice
+    from bots.max_bot.handlers.tickets.support import cmd_support
+    from bots.max_bot.handlers.user.profile import cmd_profile
+    
+    # Route to appropriate handler based on button text
+    if message_text == MENU_INVOICE:
+        # Route to invoice handler
+        await cmd_invoice(event, context, session, messenger_adapter)
+    
+    elif message_text == MENU_SUPPORT:
+        # Route to support handler
+        await cmd_support(event, context, session, messenger_adapter)
+    
+    elif message_text == MENU_RENEWAL:
+        # Route to renewal handler (part of support flow)
+        # Renewal is handled within support flow when subscription is expired
+        await cmd_support(event, context, session, messenger_adapter)
+    
+    elif message_text == MENU_PROFILE:
+        # Route to profile handler
+        await cmd_profile(event, context, session, messenger_adapter)
+    
+    else:
+        # Unknown button - log warning
+        logger.warning(
+            f"Unknown main menu button pressed by user {max_user_id}: {message_text}"
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="Неизвестная команда. Используйте /help для справки.",
+            parse_mode="HTML"
+        )
 
-    chat_id = message.chat.chat_id
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="👤 Функция профиля будет доступна после миграции profile handler",
-        keyboard=None,
-        parse_mode="HTML"
-    )
-    logger.info(f"User {message.from_user.user_id} requested profile (not yet migrated)")
+
+# ========== Cancel Button Handler ==========
+
+
+async def handle_cancel_button(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle cancel button press (text-based "❌ Отмена").
+    
+    Delegates to cmd_cancel for consistent behavior.
+    
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 5.6
+    """
+    await cmd_cancel(event, context, session, messenger_adapter)
+

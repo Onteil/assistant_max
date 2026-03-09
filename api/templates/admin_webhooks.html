@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель администратора - Тестирование вебхуков</title>
+    <link rel="stylesheet" href="/static/admin-webhooks.css">
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Панель администратора</h1>
+        
+        <div class="admin-nav">
+            <a href="/admin" class="nav-link" target="_blank">
+                <span class="nav-icon">🗄️</span>
+                <span class="nav-text">Панель SQLAdmin</span>
+            </a>
+            <a href="er-diagram" class="nav-link" target="_blank">
+                <span class="nav-icon">📊</span>
+                <span class="nav-text">ER Диаграмма</span>
+            </a>
+            <a href="database-enums" class="nav-link" target="_blank">
+                <span class="nav-icon">📋</span>
+                <span class="nav-text">Enum Типы</span>
+            </a>
+            <!-- <a href="generate-er-diagram" class="nav-link" target="_blank" title="Регенерировать из текущих моделей">
+                <span class="nav-icon">🔄</span>
+                <span class="nav-text">Обновить</span>
+            </a> -->
+        </div>
+        
+        <div class="info-section">
+            <h3>📡 Конфигурация системы</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Хост:</span>
+                    <code class="info-value">{{ WEBHOOK_HOST }}</code>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">MAX Webhook:</span>
+                    <code class="info-value">{{ WEBHOOK_HOST }}{{ WEBHOOK_PATH_MAX }}</code>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">API Prefix:</span>
+                    <code class="info-value">{{ API_PREFIX }}</code>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Webhooks Base:</span>
+                    <code class="info-value">{{ WEBHOOK_HOST }}{{ API_PREFIX }}/webhooks</code>
+                </div>
+            </div>
+            <div class="info-item" style="margin-bottom: 10px;">
+                <span class="info-label">API Key (X-API-Key):</span>
+                <div style="display: flex; gap: 10px; align-items: center;">
+                    <code class="info-value" id="api-key-display" style="flex: 1; cursor: pointer;" onclick="toggleApiKeyVisibility(event)">
+                        <span id="api-key-hidden">••••••••••••••••••••••••••••••••••••••••••••</span>
+                        <span id="api-key-visible" style="display: none;">mJNc4TQdzd5eVNh3ygtMvdcmggxCX58uK2kVNPr3CYI</span>
+                    </code>
+                    <button class="btn-copy" onclick="copyApiKey(event)">📋 Копировать</button>
+                    <button class="btn-copy" onclick="toggleApiKeyVisibility(event)" style="background: #2196f3;">👁️ Показать</button>
+                </div>
+            </div>
+            <div class="info-note">
+                ℹ️ Все вебхуки требуют заголовок <code>X-API-Key</code> для аутентификации
+            </div>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('webhooks', event)">Тестирование вебхуков</button>
+            <button class="tab" onclick="switchTab('api', event)">Тестирование API</button>
+        </div>
+        
+        <div id="webhooks-tab" class="tab-content active">
+        <div class="webhook-grid">
+            <!-- 1. Registration Status -->
+            <div class="webhook-card">
+                <h2>1. Статус регистрации</h2>
+                <div class="endpoint">POST /webhooks/registration_status</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Уведомление пользователя о результате проверки регистрации (одобрено/отклонено).
+                    <br><strong>Когда вызывать:</strong> После проверки данных пользователя в 1C/CRM системе. При одобрении назначается менеджер и устанавливается статус подписки.
+                </div>
+                <form id="form-registration" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Телефон</label>
+                        <input type="text" name="phone" placeholder="+79991234567" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Статус</label>
+                        <select name="status" required>
+                            <option value="approved">Одобрено</option>
+                            <option value="rejected">Отклонено</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Имя менеджера</label>
+                        <input type="text" name="manager_name" placeholder="Иван Иванов">
+                        <div class="small-text">Обязательно для статуса "Одобрено"</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Менеджер (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="manager_id" data-type="staff">
+                                <option value="">-- Выберите менеджера --</option>
+                            </select>
+                        </div>
+                        <div class="small-text">Обязательно для статуса "Одобрено"</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Статус подписки</label>
+                        <select name="subscription_status">
+                            <option value="">-- Не указано --</option>
+                            <option value="active">Активна</option>
+                            <option value="expired">Истекла</option>
+                            <option value="none">Отсутствует</option>
+                        </select>
+                        <div class="small-text">Опционально, по умолчанию определяется по support_expires_at</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Дата окончания поддержки</label>
+                        <input type="datetime-local" name="support_expires_at">
+                        <div class="small-text">Обязательно когда subscription_status = active</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Причина</label>
+                        <input type="text" name="reason">
+                        <div class="small-text">Обязательно для статуса "Отклонено"</div>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-registration">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-registration"></pre>
+                </div>
+                <div class="response" id="response-registration"></div>
+            </div>
+            
+            <!-- 2. User Update -->
+            <div class="webhook-card">
+                <h2>2. Обновление пользователя</h2>
+                <div class="endpoint">POST /webhooks/user_update</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Синхронизация данных пользователя из 1C/CRM (ФИО, email, подписка, ключи, организации).
+                    <br><strong>Когда вызывать:</strong> При изменении данных пользователя в CRM системе. Поддерживает добавление/удаление ключей и организаций.
+                </div>
+                <form id="form-user-update" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Телефон</label>
+                        <input type="text" name="phone" placeholder="+79991234567" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" name="email">
+                    </div>
+                    <div class="form-group">
+                        <label>ФИО</label>
+                        <input type="text" name="full_name">
+                    </div>
+                    <div class="form-group">
+                        <label>Дата окончания подписки</label>
+                        <input type="datetime-local" name="subscription_end_date">
+                    </div>
+                    <div class="form-group">
+                        <label>Статус подписки</label>
+                        <select name="subscription_status">
+                            <option value="">-- Не указано --</option>
+                            <option value="active">Активна</option>
+                            <option value="expired">Истекла</option>
+                            <option value="none">Отсутствует</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>GS Ключи (JSON массив) <button type="button" class="btn-example" onclick="fillGsKeysExample(event)">📋 Пример</button></label>
+                        <textarea name="gs_keys" placeholder='[{"key_number": "KEY123", "action": "add"}]'></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Организации (JSON массив) <button type="button" class="btn-example" onclick="fillOrganizationsExample(event)">📋 Пример</button></label>
+                        <textarea name="organizations" placeholder='[{"inn": "1234567890", "action": "add"}]'></textarea>
+                        <div class="small-text">organization_name не требуется - будет получено из i-TAT API</div>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-user-update">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-user-update"></pre>
+                </div>
+                <div class="response" id="response-user-update"></div>
+            </div>
+            
+            <!-- 3. Payment Confirmed (NPS) -->
+            <div class="webhook-card">
+                <h2>3. Подтверждение оплаты (NPS)</h2>
+                <div class="endpoint">POST /webhooks/payment_confirmed</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Запланировать отправку NPS опроса после оплаты (через 3 дня).
+                    <br><strong>Когда вызывать:</strong> После успешной оплаты пользователем. Опрос помогает оценить удовлетворенность клиентов.
+                </div>
+                <form id="form-payment" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Дата оплаты</label>
+                        <input type="datetime-local" name="payment_date" required>
+                    </div>
+                    <button type="submit" class="btn">Запланировать опрос (с задержкой)</button>
+                    <button type="button" class="btn" style="background: #4caf50; margin-top: 5px;" onclick="testNpsSurvey(event)">🧪 Тестовый опрос (отправить сейчас)</button>
+                </form>
+                <div class="request-preview" id="request-preview-payment">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-payment"></pre>
+                </div>
+                <div class="response" id="response-payment"></div>
+            </div>
+            
+            <!-- 3.1. Test Renewal Reminders -->
+            <div class="webhook-card">
+                <h2>3.1. Тест напоминаний о подписке</h2>
+                <div class="endpoint">POST /webhooks/test_renewal_reminder</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Тестирование напоминаний о продлении подписки (за 30 или 7 дней).
+                    <br><strong>Когда вызывать:</strong> Для проверки работы автоматических напоминаний о продлении подписки.
+                </div>
+                <form id="form-renewal-reminder" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                        <div class="small-text">У пользователя должна быть установлена subscription_end_date</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Тип напоминания</label>
+                        <select name="reminder_type" required>
+                            <option value="30">30 дней до истечения</option>
+                            <option value="7">7 дней до истечения</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn">🧪 Отправить тестовое напоминание</button>
+                </form>
+                <div class="request-preview" id="request-preview-renewal-reminder">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-renewal-reminder"></pre>
+                </div>
+                <div class="response" id="response-renewal-reminder"></div>
+            </div>
+            
+            <!-- 4. Key Conflict Resolution -->
+            <div class="webhook-card">
+                <h2>4. Разрешение конфликта ключей</h2>
+                <div class="endpoint">POST /webhooks/key_conflict_resolution</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Уведомление пользователей о решении по конфликту GS-ключа (передача или отклонение).
+                    <br><strong>Когда вызывать:</strong> После разрешения конфликта, когда один ключ пытаются зарегистрировать два пользователя.
+                </div>
+                <form id="form-key-conflict" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Новый пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="new_user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Старый пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="old_user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>GS Ключ</label>
+                        <input type="text" name="gs_key" placeholder="GS-12345-ABCDE" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Решение</label>
+                        <select name="resolution" required>
+                            <option value="transfer">Передать</option>
+                            <option value="reject">Отклонить</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Причина</label>
+                        <input type="text" name="reason">
+                    </div>
+                    <div class="form-group">
+                        <label>Разрешено сотрудником (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="resolved_by_staff_id" data-type="staff" required>
+                                <option value="">-- Выберите сотрудника --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-key-conflict">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-key-conflict"></pre>
+                </div>
+                <div class="response" id="response-key-conflict"></div>
+            </div>
+            
+            <!-- 5. Manager Assignment -->
+            <div class="webhook-card">
+                <h2>5. Назначение менеджера</h2>
+                <div class="endpoint">POST /webhooks/manager_assignment</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Уведомление пользователя о назначении персонального менеджера.
+                    <br><strong>Когда вызывать:</strong> При назначении или смене менеджера пользователя в CRM системе.
+                </div>
+                <form id="form-manager-assignment" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Телефон</label>
+                        <input type="text" name="phone" placeholder="+79991234567" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Менеджер (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="manager_id" data-type="staff" required>
+                                <option value="">-- Выберите менеджера --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Имя менеджера</label>
+                        <input type="text" name="manager_name" placeholder="Иван Иванов">
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" name="send_notification" id="send_notification">
+                        <label for="send_notification" style="margin: 0;">Отправить уведомление пользователю</label>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-manager-assignment">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-manager-assignment"></pre>
+                </div>
+                <div class="response" id="response-manager-assignment"></div>
+            </div>
+            
+            <!-- 6. Staff Update -->
+            <div class="webhook-card">
+                <h2>6. Обновление сотрудника</h2>
+                <div class="endpoint">POST /webhooks/staff_update</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Синхронизация данных сотрудника (ФИО, должность, статус, резервные менеджеры).
+                    <br><strong>Когда вызывать:</strong> При изменении данных сотрудника в CRM или кадровой системе.
+                </div>
+                <form id="form-staff-update" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Сотрудник (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="staff_id" data-type="staff" required>
+                                <option value="">-- Выберите сотрудника --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>ФИО</label>
+                        <input type="text" name="full_name" placeholder="Иван Петрович Иванов">
+                    </div>
+                    <div class="form-group">
+                        <label>Должность</label>
+                        <input type="text" name="position" placeholder="Старший специалист технической поддержки">
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" name="is_active" id="is_active" checked>
+                        <label for="is_active" style="margin: 0;">Активен</label>
+                    </div>
+                    <div class="form-group">
+                        <label>Резервные менеджеры (ID через запятую)</label>
+                        <input type="text" name="backup_managers" placeholder="666,777,888">
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-staff-update">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-staff-update"></pre>
+                </div>
+                <div class="response" id="response-staff-update"></div>
+            </div>
+            
+            <!-- 7. Ticket Status Update -->
+            <div class="webhook-card">
+                <h2>7. Обновление статуса тикета</h2>
+                <div class="endpoint">POST /webhooks/ticket_status_update</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Уведомление об изменении статуса тикета (в работе, ожидание клиента, закрыт).
+                    <br><strong>Когда вызывать:</strong> При изменении статуса тикета в системе поддержки.
+                </div>
+                <form id="form-ticket-status" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>ID тикета</label>
+                        <input type="text" name="ticket_id" placeholder="TKT_20260227_001" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Статус</label>
+                        <select name="status" required>
+                            <option value="in_progress">В работе</option>
+                            <option value="waiting_client">Ожидание клиента</option>
+                            <option value="closed">Закрыт</option>
+                            <option value="cancelled">Отменен</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Комментарий</label>
+                        <input type="text" name="comment">
+                    </div>
+                    <div class="form-group">
+                        <label>Закрыт сотрудником</label>
+                        <div class="select-with-search">
+                            <select name="closed_by_staff_id" data-type="staff">
+                                <option value="">-- Выберите сотрудника (опционально) --</option>
+                            </select>
+                        </div>
+                        <div class="small-text">Обязательно когда статус "Закрыт"</div>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-ticket-status">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-ticket-status"></pre>
+                </div>
+                <div class="response" id="response-ticket-status"></div>
+            </div>
+            
+            <!-- 8. Subscription Status Change -->
+            <div class="webhook-card">
+                <h2>8. Изменение статуса подписки</h2>
+                <div class="endpoint">POST /webhooks/subscription_status_change</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Уведомление об изменении статуса подписки (активна, истекла, отсутствует).
+                    <br><strong>Когда вызывать:</strong> При изменении статуса подписки в биллинговой системе.
+                </div>
+                <form id="form-subscription" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>Мессенджер</label>
+                        <select name="messenger" required disabled>
+                            <option value="max" selected>MAX</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Пользователь (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="user_id" data-type="user" required>
+                                <option value="">-- Выберите пользователя --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Статус подписки</label>
+                        <select name="subscription_status" required>
+                            <option value="active">Активна</option>
+                            <option value="expired">Истекла</option>
+                            <option value="none">Отсутствует</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Дата окончания подписки</label>
+                        <input type="datetime-local" name="subscription_end_date">
+                        <div class="small-text">Обязательно когда статус "Активна"</div>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-subscription">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-subscription"></pre>
+                </div>
+                <div class="response" id="response-subscription"></div>
+            </div>
+            
+            <!-- 9. Broadcast Campaign -->
+
+            
+            <!-- 10. Ticket Reassignment -->
+            <div class="webhook-card">
+                <h2>9. Переназначение тикетов</h2>
+                <div class="endpoint">POST /webhooks/ticket_reassignment</div>
+                <div class="webhook-description">
+                    <strong>Назначение:</strong> Массовое переназначение тикетов от одного сотрудника другому.
+                    <br><strong>Когда вызывать:</strong> При увольнении сотрудника, перераспределении нагрузки, отпуске.
+                </div>
+                <form id="form-ticket-reassignment" data-dynamic-selects="true">
+                    <div class="form-group">
+                        <label>От сотрудника (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="from_staff_id" data-type="staff" required>
+                                <option value="">-- Выберите сотрудника --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>К сотруднику (выберите для автозаполнения)</label>
+                        <div class="select-with-search">
+                            <select name="to_staff_id" data-type="staff" required>
+                                <option value="">-- Выберите сотрудника --</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" name="reassign_all" id="reassign_all" onchange="toggleTicketIdsField(event)">
+                        <label for="reassign_all" style="margin: 0;">✅ Передать все заявки от одного сотрудника к другому</label>
+                    </div>
+                    <div class="form-group" id="ticket-ids-group">
+                        <label>ID тикетов (через запятую)</label>
+                        <input type="text" name="ticket_ids" id="ticket_ids_input" placeholder="123,456,789" required>
+                        <div class="small-text">Введите конкретные ID тикетов через запятую</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Причина</label>
+                        <input type="text" name="reason" required>
+                    </div>
+                    <button type="submit" class="btn">Отправить запрос</button>
+                </form>
+                <div class="request-preview" id="request-preview-ticket-reassignment">
+                    <h4>📤 Запрос:</h4>
+                    <pre id="request-data-ticket-reassignment"></pre>
+                </div>
+                <div class="response" id="response-ticket-reassignment"></div>
+            </div>
+        </div>
+        </div>
+        
+        <div id="api-tab" class="tab-content">
+            <div class="webhook-grid">
+                <!-- Ticket History API -->
+                <div class="webhook-card">
+                    <h2>📋 История тикета API</h2>
+                    <div class="endpoint">GET /api/tickets/{{ticket_id}}/history</div>
+                    <form id="form-ticket-history">
+                        <div class="form-group">
+                            <label>ID тикета</label>
+                            <input type="number" name="ticket_id" placeholder="123" required>
+                            <div class="small-text">Введите числовой ID тикета</div>
+                        </div>
+                        <button type="submit" class="btn">Получить историю тикета</button>
+                    </form>
+                    <div class="response" id="response-ticket-history"></div>
+                </div>
+                
+                <!-- Escalation Test API -->
+                <div class="webhook-card">
+                    <h2>🔥 Тест эскалации API</h2>
+                    <div class="endpoint">POST /api/escalation/test</div>
+                    <form id="form-escalation-test">
+                        <div class="form-group">
+                            <label>ID тикета</label>
+                            <input type="number" name="ticket_id" placeholder="123" required>
+                            <div class="small-text">ID тикета для тестирования эскалации</div>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <input type="checkbox" name="force_escalation" id="force_escalation">
+                            <label for="force_escalation" style="margin: 0;">Принудительная эскалация</label>
+                        </div>
+                        <div class="small-text" style="margin-top: -10px; margin-bottom: 10px;">
+                            Если включено, эскалация будет создана даже если тикет не в статусе NEW
+                        </div>
+                        <button type="submit" class="btn">🧪 Тестировать эскалацию</button>
+                    </form>
+                    <div class="response" id="response-escalation-test"></div>
+                </div>
+                
+                <!-- Backup Manager Test API -->
+                <div class="webhook-card">
+                    <h2>🛡 Тест резервного менеджера API</h2>
+                    <div class="endpoint">POST /api/escalation/test-backup-reassignment</div>
+                    <form id="form-backup-manager-test">
+                        <div class="form-group">
+                            <label>ID тикета</label>
+                            <input type="number" name="ticket_id" placeholder="123" required>
+                            <div class="small-text">ID тикета для тестирования передачи резервному менеджеру</div>
+                        </div>
+                        <div class="form-group">
+                            <label>Целевой слот резервного менеджера</label>
+                            <select name="target_backup_slot">
+                                <option value="">Авто (первый доступный)</option>
+                                <option value="1">Резервный менеджер 1</option>
+                                <option value="2">Резервный менеджер 2</option>
+                            </select>
+                            <div class="small-text">Выберите конкретный слот или оставьте Авто</div>
+                        </div>
+                        <button type="submit" class="btn">🧪 Тестировать передачу резервному</button>
+                    </form>
+                    <div class="response" id="response-backup-manager-test"></div>
+                </div>
+                
+                <!-- Calendar Rules Management -->
+                <div class="webhook-card">
+                    <h2>📅 Рабочий график (режим работы)</h2>
+                    <div class="endpoint">GET /api/calendar/current-mode</div>
+                    <div class="form-group">
+                        <label>Текущий режим работы</label>
+                        <select name="work_mode" id="work_mode_display" disabled>
+                            <option value="">Загрузка...</option>
+                        </select>
+                        <div class="small-text">Текущий режим работы системы</div>
+                    </div>
+                    <button type="button" class="btn" style="background: #ff9800;" onclick="getCurrentWorkMode(event)">🕐 Проверить текущий режим работы</button>
+                    <div class="response" id="response-calendar-rule"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+
+    <!-- Configuration for JavaScript -->
+    <script>
+        window.WEBHOOK_CONFIG = {
+            HOST: '{{ WEBHOOK_HOST }}',
+            API_PREFIX: '{{ API_PREFIX }}',
+            API_KEY: '{{ API_KEY }}'
+        };
+    </script>
+    
+    <!-- Main JavaScript -->
+    <script src="/static/webhook-forms.js"></script>
+    <script src="/static/admin-webhooks.js"></script>
+</body>
+</html>

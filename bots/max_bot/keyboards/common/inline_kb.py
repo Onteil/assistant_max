@@ -17,7 +17,7 @@ Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7
 import math
 from typing import Optional
 
-from bots.max_bot.keyboards.keyboard_builder import (
+from bots.max_bot.keyboards.common.keyboard_builder import (
     KeyboardBuilder,
     create_confirmation_keyboard,
     create_navigation_keyboard,

@@ -11,10 +11,11 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import Action_Log, ActionType
+from database.models import Action_Log, ActionType, User
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ async def log_ticket_action(
         action_type: Type of action being logged
         ticket_id: Ticket ID
         action_details: Additional details as JSON (optional)
-        tg_user_id: User ID (optional)
+        tg_user_id: Telegram User ID (optional) - will be converted to user_id
         staff_id: Staff member ID (optional)
     
     Returns:
@@ -98,10 +99,19 @@ async def log_ticket_action(
     Requirements: 32.1, 32.2, 32.3, 32.4, 32.5
     """
     try:
+        # Convert tg_user_id to user_id if provided
+        user_id = None
+        if tg_user_id:
+            user_stmt = select(User).where(User.tg_user_id == tg_user_id)
+            user_result = await session.execute(user_stmt)
+            user = user_result.scalar_one_or_none()
+            if user:
+                user_id = user.id
+        
         action_log = Action_Log(
             action_type=action_type,
             ticket_id=ticket_id,
-            tg_user_id=tg_user_id,
+            user_id=user_id,
             staff_id=staff_id,
             action_details=action_details,
             action_timestamp=datetime.utcnow()
@@ -112,7 +122,7 @@ async def log_ticket_action(
         
         logger.info(
             f"Ticket action logged: type={action_type.value}, ticket={ticket_id}, "
-            f"user={tg_user_id}, staff={staff_id}, details={action_details}"
+            f"user={user_id}, staff={staff_id}, details={action_details}"
         )
         
         return action_log

@@ -4,7 +4,7 @@ from typing import Any
 from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from aiogram.types import TelegramObject
 
-from constants import get_session
+from constants import AsyncSessionLocal
 
 
 class DatabaseSessionMiddleware(BaseMiddleware):
@@ -15,10 +15,14 @@ class DatabaseSessionMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         # Создаем сессию и добавляем её в data
-        async with get_session() as session:
-            data["session"] = session
-            result = await handler(event, data)
-
-        # Закрываем сессию после выполнения хендлера
-        await session.close()
-        return result
+        async with AsyncSessionLocal() as session:
+            try:
+                data["session"] = session
+                result = await handler(event, data)
+                await session.commit()
+                return result
+            except Exception:
+                await session.rollback()
+                raise
+            finally:
+                await session.close()

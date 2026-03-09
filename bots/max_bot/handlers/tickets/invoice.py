@@ -1,66 +1,77 @@
-"""
+﻿"""
 Invoice Request Handler for MAX Bot
 
-Manages the invoice request conversation flow.
-Migrated from Telegram bot to MAX messenger using maxapi.
+Handles invoice request flow including:
+- /invoice command to initiate flow
+- Organization selection with pagination
+- Key selection with multi-select toggle
+- Description and delivery method collection
+- Invoice ticket creation and manager notification
 
-Requirements: 7.1-7.6, 8.1-8.6, 9.1-9.5, 10.1-10.8, 11.1-11.5, 9.3, 9.5, 9.6, 9.7, 9.8
+Requirements: 2.1-2.16
 """
 
 import logging
+from typing import Optional
 
-import httpx
-from maxapi import Bot
-from maxapi.context import FSMContext
-from maxapi.types import CallbackQuery, Message
+from maxapi import F
+from maxapi.context import MemoryContext
+from maxapi.types import MessageCallback, MessageCreated
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.max_bot.callback_datas import (
-    DeliveryCallback,
-    KeyCallback,
-    OrganizationCallback,
+from bots.max_bot.callback_datas import DeliveryCallback, KeyCallback, OrganizationCallback
+from bots.max_bot.payloads import (
+    OrganizationSelectPayload,
+    OrganizationPagePayload,
+    OrganizationActionPayload,
+    KeyTogglePayload,
+    KeyPagePayload,
+    KeyActionPayload,
+    DeliveryMethodPayload,
+    EmailConfirmPayload,
 )
-from bots.max_bot.keyboards.invoice_kb import (
-    get_delivery_method_keyboard,
+from bots.max_bot.keyboards.tickets.invoice_kb import (
+    get_delivery_keyboard,
+    get_description_input_keyboard,
+    get_email_confirm_keyboard,
+    get_email_input_keyboard,
+    get_invoice_confirmation_keyboard,
     get_key_selection_keyboard,
     get_organization_keyboard,
 )
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import InvoiceStates
 from bots.max_bot.texts import (
-    ADD_KEY_SUCCESS,
-    BTN_CANCEL,
+    ERROR_GENERAL,
     ERROR_TEXT_TOO_LONG,
     ERROR_VALIDATION_EMAIL,
     ERROR_VALIDATION_INN,
     ERROR_VALIDATION_KEY,
+    FLOW_CANCELLED,
     INVOICE_ADD_NEW_INN,
-    INVOICE_ADD_NEW_KEY,
+    INVOICE_CONFIRMATION,
+    INVOICE_CONFIRM_EMAIL,
     INVOICE_CREATED,
     INVOICE_ENTER_DESCRIPTION,
     INVOICE_ENTER_EMAIL,
     INVOICE_INN_ADDED,
+    INVOICE_KEY_ADDED,
     INVOICE_KEY_CONFLICT,
-    INVOICE_PROCESSING,
-    INVOICE_RESPONSE_TIME_EXTENDED,
     INVOICE_RESPONSE_TIME_NON_WORKING,
     INVOICE_RESPONSE_TIME_WORKING,
     INVOICE_SELECT_DELIVERY,
     INVOICE_SELECT_KEYS,
     INVOICE_SELECT_ORGANIZATION,
 )
-from database.models import DeliveryMethod, KeyConflictStatus, TicketType, WorkMode
+from database.models import DeliveryMethod, KeyConflictStatus, RegistrationStatus, TicketType
 from services.i_tat_service import get_itat_client
-from services.ticket_service import (
-    create_ticket,
-    determine_assigned_manager,
-    get_current_work_mode,
-    route_ticket,
-    send_staff_notification,
-)
+from services.ticket_service import create_ticket
 from services.user_service import (
     add_user_key,
     add_user_organization,
+    get_user_by_id,
+    get_user_by_max_id,
     get_user_keys,
     get_user_organizations,
 )
@@ -69,932 +80,2093 @@ from services.validation_service import validate_email, validate_gs_key, validat
 logger = logging.getLogger(__name__)
 
 
-# ========== Entry Point ==========
+# ========== /invoice Command Handler ==========
 
 
-async def start_invoice_request(
-    message: Message,
-    state: FSMContext,
+async def cmd_invoice(
+    event: MessageCreated | MessageCallback,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Entry point for invoice request.
+    Handle /invoice command or callback - initiate invoice request flow.
     
-    Displays organization selection with user's existing organizations.
-    Includes options to add new INN or skip organization selection.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
+    Displays organization selection with pagination (7 per page).
+    User can select existing organization, add new INN, or skip.
     
-    Requirements: 7.1, 7.2, 9.3, 9.5, 9.6, 9.7, 9.8
+    Args:
+        event: Message or callback event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    commands_info: Запросить счет на оплату
+    
+    Requirements: 2.1
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-
+    chat_id = event.message.recipient.chat_id
+    # Get user_id based on event type (MessageCreated uses sender, MessageCallback uses callback.user)
+    from maxapi.types import MessageCallback as MCType
+    if isinstance(event, MCType):
+        max_user_id = event.callback.user.user_id
+    else:
+        max_user_id = event.message.sender.user_id
+    
+    logger.info(f"User initiated invoice request: max_user_id={max_user_id}, chat_id={chat_id}")
+    
     try:
-        # Clear any existing state
-        await state.clear()
-
-        # Get user's organizations
-        organizations = await get_user_organizations(session, user_id)
-
-        # Set initial state
-        await state.set_state(InvoiceStates.selecting_organization)
-        await state.update_data(
-            selected_key_ids=set(),
-            current_page=0
+        # Get user from database
+        user = await get_user_by_max_id(session, max_user_id)
+        
+        if not user:
+            logger.error(f"User not found for invoice request: max_user_id={max_user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден. Пожалуйста, пройдите регистрацию командой /start",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Initialize FSM context
+        await context.update_data(
+            user_id=user.id,
+            selected_inn=None,
+            selected_keys=[],
+            description=None,
+            delivery_method=None,
+            delivery_email=None
         )
-
-        # Display organization selection
-        keyboard = await get_organization_keyboard(organizations, page=0)
-        await messenger_adapter.send_message(
+        
+        # Set FSM state
+        await context.set_state(InvoiceStates.selecting_organization)
+        
+        # Show organization selection
+        await show_organization_selection(
             chat_id=chat_id,
-            text=INVOICE_SELECT_ORGANIZATION,
-            keyboard=keyboard,
-            parse_mode="HTML"
+            user_id=user.id,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
         )
-
-        logger.info(
-            f"User {user_id} started invoice request, "
-            f"{len(organizations)} organizations available"
-        )
-
+    
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error starting invoice request for user {user_id}: {e}",
+            f"Database error in cmd_invoice: max_user_id={max_user_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при загрузке данных.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Unexpected error in cmd_invoice: max_user_id={max_user_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
 
-# ========== Organization Selection ==========
-
-
-async def process_organization_selection(
-    callback: CallbackQuery,
-    callback_data: OrganizationCallback,
-    state: FSMContext,
+async def show_organization_selection(
+    chat_id: int,
+    user_id: int,
+    page: int,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter,
+    message_id: Optional[int] = None
+) -> None:
     """
-    Handles organization selection from inline keyboard.
+    Display organization selection with pagination.
     
-    Supports:
-    - Selecting an organization
-    - Adding new INN
-    - Skipping organization selection
-    - Pagination
+    Shows user's existing organizations with inline keyboard.
+    Includes pagination (7 per page), add new, skip, and cancel buttons.
     
-    Migrated from Telegram bot to MAX messenger.
-    Uses callback.from_user.user_id and callback.message.chat.chat_id.
-    Uses maxapi's callback.answer() method.
+    Args:
+        chat_id: Chat ID for sending messages
+        user_id: Internal user ID (primary key)
+        page: Current page number (0-indexed)
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+        message_id: Optional message ID for editing (instead of sending new)
     
-    Requirements: 7.3, 7.4, 9.3, 9.5, 9.6, 9.7, 9.8
+    Requirements: 2.2, 2.3
     """
-    user_id = callback.from_user.user_id
-    action = callback_data.action
-
+    logger.info(f"Showing organization selection: user_id={user_id}, page={page}")
+    
     try:
-        if action == "select":
-            # Organization selected
-            inn = callback_data.inn
-            await state.update_data(organization_inn=inn)
-
-            # Move to key selection
-            await proceed_to_key_selection(callback, state, session, user_id, messenger_adapter)
-
-        elif action == "add_new":
-            # User wants to add new INN
-            await state.set_state(InvoiceStates.adding_new_inn)
+        # Get user organizations
+        organizations = await get_user_organizations(session, user_id)
+        
+        # Build keyboard
+        keyboard = get_organization_keyboard(organizations, page)
+        
+        # Send or edit message with keyboard
+        if message_id:
             await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
-                text=INVOICE_ADD_NEW_INN,
-                keyboard=None,
-                parse_mode="HTML"
-            )
-            await callback.answer()
-
-        elif action == "skip":
-            # Skip organization selection
-            await state.update_data(organization_inn=None)
-            await proceed_to_key_selection(callback, state, session, user_id, messenger_adapter)
-
-        elif action == "page":
-            # Pagination
-            page = callback_data.page
-            organizations = await get_user_organizations(session, user_id)
-            keyboard = await get_organization_keyboard(organizations, page=page)
-
-            await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
+                chat_id=chat_id,
+                message_id=message_id,
                 text=INVOICE_SELECT_ORGANIZATION,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
-            await callback.answer()
-
         else:
-            await callback.answer(text="❌ Неизвестное действие", show_alert=False)
-
-    except SQLAlchemyError as e:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_SELECT_ORGANIZATION,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
         logger.error(
-            f"Database error in organization selection for user {user_id}: {e}",
+            f"Error showing organization selection: user_id={user_id}, page={page}, error={e}",
             exc_info=True
         )
-        await callback.answer(text="❌ Произошла ошибка", show_alert=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
-async def proceed_to_key_selection(
-    callback: CallbackQuery,
-    state: FSMContext,
+# ========== Organization Callback Handlers ==========
+
+
+async def handle_organization_select_callback(
+    event: MessageCallback,
+    payload: OrganizationSelectPayload,
+    context: MemoryContext,
     session: AsyncSession,
-    user_id: int,
-    messenger_adapter
-):
-    """Helper to move to key selection step."""
-    await state.set_state(InvoiceStates.selecting_keys)
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization selection by INN.
+    
+    Stores the selected INN and proceeds to key selection.
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed organization selection payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.3
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Organization selected: chat_id={chat_id}, inn={payload.inn}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Store selected INN and proceed to key selection
+        await context.update_data(selected_inn=payload.inn)
+        await context.set_state(InvoiceStates.selecting_keys)
+        
+        # Show key selection
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling organization selection: inn={payload.inn}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
-    # Get user's keys
-    keys = await get_user_keys(session, user_id)
 
-    # Get selected key IDs from state
-    data = await state.get_data()
-    selected_key_ids = data.get("selected_key_ids", set())
+async def handle_organization_page_callback(
+    event: MessageCallback,
+    payload: OrganizationPagePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization list pagination.
+    
+    Navigates to a different page of organizations.
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed organization pagination payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.3
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Organization pagination: chat_id={chat_id}, page={payload.page}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Show organization selection for the requested page
+        await show_organization_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            page=payload.page,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling organization pagination: page={payload.page}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
-    # Display key selection
-    keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-    await messenger_adapter.edit_message(
-        chat_id=callback.message.chat.chat_id,
-        message_id=callback.message.message_id,
-        text=INVOICE_SELECT_KEYS,
-        keyboard=keyboard,
-        parse_mode="HTML"
-    )
-    await callback.answer()
+
+async def handle_organization_action_callback(
+    event: MessageCallback,
+    payload: OrganizationActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization-related actions (add_new, skip, cancel).
+    
+    Actions:
+    - add_new: Prompt for new INN input
+    - skip: Proceed to key selection without organization
+    - cancel: Cancel invoice flow
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed organization action payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.4, 2.5
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Organization action: chat_id={chat_id}, action={payload.action}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        if payload.action == "add_new":
+            # Prompt for new INN input
+            logger.info(f"User adding new INN: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.adding_new_inn)
+            
+            # Import cancel keyboard
+            from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ADD_NEW_INN,
+                keyboard=get_cancel_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "skip":
+            # Proceed to key selection without organization
+            logger.info(f"User skipped organization selection: user_id={user_id}")
+            
+            await context.update_data(selected_inn=None)
+            await context.set_state(InvoiceStates.selecting_keys)
+            
+            # Show key selection
+            await show_key_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                selected_keys=set(),
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter,
+                message_id=None
+            )
+        
+        elif payload.action == "cancel":
+            # Cancel invoice flow
+            logger.info(f"User cancelled invoice flow: user_id={user_id}")
+            await cancel_invoice_flow(event, context, session, messenger_adapter)
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling organization action: action={payload.action}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
 async def process_new_inn(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles new INN input during invoice request.
+    Process new INN input, validate, add to user organizations.
     
-    Validates format and adds organization to user's profile.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
+    Validates INN format (10 or 12 digits).
+    Adds organization to user profile.
+    Proceeds to key selection.
     
-    Requirements: 7.4, 7.5, 22.1-22.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.4, 2.5
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    inn = message.body.text.strip()
-
-    # Check for cancel
-    if inn == BTN_CANCEL:
-        # Return to organization selection
-        await state.set_state(InvoiceStates.selecting_organization)
-        organizations = await get_user_organizations(session, user_id)
-        keyboard = await get_organization_keyboard(organizations, page=0)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_SELECT_ORGANIZATION,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
-        return
-
-    # Validate INN
-    is_valid, error_message = validate_inn(inn)
-
+    chat_id = event.message.recipient.chat_id
+    inn = event.message.body.text.strip()
+    
+    logger.info(f"Processing new INN: chat_id={chat_id}, inn={inn}")
+    
+    # Validate INN format
+    is_valid, error_msg = validate_inn(inn)
+    
     if not is_valid:
+        logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_INN.format(error_details=error_message),
-            keyboard=None,
+            text=f"{ERROR_VALIDATION_INN}\n\n{error_msg}",
             parse_mode="HTML"
         )
-        logger.warning(f"User {user_id} provided invalid INN: {inn}")
         return
-
-    # Add organization
+    
     try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Add organization to user profile
         await add_user_organization(session, user_id, inn)
         await session.commit()
-
-        # Store in state
-        await state.update_data(organization_inn=inn)
-
-        # Show success and move to key selection
+        
+        logger.info(f"Organization added: user_id={user_id}, inn={inn}")
+        
+        # Store INN in context
+        await context.update_data(selected_inn=inn)
+        
+        # Transition to key selection state
+        await context.set_state(InvoiceStates.selecting_keys)
+        
+        # Show key selection
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=INVOICE_INN_ADDED,
-            keyboard=None,
             parse_mode="HTML"
         )
-
-        await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, user_id)
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-
-        keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-        await messenger_adapter.send_message(
+        
+        await show_key_selection(
             chat_id=chat_id,
-            text=INVOICE_SELECT_KEYS,
-            keyboard=keyboard,
-            parse_mode="HTML"
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
         )
-
-        logger.info(f"User {user_id} added new INN: {inn}")
-
-    except IntegrityError:
-        # INN already exists - this is fine, just use it
-        await session.rollback()
-        await state.update_data(organization_inn=inn)
-
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_INN_ADDED,
-            keyboard=None,
-            parse_mode="HTML"
-        )
-
-        await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, user_id)
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-
-        keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_SELECT_KEYS,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
-
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(
-            f"Database error adding INN for user {user_id}: {e}",
+    
+    except IntegrityError as e:
+        logger.warning(
+            f"Organization already exists: user_id={user_id}, inn={inn}, error={e}",
             exc_info=True
         )
+        await session.rollback()
+        # Continue anyway - organization already associated
+        await context.update_data(selected_inn=inn)
+        await context.set_state(InvoiceStates.selecting_keys)
+        
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при добавлении организации.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=INVOICE_INN_ADDED,
+            parse_mode="HTML"
+        )
+        
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error adding organization: user_id={user_id}, inn={inn}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
 
-# ========== Key Selection ==========
+# ========== Key Selection Handlers ==========
 
 
-async def process_key_selection(
-    callback: CallbackQuery,
-    callback_data: KeyCallback,
-    state: FSMContext,
+async def show_key_selection(
+    chat_id: int,
+    user_id: int,
+    selected_keys: set[int],
+    page: int,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter,
+    message_id: Optional[int] = None
+) -> None:
     """
-    Handles GS_Key multi-select with toggle functionality.
+    Display key selection with multi-select toggle and pagination.
     
-    Supports:
-    - Toggling key selection (add/remove from selected set)
-    - Adding new key
-    - Completing selection (Done)
-    - Pagination
+    Shows user's GS_Keys with checkmarks for selected items.
+    Prevents selection of PENDING_REVIEW keys with warning.
     
-    Migrated from Telegram bot to MAX messenger.
-    Uses callback.from_user.user_id and callback.message.chat.chat_id.
+    Args:
+        chat_id: Chat ID for sending messages
+        user_id: Internal user ID (primary key)
+        selected_keys: Set of selected key IDs
+        page: Current page number (0-indexed)
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+        message_id: Optional message ID for editing (instead of sending new)
     
-    Requirements: 8.2, 8.3, 8.4, 9.3, 9.5, 9.6, 9.7, 9.8
+    Requirements: 2.6, 2.7, 2.8
     """
-    user_id = callback.from_user.user_id
-    action = callback_data.action
-
+    logger.info(f"Showing key selection: user_id={user_id}, page={page}, selected={len(selected_keys)}")
+    
     try:
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-
-        if action == "toggle":
-            # Toggle key selection
-            key_id = callback_data.key_id
-
-            if key_id in selected_key_ids:
-                selected_key_ids.remove(key_id)
-            else:
-                selected_key_ids.add(key_id)
-
-            await state.update_data(selected_key_ids=selected_key_ids)
-
-            # Update keyboard
-            keys = await get_user_keys(session, user_id)
-            keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-
+        # Get user keys
+        keys = await get_user_keys(session, user_id)
+        
+        # Build keyboard
+        keyboard = get_key_selection_keyboard(keys, selected_keys, page)
+        
+        # Send or edit message
+        if message_id:
             await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
+                chat_id=chat_id,
+                message_id=message_id,
                 text=INVOICE_SELECT_KEYS,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
-            await callback.answer()
-
-        elif action == "add_new":
-            # User wants to add new key
-            await state.set_state(InvoiceStates.adding_new_key)
-            await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
-                text=INVOICE_ADD_NEW_KEY,
-                keyboard=None,
-                parse_mode="HTML"
-            )
-            await callback.answer()
-
-        elif action == "done":
-            # Complete key selection
-            if not selected_key_ids:
-                await callback.answer(
-                    text="⚠️ Выберите хотя бы один ключ",
-                    show_alert=True
-                )
-                return
-
-            # Move to description input
-            await state.set_state(InvoiceStates.entering_description)
-            await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
-                text=INVOICE_ENTER_DESCRIPTION,
-                keyboard=None,
-                parse_mode="HTML"
-            )
-            await callback.answer()
-
-        elif action == "page":
-            # Pagination
-            page = callback_data.page
-            keys = await get_user_keys(session, user_id)
-            keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=page)
-
-            await messenger_adapter.edit_message(
-                chat_id=callback.message.chat.chat_id,
-                message_id=callback.message.message_id,
-                text=INVOICE_SELECT_KEYS,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-            await callback.answer()
-
         else:
-            await callback.answer(text="❌ Неизвестное действие", show_alert=False)
-
-    except SQLAlchemyError as e:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_SELECT_KEYS,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
         logger.error(
-            f"Database error in key selection for user {user_id}: {e}",
+            f"Error showing key selection: user_id={user_id}, page={page}, error={e}",
             exc_info=True
         )
-        await callback.answer(text="❌ Произошла ошибка", show_alert=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_key_toggle_callback(
+    event: MessageCallback,
+    payload: KeyTogglePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle key toggle callback (select/deselect a key).
+    
+    Updates the selection state and refreshes the keyboard.
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed key toggle payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.6
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Key toggle: chat_id={chat_id}, key_id={payload.key_id}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        selected_keys = set(data.get("selected_keys", []))
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Get key to check conflict status
+        keys = await get_user_keys(session, user_id)
+        key = next((k for k in keys if k.id == payload.key_id), None)
+        
+        if not key:
+            logger.error(f"Key not found: key_id={payload.key_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            return
+        
+        # Prevent selection of PENDING_REVIEW keys
+        if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
+            logger.warning(f"Attempted to select PENDING_REVIEW key: key_id={payload.key_id}")
+            return
+        
+        # Toggle selection
+        if payload.key_id in selected_keys:
+            selected_keys.remove(payload.key_id)
+            logger.info(f"Key deselected: key_id={payload.key_id}")
+        else:
+            selected_keys.add(payload.key_id)
+            logger.info(f"Key selected: key_id={payload.key_id}")
+        
+        # Update context
+        await context.update_data(selected_keys=list(selected_keys))
+        
+        # Refresh keyboard
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=selected_keys,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling key toggle: key_id={payload.key_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_key_page_callback(
+    event: MessageCallback,
+    payload: KeyPagePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle key list pagination.
+    
+    Navigates to a different page of keys.
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed key pagination payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.6
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Key pagination: chat_id={chat_id}, page={payload.page}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        selected_keys = set(data.get("selected_keys", []))
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Show key selection for the requested page
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=selected_keys,
+            page=payload.page,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling key pagination: page={payload.page}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_key_action_callback(
+    event: MessageCallback,
+    payload: KeyActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle key-related actions (add_new, done, skip, back, back_to_keys, skip_description, cancel).
+    
+    Actions:
+    - add_new: Prompt for new key input
+    - done: Proceed to description with selected keys
+    - skip: Proceed to description without keys
+    - back: Return to organization selection
+    - back_to_keys: Return to key selection (from description input)
+    - skip_description: Skip description and proceed to delivery selection
+    - cancel: Cancel invoice flow
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed key action payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.7, 2.8, 2.9
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Key action: chat_id={chat_id}, action={payload.action}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        selected_keys = set(data.get("selected_keys", []))
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        if payload.action == "add_new":
+            # Prompt for new key input
+            logger.info(f"User adding new key: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.adding_new_key)
+            
+            # Import cancel keyboard
+            from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="🔑 Введите новый ключ Гранд-сметы (формат: 00001_00011):",
+                keyboard=get_cancel_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "done":
+            # Proceed to description with selected keys
+            logger.info(f"User completed key selection: user_id={user_id}, keys={len(selected_keys)}")
+            
+            await context.set_state(InvoiceStates.entering_description)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ENTER_DESCRIPTION,
+                keyboard=get_description_input_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "skip":
+            # Proceed to description without keys
+            logger.info(f"User skipped key selection: user_id={user_id}")
+            
+            await context.update_data(selected_keys=[])
+            await context.set_state(InvoiceStates.entering_description)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ENTER_DESCRIPTION,
+                keyboard=get_description_input_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "back":
+            # Return to organization selection
+            logger.info(f"User returned to organization selection: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.selecting_organization)
+            
+            await show_organization_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter,
+                message_id=None
+            )
+        
+        elif payload.action == "back_to_keys":
+            # Return to key selection (from description input)
+            logger.info(f"User returned to key selection: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.selecting_keys)
+            
+            await show_key_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                selected_keys=selected_keys,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter,
+                message_id=None
+            )
+        
+        elif payload.action == "skip_description":
+            # Skip description and proceed to delivery selection
+            logger.info(f"User skipped description: user_id={user_id}")
+            
+            await context.update_data(description="Без описания")
+            await context.set_state(InvoiceStates.selecting_delivery)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_SELECT_DELIVERY,
+                keyboard=get_delivery_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "cancel":
+            # Cancel invoice flow
+            logger.info(f"User cancelled invoice flow: user_id={user_id}")
+            await cancel_invoice_flow(event, context, session, messenger_adapter)
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling key action: action={payload.action}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def cancel_add_new_inn(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle cancel button when user is adding a new INN.
+    
+    Returns user to organization selection screen.
+    
+    Args:
+        event: Callback event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.4
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"User cancelled adding new INN: chat_id={chat_id}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Return to organization selection state
+        await context.set_state(InvoiceStates.selecting_organization)
+        
+        # Show organization selection
+        await show_organization_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error cancelling add new INN: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def cancel_add_new_key(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle cancel button when user is adding a new key.
+    
+    Returns user to key selection screen with current selections preserved.
+    
+    Args:
+        event: Callback event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.9
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"User cancelled adding new key: chat_id={chat_id}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        selected_keys = set(data.get("selected_keys", []))
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Return to key selection state
+        await context.set_state(InvoiceStates.selecting_keys)
+        
+        # Show key selection with current selections
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=selected_keys,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error cancelling add new key: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
 async def process_new_key(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles new GS_Key input during invoice request.
+    Process new key input, validate format, check conflicts.
     
-    Validates format, checks for conflicts via API, and adds key to user's profile.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
+    Validates GS_Key format (XXXXX_XXXXX).
+    Checks for key conflicts via i-TAT API.
+    Adds key to user profile.
+    Returns to key selection.
     
-    Requirements: 8.4, 18.3, 23.1-23.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.9
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    key_input = message.body.text.strip()
-
-    # Check for cancel
-    if key_input == BTN_CANCEL:
-        # Return to key selection
-        await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, user_id)
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-
-        keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_SELECT_KEYS,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
-        return
-
-    # Validate key format
-    is_valid, result = validate_gs_key(key_input)
-
+    chat_id = event.message.recipient.chat_id
+    key_number = event.message.body.text.strip()
+    
+    logger.info(f"Processing new key: chat_id={chat_id}, key={key_number}")
+    
+    # Validate GS_Key format
+    is_valid, result = validate_gs_key(key_number)
+    
     if not is_valid:
+        logger.warning(f"Invalid GS_Key: key={key_number}, error={result}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_KEY.format(error_details=result),
-            keyboard=None,
+            text=f"{ERROR_VALIDATION_KEY}\n\n{result}",
             parse_mode="HTML"
         )
-        logger.warning(f"User {user_id} provided invalid key format: {key_input}")
         return
-
+    
     normalized_key = result
-
-    # Check for conflict via API
-    api_client = get_itat_client()
-    conflict_detected = False
-
+    
     try:
-        conflict_response = await api_client.check_key_conflict(
-            grand_key=normalized_key,
-            telegram_id=user_id
-        )
-
-        if conflict_response.get("status") == "conflict":
-            conflict_detected = True
-            logger.warning(
-                f"Key conflict detected for user {user_id}: "
-                f"key={normalized_key}"
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
             )
-
-    except httpx.HTTPStatusError as e:
-        # HTTP error from API - log and continue with graceful degradation
-        logger.error(
-            f"API HTTP error checking key conflict for user {user_id}: "
-            f"status={e.response.status_code}, error={e}",
-            exc_info=True
+            await context.clear()
+            return
+        
+        # Check for key conflicts via i-TAT API
+        itat_client = get_itat_client()
+        conflict_response = await itat_client.check_key_conflict(
+            grand_key=normalized_key,
+            user_id=user_id
         )
-        # Continue without conflict check (graceful degradation)
-
-    except (httpx.TimeoutException, httpx.ConnectError) as e:
-        # Network/timeout error - log and continue with graceful degradation
-        logger.error(
-            f"API connection error checking key conflict for user {user_id}: {e}",
-            exc_info=True
-        )
-        # Continue without conflict check (graceful degradation)
-
-    except Exception as e:
-        logger.error(
-            f"Unexpected error checking key conflict for user {user_id}: {e}",
-            exc_info=True
-        )
-        # Continue without conflict check (graceful degradation)
-
-    # Add key to user's profile
-    try:
-        conflict_status = (
-            KeyConflictStatus.PENDING_REVIEW if conflict_detected
-            else KeyConflictStatus.NONE
-        )
-
-        gs_key = await add_user_key(
-            session,
-            user_id,
-            normalized_key,
-            conflict_status
-        )
+        
+        logger.info(f"Key conflict check result: {conflict_response}")
+        
+        conflict_status = KeyConflictStatus.NONE
+        if conflict_response.get("status") == "conflict":
+            conflict_status = KeyConflictStatus.PENDING_REVIEW
+            owner_info = conflict_response.get("owner", "Неизвестный владелец")
+            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
+        
+        # Add key to user profile
+        await add_user_key(session, user_id, normalized_key, conflict_status)
         await session.commit()
-
-        # Show appropriate message
-        if conflict_detected:
+        
+        logger.info(f"GS_Key added: user_id={user_id}, key={normalized_key}, conflict={conflict_status.value}")
+        
+        # Return to key selection state
+        await context.set_state(InvoiceStates.selecting_keys)
+        
+        # Show confirmation
+        if conflict_status == KeyConflictStatus.PENDING_REVIEW:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=INVOICE_KEY_CONFLICT,
-                keyboard=None,
                 parse_mode="HTML"
             )
         else:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADD_KEY_SUCCESS.format(key_number=normalized_key),
-                keyboard=None,
+                text=INVOICE_KEY_ADDED,
                 parse_mode="HTML"
             )
-
-        # Return to key selection with new key selected
-        await state.set_state(InvoiceStates.selecting_keys)
-
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-        selected_key_ids.add(gs_key.id)
-        await state.update_data(selected_key_ids=selected_key_ids)
-
-        keys = await get_user_keys(session, user_id)
-        keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-
-        await messenger_adapter.send_message(
+        
+        # Show key selection again
+        selected_keys = set(data.get("selected_keys", []))
+        await show_key_selection(
             chat_id=chat_id,
-            text=INVOICE_SELECT_KEYS,
-            keyboard=keyboard,
-            parse_mode="HTML"
+            user_id=user_id,
+            selected_keys=selected_keys,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
         )
-
-        logger.info(
-            f"User {user_id} added new key: {normalized_key}, "
-            f"conflict={conflict_detected}"
-        )
-
-    except IntegrityError:
-        # Key already exists - this is fine
-        await session.rollback()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="⚠️ Этот ключ уже добавлен в ваш профиль.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-
-        # Return to key selection
-        await state.set_state(InvoiceStates.selecting_keys)
-        keys = await get_user_keys(session, user_id)
-        data = await state.get_data()
-        selected_key_ids = data.get("selected_key_ids", set())
-
-        keyboard = await get_key_selection_keyboard(keys, selected_key_ids, page=0)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_SELECT_KEYS,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
-
-    except SQLAlchemyError as e:
-        await session.rollback()
+    
+    except Exception as e:
         logger.error(
-            f"Database error adding key for user {user_id}: {e}",
+            f"Error processing new key: key={key_number}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+# ========== Description and Delivery Handlers ==========
+
+
+async def process_description(
+    event: MessageCreated,
+    context: MemoryContext,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process invoice description, validate length, proceed to delivery.
+    
+    Validates description length (max 1000 characters).
+    Stores description in FSM context.
+    Displays delivery method selection keyboard.
+    
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.10, 2.11
+    """
+    chat_id = event.message.recipient.chat_id
+    description = event.message.body.text.strip()
+    
+    logger.info(f"Processing description: chat_id={chat_id}, length={len(description)}")
+    
+    # Validate description length
+    if len(description) > 1000:
+        logger.warning(f"Description too long: length={len(description)}")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"{ERROR_TEXT_TOO_LONG}\n\nМаксимальная длина описания: 1000 символов. Ваше описание: {len(description)} символов.",
+            keyboard=get_description_input_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        # Store description in context
+        await context.update_data(description=description)
+        
+        # Transition to delivery selection state
+        await context.set_state(InvoiceStates.selecting_delivery)
+        
+        # Display delivery method selection
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=INVOICE_SELECT_DELIVERY,
+            keyboard=get_delivery_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error processing description: chat_id={chat_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при добавлении ключа.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
 
-# ========== Description Input ==========
-
-
-async def process_description(
-    message: Message,
-    state: FSMContext,
-    messenger_adapter
-):
-    """
-    Handles invoice description text input.
-    
-    Validates length (max 1000 characters) and stores in FSM.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
-    
-    Requirements: 9.1, 9.2, 9.3, 9.5, 9.6, 9.7, 9.8
-    """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    description = message.body.text.strip()
-
-    # Check for cancel
-    if description == BTN_CANCEL:
-        await state.clear()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Запрос счета отменен.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.info(f"User {user_id} cancelled invoice request at description step")
-        return
-
-    # Validate length
-    max_length = 1000
-    if len(description) > max_length:
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=ERROR_TEXT_TOO_LONG.format(
-                max_length=max_length,
-                actual_length=len(description)
-            ),
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.warning(
-            f"User {user_id} provided too long description: "
-            f"{len(description)} chars"
-        )
-        return
-
-    # Store description
-    await state.update_data(description=description)
-
-    # Move to delivery method selection
-    await state.set_state(InvoiceStates.selecting_delivery)
-
-    keyboard = await get_delivery_method_keyboard()
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=INVOICE_SELECT_DELIVERY,
-        keyboard=keyboard,
-        parse_mode="HTML"
-    )
-
-    logger.info(f"User {user_id} provided invoice description")
-
-
-# ========== Delivery Method Selection ==========
-
-
-async def process_delivery_method(
-    callback: CallbackQuery,
-    callback_data: DeliveryCallback,
-    state: FSMContext,
+async def handle_delivery_callback(
+    event: MessageCallback,
+    payload: DeliveryMethodPayload,
+    context: MemoryContext,
     session: AsyncSession,
-    bot: Bot,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles delivery method selection (Telegram/Email).
+    Handle delivery method selection and confirmation callbacks.
     
-    If Email selected, prompts for email address.
-    If Telegram selected, proceeds to create ticket.
-    Migrated from Telegram bot to MAX messenger.
-    Uses callback.from_user.user_id and callback.message.chat.chat_id.
+    Delivery methods:
+    - telegram: Proceed to confirmation
+    - email: Prompt for email address
+    - back: Return to description input
+    - back_to_delivery: Return to delivery selection (from email input)
+    - cancel: Cancel invoice flow
     
-    Requirements: 9.3, 9.4, 9.5, 9.6, 9.7, 9.8
+    Confirmation methods:
+    - confirm: Create invoice ticket
+    - restart: Return to organization selection
+    - cancel: Cancel invoice flow
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed delivery method payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.11, 2.12, 2.13, 2.14, 2.15
     """
-    method = callback_data.method
-    user_id = callback.from_user.user_id
-    chat_id = callback.message.chat.chat_id
-
-    if method == "telegram":
-        # Telegram delivery - proceed to create ticket
-        await state.update_data(
-            delivery_method=DeliveryMethod.TELEGRAM,
-            delivery_email=None
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Delivery callback: chat_id={chat_id}, method={payload.method}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Handle delivery method selection
+        if payload.method == "telegram":
+            # Store delivery method and proceed to confirmation
+            logger.info(f"Telegram delivery selected: user_id={user_id}")
+            
+            await context.update_data(
+                delivery_method=DeliveryMethod.TELEGRAM,
+                delivery_email=None
+            )
+            
+            # Show confirmation
+            await show_invoice_confirmation(chat_id, context, session, messenger_adapter)
+        
+        elif payload.method == "email":
+            # Check if user has registered email
+            logger.info(f"Email delivery selected: user_id={user_id}")
+            
+            # Get user from database to check for registered email
+            user = await get_user_by_max_id(session, user_id_from_callback)
+            
+            if not user:
+                logger.error(f"User not found: max_user_id={user_id_from_callback}")
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=ERROR_GENERAL,
+                    parse_mode="HTML"
+                )
+                await context.clear()
+                return
+            
+            await context.update_data(delivery_method=DeliveryMethod.EMAIL)
+            
+            # If user has registered email, ask for confirmation
+            if user.email:
+                logger.info(f"User has registered email: {user.email}")
+                await context.set_state(InvoiceStates.confirming_email)
+                
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=INVOICE_CONFIRM_EMAIL.format(email=user.email),
+                    keyboard=get_email_confirm_keyboard(),
+                    parse_mode="HTML"
+                )
+            else:
+                # No registered email, prompt for input
+                logger.info(f"User has no registered email, prompting for input")
+                await context.set_state(InvoiceStates.entering_email)
+                
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=INVOICE_ENTER_EMAIL,
+                    keyboard=get_email_input_keyboard(),
+                    parse_mode="HTML"
+                )
+        
+        elif payload.method == "back":
+            # Return to description input
+            logger.info(f"User returned to description: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.entering_description)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ENTER_DESCRIPTION,
+                keyboard=get_description_input_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.method == "back_to_delivery":
+            # Return to delivery selection (from email input)
+            logger.info(f"User returned to delivery selection: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.selecting_delivery)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_SELECT_DELIVERY,
+                keyboard=get_delivery_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        # Handle confirmation callbacks
+        elif payload.method == "confirm":
+            # Create invoice ticket
+            logger.info(f"User confirmed invoice: user_id={user_id}")
+            await create_invoice_ticket(context, session, messenger_adapter, chat_id, user_id)
+        
+        elif payload.method == "restart":
+            # Return to organization selection
+            logger.info(f"User restarting invoice flow: user_id={user_id}")
+            
+            # Reset context data
+            await context.update_data(
+                selected_inn=None,
+                selected_keys=[],
+                description=None,
+                delivery_method=None,
+                delivery_email=None
+            )
+            
+            await context.set_state(InvoiceStates.selecting_organization)
+            
+            await show_organization_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter,
+                message_id=None
+            )
+        
+        elif payload.method == "cancel":
+            # Cancel invoice flow
+            logger.info(f"User cancelled invoice flow: user_id={user_id}")
+            await cancel_invoice_flow(event, context, session, messenger_adapter)
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling delivery callback: method={payload.method}, error={e}",
+            exc_info=True
         )
-
-        await messenger_adapter.edit_message(
+        await messenger_adapter.send_message(
             chat_id=chat_id,
-            message_id=callback.message.message_id,
-            text="⏳ Создаем заявку...",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
-        await callback.answer()
 
-        # Create ticket
-        await create_invoice_ticket(callback.message, state, session, bot, user_id, messenger_adapter)
 
-    elif method == "email":
-        # Email delivery - prompt for email
-        await state.set_state(InvoiceStates.entering_email)
-        await state.update_data(delivery_method=DeliveryMethod.EMAIL)
-
-        await messenger_adapter.edit_message(
+async def handle_email_confirm_callback(
+    event: MessageCallback,
+    payload: EmailConfirmPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle email confirmation callback.
+    
+    Actions:
+    - use_registered: Use email from registration, proceed to confirmation
+    - enter_new: Prompt for new email address
+    - cancel: Cancel invoice flow
+    
+    Args:
+        event: Callback event from MAX
+        payload: Parsed email confirmation payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.12
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Email confirm callback: chat_id={chat_id}, action={payload.action}, message_id={message_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        if payload.action == "use_registered":
+            # Use registered email
+            logger.info(f"User confirmed registered email: user_id={user_id}")
+            
+            # Get user from database
+            user = await get_user_by_max_id(session, user_id_from_callback)
+            
+            if not user or not user.email:
+                logger.error(f"User or email not found: max_user_id={user_id_from_callback}")
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=ERROR_GENERAL,
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Store email in context
+            await context.update_data(delivery_email=user.email)
+            
+            # Show confirmation
+            await show_invoice_confirmation(chat_id, context, session, messenger_adapter)
+        
+        elif payload.action == "enter_new":
+            # Prompt for new email
+            logger.info(f"User wants to enter new email: user_id={user_id}")
+            
+            await context.set_state(InvoiceStates.entering_email)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ENTER_EMAIL,
+                keyboard=get_email_input_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "cancel":
+            # Cancel invoice flow
+            logger.info(f"User cancelled invoice flow: user_id={user_id}")
+            await cancel_invoice_flow(event, context, session, messenger_adapter)
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling email confirm callback: action={payload.action}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
             chat_id=chat_id,
-            message_id=callback.message.message_id,
-            text=INVOICE_ENTER_EMAIL,
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
-        await callback.answer()
-
-    else:
-        await callback.answer(text="❌ Неизвестный способ доставки", show_alert=False)
 
 
 async def process_email(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    bot: Bot,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles email address input for email delivery.
+    Process email input, validate format, proceed to confirmation.
     
-    Validates email format and proceeds to create ticket.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
+    Validates email format.
+    Stores email in FSM context.
+    Displays invoice confirmation.
     
-    Requirements: 9.4, 24.1-24.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.12
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    email = message.body.text.strip()
-
-    # Check for cancel
-    if email == BTN_CANCEL:
-        await state.clear()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Запрос счета отменен.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.info(f"User {user_id} cancelled invoice request at email step")
-        return
-
-    # Validate email
-    is_valid, error_message = validate_email(email)
-
+    chat_id = event.message.recipient.chat_id
+    email = event.message.body.text.strip()
+    
+    logger.info(f"Processing email: chat_id={chat_id}, email={email}")
+    
+    # Validate email format
+    is_valid, error_msg = validate_email(email)
+    
     if not is_valid:
+        logger.warning(f"Invalid email: email={email}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_EMAIL.format(error_details=error_message),
-            keyboard=None,
+            text=f"{ERROR_VALIDATION_EMAIL}\n\n{error_msg}",
+            keyboard=get_email_input_keyboard(),
             parse_mode="HTML"
         )
-        logger.warning(f"User {user_id} provided invalid email: {email}")
         return
-
-    # Store email
-    await state.update_data(delivery_email=email)
-
-    # Show processing message
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=INVOICE_PROCESSING,
-        keyboard=None,
-        parse_mode="HTML"
-    )
-
-    # Create ticket
-    await create_invoice_ticket(message, state, session, bot, user_id, messenger_adapter)
-
-
-# ========== Ticket Creation ==========
-
-
-async def create_invoice_ticket(
-    message: Message,
-    state: FSMContext,
-    session: AsyncSession,
-    bot: Bot,
-    user_id: int,
-    messenger_adapter
-):
-    """
-    Creates invoice ticket with all collected data.
     
-    Determines assigned manager, creates ticket record with associations,
-    routes based on work mode, and sends notification to manager.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.chat.chat_id.
-    
-    Requirements: 10.1-10.8, 11.1-11.5, 9.3, 9.5, 9.6, 9.7, 9.8
-    """
-    chat_id = message.chat.chat_id
-
     try:
-        # Get all data from FSM
-        data = await state.get_data()
-        organization_inn = data.get("organization_inn")
-        selected_key_ids = list(data.get("selected_key_ids", set()))
+        # Get user from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        max_user_id = event.message.sender.user_id
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Get user from database
+        user = await get_user_by_max_id(session, max_user_id)
+        
+        if not user:
+            logger.error(f"User not found: max_user_id={max_user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            return
+        
+        # Store email in context
+        await context.update_data(delivery_email=email)
+        
+        # Save email to database if user doesn't have one
+        if not user.email:
+            logger.info(f"Saving email to database: user_id={user.id}, email={email}")
+            user.email = email
+            await session.commit()
+            logger.info(f"Email saved successfully: user_id={user.id}")
+        
+        # Show confirmation
+        await show_invoice_confirmation(chat_id, context, session, messenger_adapter)
+    
+    except Exception as e:
+        logger.error(
+            f"Error processing email: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+# ========== Confirmation and Ticket Creation ==========
+
+
+async def show_invoice_confirmation(
+    chat_id: int,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Display confirmation summary with all invoice details.
+    
+    Shows organization, keys, description, and delivery method.
+    Provides confirm, restart, and cancel buttons.
+    
+    Args:
+        chat_id: Chat ID for sending messages
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.13
+    """
+    logger.info(f"Showing invoice confirmation: chat_id={chat_id}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        selected_inn = data.get("selected_inn")
+        selected_keys = data.get("selected_keys", [])
         description = data.get("description")
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
-
-        # Determine assigned manager
-        assigned_manager_id = await determine_assigned_manager(
-            session,
-            user_id,
-            organization_inn
+        
+        # Build confirmation message
+        confirmation_text = "📋 <b>Подтверждение заявки на счет</b>\n\n"
+        
+        if selected_inn:
+            confirmation_text += f"<b>Организация:</b> {selected_inn}\n"
+        else:
+            confirmation_text += "<b>Организация:</b> Не указана\n"
+        
+        if selected_keys:
+            # Get key details
+            keys = await get_user_keys(session, user_id)
+            key_numbers = [k.key_number for k in keys if k.id in selected_keys]
+            confirmation_text += f"<b>Ключи:</b> {', '.join(key_numbers)}\n"
+        else:
+            confirmation_text += "<b>Ключи:</b> Не указаны\n"
+        
+        confirmation_text += f"\n<b>Описание:</b>\n{description}\n"
+        
+        if delivery_method == DeliveryMethod.TELEGRAM:
+            confirmation_text += "\n<b>Способ доставки:</b> В чат\n"
+        elif delivery_method == DeliveryMethod.EMAIL:
+            confirmation_text += f"\n<b>Способ доставки:</b> На Email ({delivery_email})\n"
+        
+        confirmation_text += "\n✅ Подтвердите заявку или заполните заново."
+        
+        # Send confirmation
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=confirmation_text,
+            keyboard=get_invoice_confirmation_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error showing invoice confirmation: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
         )
 
+
+
+
+async def create_invoice_ticket(
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+    chat_id: int,
+    user_id: int
+) -> None:
+    """
+    Create INVOICE ticket, route to assigned manager, send notification.
+    
+    Creates ticket with all collected data.
+    Routes ticket to assigned manager based on organization.
+    Sends notification to manager via adapter.
+    Displays success message to user.
+    
+    Args:
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+        chat_id: Chat ID for sending messages
+        user_id: Internal user ID (primary key)
+    
+    Requirements: 2.14, 2.15
+    """
+    logger.info(f"Creating invoice ticket: user_id={user_id}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        selected_inn = data.get("selected_inn")
+        selected_keys = data.get("selected_keys", [])
+        description = data.get("description")
+        delivery_method = data.get("delivery_method")
+        delivery_email = data.get("delivery_email")
+        
+        # Get user to determine assigned manager
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found for ticket creation: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Determine assigned manager (use default_manager_id)
+        assigned_staff_id = user.default_manager_id
+        has_manager = assigned_staff_id is not None
+        
         # Create ticket
         ticket_data = {
             "ticket_type": TicketType.INVOICE,
-            "tg_user_id": user_id,
-            "assigned_staff_id": assigned_manager_id,
-            "organization_inn": organization_inn,
+            "user_id": user_id,
+            "assigned_staff_id": assigned_staff_id,
+            "organization_inn": selected_inn,
             "description": description,
             "delivery_method": delivery_method,
             "delivery_email": delivery_email,
-            "selected_key_ids": selected_key_ids
+            "selected_key_ids": selected_keys
         }
-
+        
         ticket = await create_ticket(session, ticket_data)
-
-        # Get current work mode
-        work_mode = await get_current_work_mode(session)
-
-        # Route ticket
-        routing_info = await route_ticket(session, ticket, work_mode)
-
-        # Commit transaction
         await session.commit()
-
-        # Send notification to manager if assigned
-        if assigned_manager_id:
-            await send_staff_notification(
-                bot,
-                assigned_manager_id,
-                ticket,
-                routing_info
-            )
-
-        # Clear FSM state
-        await state.clear()
-
-        # Determine response time message
-        if work_mode == WorkMode.REGULAR:
-            response_time_msg = INVOICE_RESPONSE_TIME_WORKING
-        elif work_mode == WorkMode.EXTENDED:
-            response_time_msg = INVOICE_RESPONSE_TIME_EXTENDED
-        else:
-            response_time_msg = INVOICE_RESPONSE_TIME_NON_WORKING
-
-        # Get organization name for display
-        org_display = organization_inn if organization_inn else "Не указана"
-
-        # Get delivery method display
-        delivery_display = (
-            "Telegram" if delivery_method == DeliveryMethod.TELEGRAM
-            else f"Email ({delivery_email})"
+        
+        logger.info(
+            f"Invoice ticket created: ticket_id={ticket.id}, user_id={user_id}, "
+            f"assigned_staff={assigned_staff_id}, has_manager={has_manager}"
         )
-
-        # Get manager name (stub for now)
-        manager_name = "ваш менеджер"
-
-        # Send success message
+        
+        # Clear FSM state
+        await context.clear()
+        
+        # Get manager name and response time message
+        manager_name = "Менеджер"
+        if has_manager and assigned_staff_id:
+            from database.models import Staff_Member
+            from sqlalchemy import select
+            
+            stmt = select(Staff_Member).where(Staff_Member.id == assigned_staff_id)
+            result = await session.execute(stmt)
+            staff_member = result.scalar_one_or_none()
+            
+            if staff_member:
+                manager_name = staff_member.full_name or "Менеджер"
+        
+        # Determine response time message based on working hours
+        from services.calendar_service import get_current_work_mode
+        from database.models import WorkMode
+        from datetime import datetime
+        
+        work_mode = await get_current_work_mode(session)
+        is_working = work_mode != WorkMode.NON_WORKING
+        
+        if is_working:
+            response_time_message = INVOICE_RESPONSE_TIME_WORKING
+        else:
+            response_time_message = INVOICE_RESPONSE_TIME_NON_WORKING
+        
+        # Send success message to user
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=INVOICE_CREATED.format(
                 ticket_id=ticket.id,
-                organization_name=org_display,
-                delivery_method=delivery_display,
                 manager_name=manager_name,
-                response_time_message=response_time_msg
+                response_time_message=response_time_message
             ),
-            keyboard=None,
             parse_mode="HTML"
         )
-
-        logger.info(
-            f"Invoice ticket created: ticket_id={ticket.id}, "
-            f"user={user_id}, manager={assigned_manager_id}, "
-            f"keys_count={len(selected_key_ids)}, work_mode={work_mode.value}"
+        
+        # Show main menu after successful ticket creation
+        from services.ticket_service import get_user_active_tickets_count
+        from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+        
+        active_tickets_count = await get_user_active_tickets_count(session, user.id)
+        keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+        
+        main_menu_text = (
+            "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
+            "Здесь вы можете:\n\n"
+            "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
+            "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
+            "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
+            "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+            "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
+            "Выберите нужное действие:"
         )
-
-    except SQLAlchemyError as e:
-        await session.rollback()
-        logger.error(
-            f"Database error creating invoice ticket for user {user_id}: {e}",
-            exc_info=True
-        )
-
+        
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при создании заявки.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=main_menu_text,
+            keyboard=keyboard,
             parse_mode="HTML"
         )
-
-        await state.clear()
-
+        
+        # Send notifications
+        from services.ticket_service import send_staff_notification
+        from services.escalation_service import get_active_admins
+        from loaders import max_bot
+        
+        if has_manager:
+            # Send notification to assigned manager
+            notification_sent = await send_staff_notification(
+                bot=max_bot,
+                staff_id=assigned_staff_id,
+                ticket=ticket,
+                session=session
+            )
+            
+            if notification_sent:
+                logger.info(
+                    f"Manager notification sent: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to send manager notification: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+        else:
+            # No manager assigned - notify administrators
+            logger.warning(
+                f"User has no assigned manager: user_id={user_id}, ticket_id={ticket.id}"
+            )
+            
+            admins = await get_active_admins(session)
+            
+            if admins:
+                # Build admin notification message
+                admin_message = (
+                    f"⚠️ <b>Новая заявка на счет без назначенного менеджера</b>\n\n"
+                    f"<b>Заявка:</b> #{ticket.id}\n"
+                    f"<b>Тип:</b> Запрос счета\n\n"
+                    f"<b>Клиент:</b>\n"
+                    f"• ФИО: {user.full_name or 'Не указано'}\n"
+                    f"• Телефон: {user.phone_number or 'Не указан'}\n"
+                    f"• MAX ID: {user.max_user_id}\n"
+                    f"• Email: {user.email or 'Не указан'}\n\n"
+                )
+                
+                if selected_inn:
+                    admin_message += f"<b>Организация:</b> {selected_inn}\n"
+                
+                if description:
+                    desc_preview = description[:150]
+                    if len(description) > 150:
+                        desc_preview += "..."
+                    admin_message += f"\n<b>Описание:</b>\n{desc_preview}\n"
+                
+                admin_message += (
+                    f"\n<b>Способ доставки:</b> {delivery_method.value if delivery_method else 'Не указан'}\n"
+                )
+                
+                if delivery_email:
+                    admin_message += f"<b>Email для доставки:</b> {delivery_email}\n"
+                
+                admin_message += (
+                    f"\n❗️ <b>У клиента не назначен менеджер!</b>\n"
+                    f"Необходимо назначить менеджера для обработки заявки."
+                )
+                
+                # Send to all admins
+                for admin in admins:
+                    try:
+                        # Determine messenger and get appropriate chat_id
+                        if admin.tg_user_id:
+                            # Telegram: user_id can be used directly as chat_id
+                            chat_id_admin = admin.tg_user_id
+                        elif admin.max_user_id:
+                            # MAX: need to query MAX_Messenger_Data to get chat_id
+                            from database.models import MAX_Messenger_Data
+                            from sqlalchemy import select
+                            
+                            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                                MAX_Messenger_Data.max_user_id == admin.max_user_id
+                            )
+                            result_chat = await session.execute(stmt_chat)
+                            chat_id_admin = result_chat.scalar_one_or_none()
+                            
+                            if not chat_id_admin:
+                                logger.error(
+                                    f"No MAX chat_id found for admin: admin_id={admin.id}, "
+                                    f"max_user_id={admin.max_user_id}"
+                                )
+                                continue
+                        else:
+                            logger.warning(f"Admin has no messenger ID: admin_id={admin.id}")
+                            continue
+                        
+                        await max_bot.send_message(
+                            chat_id=chat_id_admin,
+                            text=admin_message,
+                            parse_mode="HTML"
+                        )
+                        logger.info(
+                            f"Admin notification sent: ticket_id={ticket.id}, "
+                            f"admin_id={admin.id}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send admin notification: ticket_id={ticket.id}, "
+                            f"admin_id={admin.id}, error={e}",
+                            exc_info=True
+                        )
+            else:
+                logger.error(
+                    f"No active admins found to notify about ticket without manager: "
+                    f"ticket_id={ticket.id}"
+                )
+    
     except Exception as e:
-        await session.rollback()
         logger.error(
-            f"Unexpected error creating invoice ticket for user {user_id}: {e}",
+            f"Error creating invoice ticket: user_id={user_id}, error={e}",
             exc_info=True
         )
-
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла непредвиденная ошибка.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
-        await state.clear()
+
+# ========== Cancellation Handler ==========
+
+
+async def cancel_invoice_flow(
+    event: MessageCreated | MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle cancellation at any step in invoice flow.
+    
+    Clears FSM state completely.
+    Deletes old message (if callback) and shows main menu.
+    
+    Args:
+        event: Message or callback event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    
+    Requirements: 2.16
+    """
+    chat_id = event.message.recipient.chat_id
+    
+    # Get user_id based on event type
+    from maxapi.types import MessageCallback as MCType
+    if isinstance(event, MCType):
+        max_user_id = event.callback.user.user_id
+        message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    else:
+        max_user_id = event.message.sender.user_id
+        message_id = None
+    
+    logger.info(f"Cancelling invoice flow: chat_id={chat_id}, max_user_id={max_user_id}, message_id={message_id}")
+    
+    try:
+        # Delete old message with buttons (if callback)
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+        
+        # Clear FSM state
+        await context.clear()
+        
+        # Get user from database to show appropriate menu
+        from services.user_service import get_user_by_max_id
+        from services.ticket_service import get_user_active_tickets_count
+        from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+        
+        user = await get_user_by_max_id(session, max_user_id)
+        
+        if user and user.registration_status == RegistrationStatus.ACTIVE:
+            # Get active tickets count for menu
+            active_tickets_count = await get_user_active_tickets_count(session, user.id)
+            
+            # Show main menu with inline keyboard
+            keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+            
+            welcome_text = (
+                "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
+                "Здесь вы можете:\n\n"
+                "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
+                "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
+                "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
+                "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
+                "Выберите нужное действие:"
+            )
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=welcome_text,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            # User not found or not active - show cancellation message
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=FLOW_CANCELLED,
+                parse_mode="HTML"
+            )
+    
+    except Exception as e:
+        logger.error(
+            f"Error cancelling invoice flow: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+
+
+

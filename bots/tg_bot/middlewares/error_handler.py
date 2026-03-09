@@ -6,7 +6,7 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.types import TelegramObject
 from aiolimiter import AsyncLimiter
 
-from constants import ERROR_CHANNEL, MAIN_BOT_TOKEN
+from constants import ERROR_CHANNEL, TG_BOT_TOKEN
 
 
 class ErrorHandler(BaseMiddleware):
@@ -25,7 +25,7 @@ class ErrorHandler(BaseMiddleware):
                 return await handler(event, data)
             except Exception as e:
                 tb = traceback.extract_tb(e.__traceback__)
-                async with Bot(MAIN_BOT_TOKEN).context(auto_close=False) as bot:
+                async with Bot(TG_BOT_TOKEN).context(auto_close=False) as bot:
                     await bot.send_message(
                         ERROR_CHANNEL,
                         f"File: {tb[-1].filename}\n\r\n".join([f"Line: {x.lineno}\ncode: {x.line}" for x in tb]) + "\n"

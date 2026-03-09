@@ -8,7 +8,9 @@ All methods use real API endpoints as documented in docs/I-TAT-API-DOCUMENTATION
 Requirements: 25.1-25.5, 34.1-34.5
 """
 
+import asyncio
 import logging
+import os
 import random
 from typing import Any
 
@@ -18,11 +20,14 @@ from constants import ITAT_API_BASE_URL, ITAT_API_PASSWORD, ITAT_API_USERNAME
 
 logger = logging.getLogger(__name__)
 
+# Режим заглушек (включается через переменную окружения)
+USE_MOCK_API = os.getenv("USE_MOCK_ITAT_API", "false").lower() == "true"
+
 
 class ITatAPIClient:
     """Клиент для работы с API 1С/CRM АЙТАТ"""
 
-    def __init__(self, base_url: str | None = None, username: str | None = None, password: str | None = None):
+    def __init__(self, base_url: str | None = None, username: str | None = None, password: str | None = None, use_mock: bool | None = None):
         """
         Инициализация клиента API
 
@@ -30,10 +35,12 @@ class ITatAPIClient:
             base_url: Базовый URL API (по умолчанию из constants)
             username: Логин для Basic авторизации (по умолчанию из constants)
             password: Пароль для Basic авторизации (по умолчанию из constants)
+            use_mock: Использовать заглушки вместо реальных API вызовов (по умолчанию из USE_MOCK_API)
         """
         self.base_url = base_url or ITAT_API_BASE_URL
         self.username = username or ITAT_API_USERNAME
         self.password = password or ITAT_API_PASSWORD
+        self.use_mock = use_mock if use_mock is not None else USE_MOCK_API
 
         self.client = httpx.AsyncClient(
             timeout=30.0, auth=(self.username, self.password), headers={"Content-Type": "application/json"}
@@ -42,6 +49,135 @@ class ITatAPIClient:
     async def close(self):
         """Закрытие HTTP клиента"""
         await self.client.aclose()
+
+    # ========== Блок: Заглушки API ==========
+
+    async def _mock_check_key_conflict(self, grand_key: str, user_id: int) -> dict[str, Any]:
+        """Заглушка для проверки конфликта ключа"""
+        logger.info(f"[MOCK] Checking key conflict: key={grand_key}, user={user_id}")
+        
+        # Имитация конфликта для ключа 00000_00001
+        if grand_key == "00000_00001":
+            return {
+                "status": "conflict",
+                "owner": "Петров Петр +7912-XXX-XX-45"
+            }
+        
+        # Для всех остальных ключей - доступен
+        return {"status": "available"}
+
+    async def _mock_register_user(
+        self,
+        user_id: int,
+        phone: str,
+        first_name: str | None,
+        last_name: str | None,
+        grand_key: str
+    ) -> dict[str, Any]:
+        """Заглушка для регистрации пользователя"""
+        logger.info(f"[MOCK] Registering user: user_id={user_id}, phone={phone}, key={grand_key}")
+        
+        # Имитация успешной регистрации
+        return {
+            "status": "ok",
+            "message": "Пользователь зарегистрирован",
+            "user_id": user_id,
+            "potential_matches": 0
+        }
+
+    async def _mock_get_user_assets(self, user_id: int) -> dict[str, Any]:
+        """Заглушка для получения активов пользователя"""
+        logger.info(f"[MOCK] Fetching user assets: user_id={user_id}")
+        
+        # Имитация неверифицированного пользователя
+        return {
+            "status": "error",
+            "message": "Пользователь не верифицирован",
+            "verification_status": "pending"
+        }
+
+    async def _mock_log_ticket(
+        self,
+        ticket_id: str,
+        user_id: int,
+        ticket_type: str,
+        status: str,
+        comment: str | None,
+        history_link: str | None
+    ) -> dict[str, Any]:
+        """Заглушка для логирования тикета"""
+        logger.info(f"[MOCK] Logging ticket: ticket_id={ticket_id}, type={ticket_type}, status={status}")
+        
+        return {
+            "status": "ok",
+            "message": "Обращение зарегистрировано",
+            "ticket_id": ticket_id
+        }
+
+    async def _mock_approve_user_registration(
+        self,
+        user_id: int,
+        phone: str,
+        inn_list: list[str],
+        gs_key_list: list[str]
+    ) -> dict[str, Any]:
+        """Заглушка для одобрения регистрации"""
+        logger.info(f"[MOCK] Approving user registration: user_id={user_id}, phone={phone}")
+        
+        return {
+            "status": "ok",
+            "message": "Регистрация одобрена",
+            "user_id": user_id
+        }
+
+    async def _mock_reject_user_registration(
+        self,
+        user_id: int,
+        phone: str,
+        rejection_reason: str
+    ) -> dict[str, Any]:
+        """Заглушка для отклонения регистрации"""
+        logger.info(f"[MOCK] Rejecting user registration: user_id={user_id}, phone={phone}")
+        
+        return {
+            "status": "ok",
+            "message": "Регистрация отклонена",
+            "user_id": user_id
+        }
+
+    async def _mock_get_staff(self) -> dict[str, Any]:
+        """Заглушка для получения списка сотрудников"""
+        logger.info("[MOCK] Fetching staff list")
+        
+        return {
+            "status": "ok",
+            "staff": [
+                {
+                    "user_id": 123456789,
+                    "name": "Иванов Иван Иванович",
+                    "role": "manager",
+                    "position": "Менеджер отдела продаж",
+                    "reserves": [987654321, 111222333]
+                }
+            ]
+        }
+
+    async def _mock_transfer_gs_key(
+        self,
+        old_user_id: int,
+        new_user_id: int,
+        key_number: str
+    ) -> dict[str, Any]:
+        """Заглушка для передачи ключа"""
+        logger.info(f"[MOCK] Transferring GS_Key: key={key_number}, old_user={old_user_id}, new_user={new_user_id}")
+        
+        return {
+            "status": "ok",
+            "message": "Ключ передан",
+            "key_number": key_number,
+            "old_user_id": old_user_id,
+            "new_user_id": new_user_id
+        }
 
     async def _make_request(
         self,
@@ -149,7 +285,8 @@ class ITatAPIClient:
                         "user_id": 123456789,
                         "name": "Иванов Иван Иванович",
                         "role": "manager",
-                        "position": "Менеджер отдела продаж"
+                        "position": "Менеджер отдела продаж",
+                        "reserves": [987654321, 111222333]
                     }
                 ]
             }
@@ -159,29 +296,40 @@ class ITatAPIClient:
             httpx.HTTPStatusError: HTTP error status (500, etc.)
             httpx.ConnectError: Connection error
         """
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_get_staff()
+        
         endpoint = f"{self.base_url}/system/staff"
         return await self._make_request("GET", endpoint)
 
     # ========== Блок: Регистрация и аутентификация ==========
 
     async def register_user(
-        self, telegram_id: int, phone: str, first_name: str, last_name: str, grand_key: str
+        self, 
+        user_id: int | None = None,
+        phone: str = "",
+        first_name: str | None = None,
+        last_name: str | None = None,
+        grand_key: str = "",
+        telegram_id: int | None = None  # Backward compatibility
     ) -> dict[str, Any]:
         """
         Register a new user in the I-TAT CRM system.
 
         Args:
-            telegram_id: Telegram ID of the user
+            user_id: User ID from messenger (Telegram/MAX)
             phone: Phone number (format: "+79001234567")
-            first_name: User's first name
-            last_name: User's last name
+            first_name: User's first name (optional)
+            last_name: User's last name (optional)
             grand_key: Protection key number (format: "MG123456" or "00202_12345")
+            telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
             {
                 "status": "ok",
                 "message": "Пользователь зарегистрирован",
-                "user_id": "USER_ID",
+                "user_id": 123456789,
                 "potential_matches": 0
             }
         
@@ -196,26 +344,45 @@ class ITatAPIClient:
         
         Requirements: 1.1, 1.2, 1.3, 1.7, 7.1, 7.2
         """
+        # Backward compatibility: telegram_id → user_id
+        if telegram_id is not None and user_id is None:
+            user_id = telegram_id
+        
+        if user_id is None:
+            raise ValueError("user_id is required")
+        
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_register_user(user_id, phone, first_name, last_name, grand_key)
+        
         endpoint = f"{self.base_url}/user/register"
         payload = {
-            "telegram_id": telegram_id,
+            "user_id": user_id,
             "phone": phone,
-            "first_name": first_name,
-            "last_name": last_name,
             "grand_key": grand_key,
         }
+        
+        if first_name:
+            payload["first_name"] = first_name
+        if last_name:
+            payload["last_name"] = last_name
 
-        logger.info(f"Registering user: telegram_id={telegram_id}, phone={phone}")
+        logger.info(f"Registering user: user_id={user_id}, phone={phone}")
         return await self._make_request("POST", endpoint, json=payload)
 
     # ========== Блок: Профиль и Проверки ==========
 
-    async def get_user_assets(self, telegram_id: int) -> dict[str, Any]:
+    async def get_user_assets(
+        self, 
+        user_id: int | None = None,
+        telegram_id: int | None = None  # Backward compatibility
+    ) -> dict[str, Any]:
         """
         Получение списка активов пользователя (организаций и ключей)
 
         Args:
-            telegram_id: Telegram ID пользователя
+            user_id: User ID from messenger (Telegram/MAX)
+            telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
             Verified user:
@@ -239,20 +406,37 @@ class ITatAPIClient:
         
         Requirements: 2.1, 2.2, 2.3, 2.4, 2.6, 2.7, 7.1
         """
+        # Backward compatibility: telegram_id → user_id
+        if telegram_id is not None and user_id is None:
+            user_id = telegram_id
+        
+        if user_id is None:
+            raise ValueError("user_id is required")
+        
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_get_user_assets(user_id)
+        
         endpoint = f"{self.base_url}/user/assets"
 
-        logger.debug(f"Fetching user assets: telegram_id={telegram_id}")
+        logger.debug(f"Fetching user assets: user_id={user_id}")
         
-        return await self._make_request("GET", endpoint, params={"telegram_id": telegram_id})
+        return await self._make_request("GET", endpoint, params={"user_id": user_id})
 
 
-    async def check_key_conflict(self, grand_key: str, telegram_id: int) -> dict[str, Any]:
+    async def check_key_conflict(
+        self, 
+        grand_key: str,
+        user_id: int | None = None,
+        telegram_id: int | None = None  # Backward compatibility
+    ) -> dict[str, Any]:
         """
         Check if a protection key is available or occupied by another user.
 
         Args:
             grand_key: Protection key number (format: "MG123456" or "00202_12345")
-            telegram_id: Telegram ID of the user
+            user_id: User ID from messenger (Telegram/MAX)
+            telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
             Available:
@@ -273,38 +457,51 @@ class ITatAPIClient:
         
         Requirements: 4.1, 4.2, 4.3, 4.4, 4.6, 7.1, 7.3
         """
+        # Backward compatibility: telegram_id → user_id
+        if telegram_id is not None and user_id is None:
+            user_id = telegram_id
+        
+        if user_id is None:
+            raise ValueError("user_id is required")
+        
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_check_key_conflict(grand_key, user_id)
+        
         endpoint = f"{self.base_url}/assets/check_key"
-        payload = {"grand_key": grand_key, "telegram_id": telegram_id}
+        payload = {"grand_key": grand_key, "user_id": user_id}
 
-        logger.info(f"Checking key conflict: key={grand_key}, user={telegram_id}")
+        logger.info(f"Checking key conflict: key={grand_key}, user={user_id}")
         return await self._make_request("POST", endpoint, json=payload)
 
 
     async def log_ticket(
         self,
         ticket_id: str,
-        telegram_id: int,
-        ticket_type: str,
-        status: str,
+        user_id: int | None = None,
+        ticket_type: str = "",
+        status: str = "",
         comment: str | None = None,
         history_link: str | None = None,
+        telegram_id: int | None = None  # Backward compatibility
     ) -> dict[str, Any]:
         """
         Log ticket creation or closure in the CRM system.
 
         Args:
-            ticket_id: Ticket ID in the bot (format: "TG_12345")
-            telegram_id: Telegram ID of the user
+            ticket_id: Ticket ID in the bot (format: "TKT_12345")
+            user_id: User ID from messenger (Telegram/MAX)
             ticket_type: Ticket type (e.g., "Техподдержка", "Счет")
             status: Ticket status (e.g., "Новое", "Закрыто")
             comment: Optional employee comment
-            history_link: Optional link to ticket history (format: "https://t.me/c/123/456")
+            history_link: Optional link to ticket history
+            telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
             {
                 "status": "ok",
                 "message": "Обращение зарегистрировано",
-                "ticket_id": "TG_12345"
+                "ticket_id": "TKT_12345"
             }
         
         Raises:
@@ -317,8 +514,19 @@ class ITatAPIClient:
         
         Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 7.1
         """
+        # Backward compatibility: telegram_id → user_id
+        if telegram_id is not None and user_id is None:
+            user_id = telegram_id
+        
+        if user_id is None:
+            raise ValueError("user_id is required")
+        
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_log_ticket(ticket_id, user_id, ticket_type, status, comment, history_link)
+        
         endpoint = f"{self.base_url}/tickets/log"
-        payload = {"ticket_id": ticket_id, "telegram_id": telegram_id, "type": ticket_type, "status": status}
+        payload = {"ticket_id": ticket_id, "user_id": user_id, "type": ticket_type, "status": status}
 
         if comment:
             payload["comment"] = comment
@@ -327,6 +535,206 @@ class ITatAPIClient:
 
         logger.info(f"Logging ticket: ticket_id={ticket_id}, type={ticket_type}, status={status}")
         return await self._make_request("POST", endpoint, json=payload)
+
+    # ========== Блок: Регистрация - Одобрение и Отклонение ==========
+
+    async def approve_user_registration(
+        self,
+        user_id: int,
+        phone: str,
+        inn_list: list[str],
+        gs_key_list: list[str]
+    ) -> dict[str, Any]:
+        """
+        Approve user registration in the i-TAT CRM system.
+        
+        Synchronizes user data with CRM and activates the account.
+        
+        Args:
+            user_id: User ID from messenger (Telegram/MAX)
+            phone: User's phone number
+            inn_list: List of organization INN numbers
+            gs_key_list: List of GS_Key numbers
+        
+        Returns:
+            {
+                "status": "ok",
+                "message": "Регистрация одобрена",
+                "user_id": 123456789
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout (10 seconds)
+            httpx.HTTPStatusError: HTTP error status
+                - 400: Invalid parameters
+                - 404: User not found
+                - 500: Server error
+            httpx.ConnectError: Connection error
+        
+        Requirements: 25.1, 25.2, 25.4, 25.5, 25.6, 25.9, 25.10
+        """
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_approve_user_registration(user_id, phone, inn_list, gs_key_list)
+        
+        endpoint = f"{self.base_url}/user/approve"
+        payload = {
+            "user_id": user_id,
+            "phone": phone,
+            "inn_list": inn_list,
+            "gs_key_list": gs_key_list
+        }
+        
+        logger.info(f"Approving user registration: user_id={user_id}, phone={phone}")
+        
+        # Retry logic with exponential backoff (1s, 2s, 4s)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return await self._make_request("POST", endpoint, json=payload)
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 1s, 2s, 4s
+                    logger.warning(
+                        f"API call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {wait_time}s: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"API call failed after {max_retries} attempts: {e}")
+                    raise
+
+    async def reject_user_registration(
+        self,
+        user_id: int,
+        phone: str,
+        rejection_reason: str
+    ) -> dict[str, Any]:
+        """
+        Reject user registration in the i-TAT CRM system.
+        
+        Records rejection reason and prevents account activation.
+        
+        Args:
+            user_id: User ID from messenger (Telegram/MAX)
+            phone: User's phone number
+            rejection_reason: Reason for rejection (admin-provided text)
+        
+        Returns:
+            {
+                "status": "ok",
+                "message": "Регистрация отклонена",
+                "user_id": 123456789
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout (10 seconds)
+            httpx.HTTPStatusError: HTTP error status
+                - 400: Invalid parameters
+                - 404: User not found
+                - 500: Server error
+            httpx.ConnectError: Connection error
+        
+        Requirements: 25.1, 25.2, 25.4, 25.5, 25.6, 25.9, 25.10
+        """
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_reject_user_registration(user_id, phone, rejection_reason)
+        
+        endpoint = f"{self.base_url}/user/reject"
+        payload = {
+            "user_id": user_id,
+            "phone": phone,
+            "rejection_reason": rejection_reason
+        }
+        
+        logger.info(f"Rejecting user registration: user_id={user_id}, phone={phone}")
+        
+        # Retry logic with exponential backoff (1s, 2s, 4s)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return await self._make_request("POST", endpoint, json=payload)
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 1s, 2s, 4s
+                    logger.warning(
+                        f"API call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {wait_time}s: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"API call failed after {max_retries} attempts: {e}")
+                    raise
+
+
+    async def transfer_gs_key(
+        self,
+        old_user_id: int,
+        new_user_id: int,
+        key_number: str
+    ) -> dict[str, Any]:
+        """
+        Transfer GS_Key ownership from one user to another in the i-TAT CRM system.
+        
+        Updates key ownership records in CRM to reflect the transfer.
+        
+        Args:
+            old_user_id: Current owner's user ID
+            new_user_id: New owner's user ID
+            key_number: GS_Key number to transfer
+        
+        Returns:
+            {
+                "status": "ok",
+                "message": "Ключ передан",
+                "key_number": "MG123456",
+                "old_user_id": 123,
+                "new_user_id": 456
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout (10 seconds)
+            httpx.HTTPStatusError: HTTP error status
+                - 400: Invalid parameters
+                - 404: Key or user not found
+                - 500: Server error
+            httpx.ConnectError: Connection error
+        
+        Requirements: 25.3, 25.4, 25.9, 25.10
+        """
+        # Использование заглушки
+        if self.use_mock:
+            return await self._mock_transfer_gs_key(old_user_id, new_user_id, key_number)
+        
+        endpoint = f"{self.base_url}/assets/transfer_key"
+        payload = {
+            "old_user_id": old_user_id,
+            "new_user_id": new_user_id,
+            "key_number": key_number
+        }
+        
+        logger.info(
+            f"Transferring GS_Key: key={key_number}, "
+            f"old_user={old_user_id}, new_user={new_user_id}"
+        )
+        
+        # Retry logic with exponential backoff (1s, 2s, 4s)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return await self._make_request("POST", endpoint, json=payload)
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # 1s, 2s, 4s
+                    logger.warning(
+                        f"API call failed (attempt {attempt + 1}/{max_retries}), "
+                        f"retrying in {wait_time}s: {e}"
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"API call failed after {max_retries} attempts: {e}")
+                    raise
 
 
 # Singleton instance

@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.tg_bot.handlers.cancel import cmd_cancel, handle_cancel_button
+from bots.tg_bot.handlers.client.cancel import cmd_cancel, handle_cancel_button
 from bots.tg_bot.states import (
     RegistrationStates,
     InvoiceStates,

@@ -1,0 +1,325 @@
+"""
+Ticket Status Update Webhook Handler
+
+This module implements the webhook endpoint for receiving ticket status updates
+from 1C CRM. Synchronizes ticket status changes from CRM to bot and notifies
+users via messenger.
+
+Requirements: 4.1-4.9 - Ticket status synchronization
+"""
+
+import logging
+from datetime import datetime
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from api.schemas.ticket_status_schemas import (
+    TicketStatusWebhookPayload,
+    TicketStatusWebhookResponse,
+)
+from constants import get_session, WEBHOOK_API_KEY
+from database.models import (
+    Action_Log,
+    ActionType,
+    Staff_Member,
+    Ticket,
+    TicketStatus,
+)
+
+router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def verify_webhook_api_key(
+    x_api_key: Annotated[str | None, Header()] = None
+) -> str:
+    """
+    Verify webhook API key authentication.
+    
+    This dependency validates that incoming webhook requests include a valid
+    API key in the X-API-Key header. The key should match the configured
+    WEBHOOK_API_KEY environment variable.
+    
+    Args:
+        x_api_key: API key from X-API-Key header
+        
+    Returns:
+        Validated API key
+        
+    Raises:
+        HTTPException: 401 if API key is missing or invalid
+        
+    Requirements: 17.1-17.6 - Webhook authentication
+    """
+    if not x_api_key:
+        logger.warning("Ticket status webhook request received without API key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    
+    if not WEBHOOK_API_KEY:
+        logger.error("WEBHOOK_API_KEY not configured in environment")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook API key not configured on server",
+        )
+    
+    if x_api_key != WEBHOOK_API_KEY:
+        logger.warning(f"Invalid API key attempt: {x_api_key[:8]}...")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    
+    return x_api_key
+
+
+@router.post("/ticket_status_update", response_model=TicketStatusWebhookResponse)
+async def ticket_status_update_webhook(
+    payload: TicketStatusWebhookPayload,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    api_key: Annotated[str, Depends(verify_webhook_api_key)],
+) -> TicketStatusWebhookResponse:
+    """
+    Handle ticket status update webhook from 1C CRM.
+    
+    This endpoint receives ticket status updates from the CRM system and
+    synchronizes them to the bot database. When a ticket is closed, it sets
+    the closed_at timestamp and closed_by_staff_id. Users are notified of
+    status changes via messenger.
+    
+    Request body:
+    {
+        "ticket_id": "12345",
+        "status": "closed",
+        "closed_by_staff_id": 123456789,
+        "messenger": "telegram"
+    }
+    
+    Response:
+    {
+        "status": "success",
+        "message": "Ticket status updated successfully",
+        "ticket_id": "12345",
+        "new_status": "closed"
+    }
+    
+    Args:
+        payload: Ticket status update payload
+        session: Database session
+        api_key: Validated API key from header
+        
+    Returns:
+        JSON response with update status
+        
+    Raises:
+        HTTPException: 404 if ticket not found
+        HTTPException: 400 if status="closed" without closed_by_staff_id
+        HTTPException: 500 if internal error occurs
+        
+    Requirements:
+        - 4.1: Update Ticket.status to new status
+        - 4.2: Set Ticket.closed_at when status="closed"
+        - 4.3: Set Ticket.closed_by_staff_id when status="closed"
+        - 4.4: Send notification to user via messenger
+        - 4.5: Log status change in Action_Log
+        - 4.6: Return 404 if ticket not found
+        - 4.7: Return 400 if status="closed" without closed_by_staff_id
+        - 4.8: Log warning if notification fails
+        - 4.9: Return 401 if API key invalid
+    """
+    logger.info(
+        f"Ticket status update webhook received: ticket_id={payload.ticket_id}, "
+        f"status={payload.status}, messenger={payload.messenger}"
+    )
+    
+    try:
+        # Step 1: Query ticket by ticket_id with eager loading of user relationship
+        # Convert ticket_id to integer if it's numeric
+        try:
+            ticket_id_int = int(payload.ticket_id)
+            from sqlalchemy.orm import selectinload
+            stmt = select(Ticket).options(selectinload(Ticket.user)).where(Ticket.id == ticket_id_int)
+        except ValueError:
+            # If ticket_id is not numeric, treat as string (shouldn't happen with current schema)
+            logger.error(f"Invalid ticket_id format: {payload.ticket_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid ticket_id format: {payload.ticket_id}",
+            )
+        
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+        
+        # Requirement 4.6: Return 404 if ticket not found
+        if not ticket:
+            logger.error(f"Ticket with id={payload.ticket_id} not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Ticket with ID {payload.ticket_id} not found",
+            )
+        
+        # Map string status to TicketStatus enum
+        status_mapping = {
+            "new": TicketStatus.NEW,
+            "in_progress": TicketStatus.IN_PROGRESS,
+            "waiting_client": TicketStatus.WAITING_CLIENT,
+            "closed": TicketStatus.CLOSED,
+            "cancelled": TicketStatus.CANCELLED,
+        }
+        
+        new_status_enum = status_mapping.get(payload.status.lower())
+        if not new_status_enum:
+            logger.error(f"Invalid status value: {payload.status}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status: {payload.status}",
+            )
+        
+        old_status = ticket.ticket_status
+        
+        # Requirement 4.1: Update Ticket.status to new status
+        ticket.ticket_status = new_status_enum
+        
+        # Requirement 4.2, 4.3: Handle ticket closure
+        if new_status_enum == TicketStatus.CLOSED:
+            # Requirement 4.7: Validate closed_by_staff_id provided
+            if not payload.closed_by_staff_id:
+                logger.error(
+                    f"Cannot close ticket {payload.ticket_id} without closed_by_staff_id"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="closed_by_staff_id is required when status='closed'",
+                )
+            
+            # Requirement 4.2: Set closed_at timestamp
+            ticket.closed_at = datetime.now()
+            
+            # Requirement 4.3: Set closed_by_staff_id
+            # Query staff member by messenger-specific ID
+            if payload.messenger == "telegram":
+                stmt_staff = select(Staff_Member).where(
+                    Staff_Member.tg_user_id == payload.closed_by_staff_id
+                )
+            else:
+                stmt_staff = select(Staff_Member).where(
+                    Staff_Member.max_user_id == payload.closed_by_staff_id
+                )
+            
+            result_staff = await session.execute(stmt_staff)
+            staff = result_staff.scalar_one_or_none()
+            
+            if staff:
+                ticket.closed_by_staff_id = staff.id
+            else:
+                logger.warning(
+                    f"Staff member with {payload.messenger}_user_id="
+                    f"{payload.closed_by_staff_id} not found, setting closed_by_staff_id to None"
+                )
+                ticket.closed_by_staff_id = None
+        
+        # Commit database changes
+        await session.commit()
+        
+        # Requirement 4.4: Send notification to user via messenger
+        # Get user's messenger-specific ID
+        user = ticket.user
+        user_messenger_id = (
+            user.tg_user_id if payload.messenger == "telegram" else user.max_user_id
+        )
+        
+        if user_messenger_id:
+            # Build notification message
+            status_messages = {
+                TicketStatus.NEW: "📝 Ваша заявка зарегистрирована",
+                TicketStatus.IN_PROGRESS: "⏳ Ваша заявка взята в работу",
+                TicketStatus.WAITING_CLIENT: "⏸️ Ваша заявка ожидает вашего ответа",
+                TicketStatus.CLOSED: "✅ Ваша заявка закрыта",
+                TicketStatus.CANCELLED: "❌ Ваша заявка отменена",
+            }
+            
+            notification_text = (
+                f"{status_messages.get(new_status_enum, 'Статус заявки изменен')}\n"
+                f"Заявка #{payload.ticket_id}\n"
+                f"Новый статус: {payload.status}"
+            )
+            
+            try:
+                # TODO: Implement actual notification sending via messenger bots
+                # For now, log the notification
+                logger.info(
+                    f"Should send notification to {payload.messenger} user {user_messenger_id}: "
+                    f"{notification_text}"
+                )
+                
+                # When bot integration is ready:
+                # if payload.messenger == "telegram":
+                #     from bots.tg_bot.loaders import tg_bot
+                #     await tg_bot.send_message(chat_id=user_messenger_id, text=notification_text)
+                # else:
+                #     from bots.max_bot.loaders import max_bot
+                #     await max_bot.send_message(chat_id=user_messenger_id, text=notification_text)
+                
+            except Exception as e:
+                # Requirement 4.8: Log warning if notification fails, but continue
+                logger.warning(
+                    f"Failed to send notification to user {user.id}: {e}",
+                    exc_info=True
+                )
+        else:
+            logger.warning(
+                f"User {user.id} has no {payload.messenger} user ID, cannot send notification"
+            )
+        
+        # Requirement 4.5: Log status change in Action_Log
+        action_log = Action_Log(
+            action_type=ActionType.STATUS_CHANGED,
+            ticket_id=ticket.id,
+            user_id=ticket.user_id,
+            staff_id=ticket.closed_by_staff_id if new_status_enum == TicketStatus.CLOSED else None,
+            action_details={
+                "action": "ticket_status_updated_via_webhook",
+                "old_status": old_status.value if old_status else None,
+                "new_status": new_status_enum.value,
+                "messenger": payload.messenger,
+                "closed_by_staff_messenger_id": payload.closed_by_staff_id if new_status_enum == TicketStatus.CLOSED else None,
+            },
+            action_timestamp=datetime.now()
+        )
+        session.add(action_log)
+        await session.commit()
+        
+        logger.info(
+            f"Ticket status update webhook processed successfully: ticket_id={payload.ticket_id}, "
+            f"old_status={old_status.value if old_status else None}, new_status={new_status_enum.value}"
+        )
+        
+        return TicketStatusWebhookResponse(
+            status="success",
+            message="Ticket status updated successfully",
+            ticket_id=payload.ticket_id,
+            new_status=payload.status
+        )
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (404, 400, etc.)
+        raise
+        
+    except Exception as e:
+        # Unexpected error (Requirement 18.6, 18.9)
+        logger.error(
+            f"Error processing ticket status update webhook: {e}",
+            exc_info=True
+        )
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal error: {str(e)}",
+        )

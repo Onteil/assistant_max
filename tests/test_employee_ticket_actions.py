@@ -78,8 +78,9 @@ async def test_employee_service_functions():
         )
         session.add(user)
 
-        # Create test employee
+        # Create test employee with explicit ID
         employee = Staff_Member(
+            id=1,
             tg_user_id=987654321,
             full_name="Test Employee",
             position="Technical Support Specialist",
@@ -178,8 +179,9 @@ async def test_ticket_action_workflows():
         )
         session.add(user)
 
-        # Create test employees
+        # Create test employees with explicit IDs
         employee1 = Staff_Member(
+            id=1,
             tg_user_id=987654321,
             full_name="Employee One",
             position="Technical Support",
@@ -187,6 +189,7 @@ async def test_ticket_action_workflows():
             is_active=True,
         )
         employee2 = Staff_Member(
+            id=2,
             tg_user_id=987654322,
             full_name="Employee Two",
             position="Senior Technical Support",
@@ -213,7 +216,7 @@ async def test_ticket_action_workflows():
 
         print("\n--- Workflow 1: Take Ticket Into Work ---")
         initial_status = ticket.ticket_status
-        updated_ticket = await take_ticket_into_work(session, ticket.id, employee1.tg_user_id)
+        updated_ticket = await take_ticket_into_work(session, ticket.id, employee1.tg_user_id, messenger="telegram")
         assert updated_ticket.ticket_status == TicketStatus.IN_PROGRESS
         assert initial_status == TicketStatus.NEW
         print(f"✓ Status changed: {initial_status.value} → {updated_ticket.ticket_status.value}")
@@ -319,6 +322,7 @@ async def test_ticket_status_transitions():
             full_name="Test Client",
         )
         employee = Staff_Member(
+            id=1,
             tg_user_id=987654321,
             full_name="Test Employee",
             position="Manager",
@@ -345,7 +349,7 @@ async def test_ticket_status_transitions():
         print(f"Initial status: {ticket.ticket_status.value}")
 
         # NEW → IN_PROGRESS
-        ticket = await take_ticket_into_work(session, ticket.id, employee.tg_user_id)
+        ticket = await take_ticket_into_work(session, ticket.id, employee.tg_user_id, messenger="telegram")
         assert ticket.ticket_status == TicketStatus.IN_PROGRESS
         print(f"✓ NEW → IN_PROGRESS")
 
@@ -394,8 +398,9 @@ async def test_multi_ticket_handling():
         )
         session.add_all([user1, user2])
 
-        # Create test employee
+        # Create test employee with explicit ID
         employee = Staff_Member(
+            id=1,
             tg_user_id=999999999,
             full_name="Multi-Task Employee",
             position="Technical Support",
@@ -439,7 +444,7 @@ async def test_multi_ticket_handling():
 
         # Test 2: Take first ticket into work (simulating focus mode)
         ticket1_updated = await take_ticket_into_work(
-            session, ticket1.id, employee.tg_user_id
+            session, ticket1.id, employee.tg_user_id, messenger="telegram"
         )
         assert ticket1_updated.ticket_status == TicketStatus.IN_PROGRESS
         print(f"✓ Ticket #{ticket1.id} taken into work (focus mode)")
@@ -447,7 +452,7 @@ async def test_multi_ticket_handling():
         # Test 3: Simulate taking second ticket into work (focus switching)
         # In real implementation, this would switch focus from ticket1 to ticket2
         ticket2_updated = await take_ticket_into_work(
-            session, ticket2.id, employee.tg_user_id
+            session, ticket2.id, employee.tg_user_id, messenger="telegram"
         )
         assert ticket2_updated.ticket_status == TicketStatus.IN_PROGRESS
         print(f"✓ Ticket #{ticket2.id} taken into work (focus switched)")

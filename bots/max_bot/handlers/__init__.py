@@ -13,20 +13,81 @@ Uses maxapi Router for modular handler organization.
 Requirements: 10.2, 10.3, 9.8, 10.4
 """
 
+import json
 import logging
 
-from maxapi import Router
-from maxapi.filters import Command
-from maxapi.utils.magic_filter import F
+from maxapi import F, Router
+from maxapi.types import Command, MessageCreated, MessageCallback
+from maxapi.context import MemoryContext
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 
 from bots.max_bot.callback_datas import (
     DeliveryCallback,
     ExampleItemCallback,
     ExampleNavigationCallback,
     KeyCallback,
+    KeyConflictCallback,
     OrganizationCallback,
 )
 from bots.max_bot.filters import PrivateChatFilter
+from bots.max_bot.payloads import (
+    TicketSelectPayload,
+    TicketsPaginationPayload,
+    ActiveTicketsClosePayload,
+    TicketHistoryPayload,
+    TicketHistoryBackPayload,
+    ArchiveFilterPayload,
+    ArchivePaginationPayload,
+    ViewArchivedTicketPayload,
+    ArchiveClosePayload,
+    ProfileActionPayload,
+    ProfileViewPayload,
+    ProfileAddPayload,
+    ProfileDeleteOrgPayload,
+    ProfileConfirmDeleteOrgPayload,
+    ProfileDeleteKeyPayload,
+    ProfileConfirmDeleteKeyPayload,
+    MainMenuActionPayload,
+    ManagerMenuActionPayload,
+    ManagerTicketSelectPayload,
+    ManagerTicketsFilterPayload,
+    ManagerTicketsPaginationPayload,
+    ManagerTicketsBackPayload,
+    ManagerArchiveFilterPayload,
+    ManagerArchivePaginationPayload,
+    ManagerArchiveTicketPayload,
+    ManagerArchiveBackPayload,
+    ManagerTicketActionPayload,
+    ManagerToggleFocusPayload,
+    ManagerEmployeeSelectPayload,
+    ManagerTicketHistoryPayload,
+    ManagerTicketHistoryBackPayload,
+    AdminMenuPayload,
+    AnalyticsPayload,
+    EmployeeMenuPayload,
+    EmployeeListPayload,
+    EmployeeActionPayload,
+    EmployeeRolePayload,
+    EmployeeConfirmPayload,
+    BackupManagerPayload,
+    TransferTicketPayload,
+    TransferClientsPayload,
+    OrganizationSelectPayload,
+    OrganizationPagePayload,
+    OrganizationActionPayload,
+    KeyTogglePayload,
+    KeyPagePayload,
+    KeyActionPayload,
+    DeliveryMethodPayload,
+    EmailConfirmPayload,
+    KeyConflictChoicePayload,
+    RegistrationCancelPayload,
+    RegistrationSkipPayload,
+    AdminCreationCancelPayload,
+)
+from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates
 
 from .common.callbacks import (
     process_back_navigation,
@@ -36,20 +97,303 @@ from .common.callbacks import (
     process_pagination,
 )
 from .tickets.invoice import (
-    process_delivery_method,
-    process_key_selection,
-    process_organization_selection,
+    cmd_invoice,
+    handle_delivery_callback,
+    handle_email_confirm_callback,
+    handle_key_toggle_callback,
+    handle_key_page_callback,
+    handle_key_action_callback,
+    handle_organization_select_callback,
+    handle_organization_page_callback,
+    handle_organization_action_callback,
+    process_new_inn,
+    process_new_key,
+    process_description,
+    process_email,
+    cancel_add_new_inn,
+    cancel_add_new_key,
 )
+from .tickets.support import (
+    cmd_support,
+    handle_renewal_callback,
+    handle_key_context_callback,
+    process_problem_description,
+    process_new_key_for_support,
+    cancel_support_flow,
+)
+from .user.archive import (
+    handle_client_archive_button,
+    handle_client_archive_filter,
+    handle_client_archive_pagination,
+    view_client_archived_ticket,
+    handle_client_archive_close,
+)
+from .user.active_tickets import (
+    handle_select_ticket_callback,
+    handle_tickets_pagination_callback,
+    handle_close_active_tickets,
+    handle_ticket_history,
+    handle_ticket_history_back,
+)
+from .user.messages import route_client_message_to_ticket
 from .user.cancel import cmd_cancel, handle_cancel_button
 from .user.commands import (
-    handle_invoice_button,
-    handle_profile_button,
-    handle_support_button,
-    help_command,
+    cmd_help,
+    cmd_my_id,
+    handle_main_menu,
 )
-from .user.registration import cmd_start
+from .user.main_menu_callbacks import handle_main_menu_callback
+from .user.renewal import show_subscription_status
+from .staff.manager import (
+    cmd_manager,
+    handle_manager_menu_action,
+    handle_tickets_filter,
+    handle_tickets_pagination,
+    handle_ticket_select,
+    handle_tickets_back,
+    handle_archive_filter,
+    handle_archive_pagination,
+    handle_archive_ticket_select,
+    handle_archive_back,
+    handle_archive_custom_search_input,
+    handle_ticket_action,
+    handle_toggle_focus,
+    handle_closing_comment_input,
+    handle_employee_selection,
+    handle_manager_ticket_history,
+    handle_manager_ticket_history_back,
+)
+from .staff.admin_panel import (
+    handle_admin_panel_action,
+    handle_admin_menu_action,
+)
+from .staff.analytics import (
+    handle_analytics_dashboard,
+    handle_analytics_period_selection,
+    handle_analytics_refresh,
+)
+from .staff.settings import (
+    handle_settings_menu,
+    handle_timeout_settings,
+    handle_edit_timeout_start,
+    handle_timeout_value_input,
+    handle_escalation_settings,
+    handle_duty_support_settings,
+    handle_nps_settings,
+    handle_renewal_reminders_settings,
+    handle_settings_history,
+    handle_edit_nps_frequency_start,
+    handle_nps_frequency_input,
+    handle_edit_nps_trigger_start,
+    handle_nps_trigger_input,
+    handle_add_renewal_reminder_start,
+    handle_renewal_reminder_input,
+    handle_remove_renewal_reminder,
+    handle_reset_timeouts,
+    handle_reset_nps,
+    handle_reset_renewal_reminders,
+    handle_reset_escalation,
+    handle_reset_duty_support,
+    handle_edit_escalation_channel_start,
+    handle_escalation_channel_input,
+    handle_edit_duty_account_start,
+    handle_duty_account_input,
+)
+from .staff.employees import (
+    handle_employees_menu,
+    handle_add_employee_start,
+    handle_employee_id_input,
+    handle_employee_name_input,
+    handle_employee_role_selection,
+    handle_list_employees,
+    handle_employee_list_pagination,
+    handle_employee_action,
+    handle_employee_name_edit_input,
+    handle_employee_signature_edit_input,
+    handle_employee_role_change,
+    handle_backup_manager_config,
+    handle_backup_slot_selection,
+    handle_backup_manager_assignment,
+    handle_backup_manager_removal,
+    handle_transfer_ticket_start,
+    handle_transfer_ticket_confirm,
+    handle_transfer_clients_start,
+    handle_transfer_clients_confirm,
+)
+from .staff.calendar import (
+    handle_calendar_menu,
+    handle_calendar_action,
+    handle_rule_pagination,
+    handle_back_to_menu,
+    handle_calendar_text_command,
+    handle_calendar_confirmation,
+    handle_clear_period_confirmation,
+    handle_clear_period_text,
+)
+from .staff.operations import (
+    handle_operations_menu,
+    handle_broadcast_create,
+    handle_broadcast_content_input,
+    handle_broadcast_targeting,
+    handle_broadcast_send,
+    handle_broadcast_cancel,
+)
+from .staff.key_conflicts import (
+    handle_key_conflict_list,
+    handle_key_conflict_view,
+    handle_key_transfer,
+    handle_key_rejection,
+    handle_key_conflict_contact,
+)
+from .staff.escalations import (
+    handle_escalations_list,
+    handle_escalation_view,
+    handle_escalation_reassign,
+    handle_escalation_reassign_confirm,
+    handle_escalation_take_over,
+    handle_staff_contact,
+)
+from .client import nps_handler
+from bots.max_bot.payloads import (
+    CalendarMenuPayload,
+    CalendarPaginationPayload,
+    CalendarConfirmPayload,
+    CalendarClearPayload,
+    OperationsMenuPayload,
+    BroadcastPayload,
+    KeyConflictPayload,
+    EscalationPayload,
+    SettingsPayload,
+)
+from .staff.focus_messages import (
+    handle_focus_message,
+    handle_message_without_focus,
+)
+from .user.profile import (
+    cmd_profile,
+    handle_profile_callback,
+    process_add_inn,
+    process_add_key,
+    process_change_email,
+    cancel_profile_action,
+)
+from .user.registration import (
+    cmd_start,
+    process_phone_contact,
+    process_full_name,
+    process_email_registration,
+    skip_email,
+    process_inn,
+    process_gs_key,
+    start_registration,
+    process_key_conflict_choice,
+    show_key_help,
+    submit_registration,
+    cancel_registration,
+    cancel_registration_callback,
+)
+from .admin.admin_creation import (
+    cmd_make_admin,
+    process_admin_phone_contact,
+    process_admin_full_name,
+    cancel_admin_creation_callback,
+    cancel_admin_creation_command,
+)
+from .admin.get_chat_id import cmd_get_chat_id
 
 logger = logging.getLogger(__name__)
+
+
+def _check_callback_action(event, action: str) -> bool:
+    """
+    Helper function to check if callback payload has a specific action.
+    Handles both dict and JSON string payloads.
+    
+    Args:
+        event: MessageCallback event
+        action: Action string to check for
+    
+    Returns:
+        True if payload.action matches the given action
+    """
+    try:
+        payload = event.callback.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload) if payload else {}
+        return payload.get("action") == action
+    except Exception:
+        return False
+
+
+def _check_main_menu_action(event, action: str) -> bool:
+    """
+    Helper function to check if callback is a main menu action.
+    Main menu callbacks ONLY have 'action' field, no other fields.
+    This distinguishes them from invoice/support callbacks which have additional fields.
+    
+    Args:
+        event: MessageCallback event
+        action: Action string to check for
+    
+    Returns:
+        True if payload.action matches AND payload has only 'action' field
+    """
+    try:
+        payload = event.callback.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload) if payload else {}
+        
+        # Debug logging
+        logger.debug(f"_check_main_menu_action: checking action={action}, payload={payload}, len={len(payload)}")
+        
+        # Check that action matches AND payload only has 'action' key (no inn, page, key_id, etc.)
+        result = payload.get("action") == action and len(payload) == 1
+        logger.debug(f"_check_main_menu_action: result={result}")
+        return result
+    except Exception as e:
+        logger.error(f"_check_main_menu_action error: {e}")
+        return False
+
+
+def _has_filter_type(event) -> bool:
+    """
+    Helper function to check if callback payload has filter_type field.
+    Used to distinguish archive callbacks from other callbacks with same action.
+    
+    Args:
+        event: MessageCallback event
+    
+    Returns:
+        True if payload has filter_type field
+    """
+    try:
+        payload = event.callback.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload) if payload else {}
+        return "filter_type" in payload
+    except Exception:
+        return False
+
+
+def _check_callback_method(event, method: str) -> bool:
+    """
+    Helper function to check if callback payload has a specific method.
+    Used for DeliveryCallback which uses 'method' instead of 'action'.
+    
+    Args:
+        event: MessageCallback event
+        method: Method string to check for
+    
+    Returns:
+        True if payload.method matches the given method
+    """
+    try:
+        payload = event.callback.payload
+        if isinstance(payload, str):
+            payload = json.loads(payload) if payload else {}
+        return payload.get("method") == method
+    except Exception:
+        return False
 
 
 def create_user_router() -> Router:
@@ -68,51 +412,641 @@ def create_user_router() -> Router:
     """
     user_router = Router(router_id="user_handlers")
 
-    # Apply private chat filter to all message and callback handlers
-    # This ensures handlers only process updates from private chats
-    user_router.message.filter(PrivateChatFilter())
-    user_router.message_callback.filter(PrivateChatFilter())
+    # TODO: Apply private chat filter when maxapi supports it
+    # user_router.message_created.filter(PrivateChatFilter())
+    # user_router.message_callback.filter(PrivateChatFilter())
 
     # ========== Command Handlers ==========
-
-    @user_router.message(Command("start"))
-    async def start_handler(message, state, session, messenger_adapter):
-        """Handler for /start command"""
-        await cmd_start(message, state, session, messenger_adapter)
-
-    @user_router.message(Command("help"))
-    async def help_handler(message, messenger_adapter):
-        """Handler for /help command"""
-        await help_command(message, messenger_adapter)
-
-    @user_router.message(Command("cancel"))
-    async def cancel_handler(message, state, session, messenger_adapter):
-        """Handler for /cancel command"""
-        await cmd_cancel(message, state, session, messenger_adapter)
+    # Register handlers directly on router using decorator pattern
+    
+    logger.info(f"Registering /start handler: {cmd_start}")
+    user_router.message_created(Command("start"))(cmd_start)
+    
+    logger.info(f"Registering /help handler: {cmd_help}")
+    user_router.message_created(Command("help"))(cmd_help)
+    
+    logger.info(f"Registering /my_id handler: {cmd_my_id}")
+    user_router.message_created(Command("my_id"))(cmd_my_id)
+    
+    logger.info(f"Registering /cancel handler: {cmd_cancel}")
+    user_router.message_created(Command("cancel"))(cmd_cancel)
+    
+    logger.info(f"Registering /profile handler: {cmd_profile}")
+    user_router.message_created(Command("profile"))(cmd_profile)
+    
+    logger.info(f"Registering /manager handler: {cmd_manager}")
+    user_router.message_created(Command("manager"))(cmd_manager)
+    
+    logger.info(f"Registering /make_admin handler: {cmd_make_admin}")
+    user_router.message_created(Command("make_admin"))(cmd_make_admin)
+    
+    logger.info(f"Registering /get_chat_id handler: {cmd_get_chat_id}")
+    user_router.message_created(Command("get_chat_id"))(cmd_get_chat_id)
 
     # ========== Main Menu Button Handlers ==========
+    
+    user_router.message_created(F.message.body.text == "💰 Получить счет")(handle_main_menu)
+    user_router.message_created(F.message.body.text == "🆘 Техподдержка")(handle_main_menu)
+    user_router.message_created(F.message.body.text == "👤 Мой профиль")(handle_main_menu)
+    user_router.message_created(F.message.body.text == "📋 Архив обращений")(handle_client_archive_button)
+    user_router.message_created(F.message.body.text == "❌ Отмена")(handle_cancel_button)
 
-    @user_router.message(F.message.body.text == "💰 Получить счет")
-    async def invoice_button_handler(message, state, session, messenger_adapter):
-        """Handler for invoice button"""
-        await handle_invoice_button(message, state, session, messenger_adapter)
+    # ========== Main Menu Inline Callback Handlers ==========
+    
+    # Handle main menu inline keyboard callbacks using CallbackPayload
+    # Note: MainMenuActionPayload.filter() ensures we ONLY match callbacks with single 'action' field
+    # This prevents catching invoice/support callbacks which have additional fields (inn, page, key_id, etc.)
+    user_router.message_callback(MainMenuActionPayload.filter())(handle_main_menu_callback)
+    
+    # ========== Manager Menu Callback Handlers ==========
+    
+    # Manager menu action handler
+    user_router.message_callback(ManagerMenuActionPayload.filter())(handle_manager_menu_action)
+    
+    # Manager active tickets handlers
+    user_router.message_callback(ManagerTicketsFilterPayload.filter())(handle_tickets_filter)
+    user_router.message_callback(ManagerTicketsPaginationPayload.filter())(handle_tickets_pagination)
+    user_router.message_callback(ManagerTicketSelectPayload.filter())(handle_ticket_select)
+    user_router.message_callback(ManagerTicketsBackPayload.filter())(handle_tickets_back)
+    
+    # Manager ticket action handlers
+    user_router.message_callback(ManagerTicketActionPayload.filter())(handle_ticket_action)
+    user_router.message_callback(ManagerToggleFocusPayload.filter())(handle_toggle_focus)
+    
+    # Manager ticket history handlers
+    user_router.message_callback(ManagerTicketHistoryPayload.filter())(handle_manager_ticket_history)
+    user_router.message_callback(ManagerTicketHistoryBackPayload.filter())(handle_manager_ticket_history_back)
+    
+    # Manager employee selection handler (for transfer)
+    user_router.message_callback(ManagerEmployeeSelectPayload.filter())(handle_employee_selection)
+    
+    # ========== Admin Panel Handlers ==========
+    
+    # Admin panel entry point (from manager menu)
+    # Note: This is handled by handle_manager_menu_action with action="admin_panel"
+    # The actual handler is handle_admin_panel_action which is called from manager.py
+    
+    # Admin panel menu navigation
+    user_router.message_callback(AdminMenuPayload.filter())(handle_admin_menu_action)
+    
+    # ========== Analytics/Statistics Handlers ==========
+    
+    # Analytics period selection
+    async def route_analytics_action(
+        event: MessageCallback,
+        payload: AnalyticsPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        """Route analytics actions to appropriate handlers."""
+        if payload.action == "period":
+            await handle_analytics_period_selection(event, payload, context, session, messenger_adapter)
+        elif payload.action == "refresh":
+            await handle_analytics_refresh(event, payload, context, session, messenger_adapter)
+        else:
+            logger.warning(f"Unknown analytics action: {payload.action}")
+    
+    user_router.message_callback(AnalyticsPayload.filter())(route_analytics_action)
+    
+    # ========== Employee Management Handlers ==========
+    
+    # Employee menu actions - route based on action
+    async def route_employee_menu_action(
+        event: MessageCallback,
+        payload: EmployeeMenuPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        """Route employee menu actions to appropriate handlers."""
+        if payload.action == "add":
+            await handle_add_employee_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "list":
+            await handle_list_employees(event, payload, context, session, messenger_adapter)
+        else:
+            logger.warning(f"Unknown employee menu action: {payload.action}")
+    
+    user_router.message_callback(EmployeeMenuPayload.filter())(route_employee_menu_action)
+    
+    # Employee list pagination
+    user_router.message_callback(EmployeeListPayload.filter())(handle_employee_list_pagination)
+    
+    # Employee actions (view/edit/deactivate)
+    user_router.message_callback(EmployeeActionPayload.filter())(handle_employee_action)
+    
+    # Employee role selection - routes to add or edit based on FSM state
+    async def route_employee_role_payload(
+        event: MessageCallback,
+        payload: EmployeeRolePayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        """Route EmployeeRolePayload to appropriate handler based on context."""
+        # Check if we're in adding flow (FSM state set) or editing flow (no FSM state)
+        current_state = await context.get_state()
+        if current_state == EmployeeManagementStates.adding_employee_role:
+            # Adding new employee
+            await handle_employee_role_selection(event, payload, context, session, messenger_adapter)
+        else:
+            # Editing existing employee role
+            await handle_employee_role_change(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(EmployeeRolePayload.filter())(route_employee_role_payload)
+    
+    # Employee text input handlers
+    
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeManagementStates.adding_employee_id
+    )(handle_employee_id_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeManagementStates.adding_employee_name
+    )(handle_employee_name_input)
+    
+    # Employee name edit input
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeManagementStates.editing_employee_name
+    )(handle_employee_name_edit_input)
+    
+    # Employee signature edit input
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeManagementStates.editing_employee_signature
+    )(handle_employee_signature_edit_input)
+    
+    # Backup manager handlers - single registration with internal routing
+    async def route_backup_manager(event: MessageCallback, payload: BackupManagerPayload, context: MemoryContext, session: AsyncSession, messenger_adapter: MAXMessengerAdapter):
+        if payload.action == "config":
+            await handle_backup_manager_config(event, payload, context, session, messenger_adapter)
+        elif payload.action == "select_slot":
+            await handle_backup_slot_selection(event, payload, context, session, messenger_adapter)
+        elif payload.action == "assign":
+            await handle_backup_manager_assignment(event, payload, context, session, messenger_adapter)
+        elif payload.action == "remove":
+            await handle_backup_manager_removal(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(BackupManagerPayload.filter())(route_backup_manager)
+    
+    # Transfer ticket handlers - single registration with internal routing
+    async def route_transfer_ticket(event: MessageCallback, payload: TransferTicketPayload, context: MemoryContext, session: AsyncSession, messenger_adapter: MAXMessengerAdapter):
+        if payload.action == "start":
+            await handle_transfer_ticket_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "confirm":
+            await handle_transfer_ticket_confirm(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(TransferTicketPayload.filter())(route_transfer_ticket)
+    
+    # Transfer clients handlers - single registration with internal routing
+    async def route_transfer_clients(event: MessageCallback, payload: TransferClientsPayload, context: MemoryContext, session: AsyncSession, messenger_adapter: MAXMessengerAdapter):
+        if payload.action == "start":
+            await handle_transfer_clients_start(event, payload, context, session, messenger_adapter)
+        elif payload.action in ["confirm", "execute"]:
+            await handle_transfer_clients_confirm(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(TransferClientsPayload.filter())(route_transfer_clients)
+    
+    # ========== Calendar Handlers ==========
+    
+    # Calendar menu actions
+    user_router.message_callback(CalendarMenuPayload.filter())(handle_calendar_action)
+    
+    # Calendar pagination
+    user_router.message_callback(CalendarPaginationPayload.filter())(handle_rule_pagination)
+    
+    # Calendar confirmation actions (add/delete rules)
+    user_router.message_callback(CalendarConfirmPayload.filter())(handle_calendar_confirmation)
+    
+    # Calendar clear period confirmation
+    user_router.message_callback(CalendarClearPayload.filter())(handle_clear_period_confirmation)
+    
+    # Calendar text command handler (add/delete rules)
+    from bots.max_bot.states import CalendarStates
+    
+    user_router.message_created(
+        F.message.body.text,
+        CalendarStates.managing_calendar
+    )(handle_calendar_text_command)
+    
+    # Calendar clear period text input handler
+    user_router.message_created(
+        F.message.body.text,
+        CalendarStates.entering_clear_period
+    )(handle_clear_period_text)
+    
+    # ========== Operations Handlers ==========
+    
+    # Operations menu (from admin panel)
+    # Note: Registered via AdminMenuPayload with action="operations" in admin panel handler
+    
+    # Operations submenu navigation - route by action
+    async def route_operations_menu(
+        event: MessageCallback,
+        payload: OperationsMenuPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        if payload.action == "key_conflicts":
+            await handle_key_conflict_list(event, payload, context, session, messenger_adapter)
+        elif payload.action == "escalations":
+            await handle_escalations_list(event, payload, context, session, messenger_adapter)
+        else:
+            await messenger_adapter.send_message(
+                chat_id=event.message.recipient.chat_id,
+                text="❌ Неизвестное действие",
+                parse_mode="HTML"
+            )
+    
+    user_router.message_callback(OperationsMenuPayload.filter())(route_operations_menu)
+    
+    # Escalation handlers - route by action
+    async def route_escalation(
+        event: MessageCallback,
+        payload: EscalationPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        if payload.action == "list":
+            page = payload.page if payload.page is not None else 0
+            await handle_escalations_list(event, OperationsMenuPayload(action="escalations"), context, session, messenger_adapter, page=page)
+        elif payload.action == "view":
+            await handle_escalation_view(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reassign":
+            await handle_escalation_reassign(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reassign_confirm":
+            await handle_escalation_reassign_confirm(event, payload, context, session, messenger_adapter)
+        elif payload.action == "take_over":
+            await handle_escalation_take_over(event, payload, context, session, messenger_adapter)
+        elif payload.action == "contact":
+            await handle_staff_contact(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(EscalationPayload.filter())(route_escalation)
+    
+    # Key conflict handlers - route by action
+    async def route_key_conflict(
+        event: MessageCallback,
+        payload: KeyConflictPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        if payload.action == "list":
+            page = payload.page if payload.page is not None else 0
+            await handle_key_conflict_list(event, OperationsMenuPayload(action="key_conflicts"), context, session, messenger_adapter, page=page)
+        elif payload.action == "view":
+            await handle_key_conflict_view(event, payload, context, session, messenger_adapter)
+        elif payload.action == "transfer":
+            await handle_key_transfer(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reject":
+            await handle_key_rejection(event, payload, context, session, messenger_adapter)
+        elif payload.action == "contact":
+            await handle_key_conflict_contact(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(KeyConflictPayload.filter())(route_key_conflict)
+    
+    # Broadcast handlers - route by action
+    async def route_broadcast(
+        event: MessageCallback,
+        payload: BroadcastPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        if payload.action == "create":
+            await handle_broadcast_create(event, payload, context, session, messenger_adapter)
+        elif payload.action == "target":
+            await handle_broadcast_targeting(event, payload, context, session, messenger_adapter)
+        elif payload.action == "send":
+            await handle_broadcast_send(event, payload, context, session, messenger_adapter)
+        elif payload.action == "cancel":
+            await handle_broadcast_cancel(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(BroadcastPayload.filter())(route_broadcast)
+    
+    # Broadcast content input
+    from bots.max_bot.states import OperationsStates
+    
+    user_router.message_created(
+        F.message.body.text,
+        OperationsStates.creating_broadcast_content
+    )(handle_broadcast_content_input)
+    
+    # ========== Settings Handlers ==========
+    
+    # Settings menu navigation - route by action
+    async def route_settings(
+        event: MessageCallback,
+        payload: SettingsPayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        if payload.action == "menu":
+            await handle_settings_menu(event, AdminMenuPayload(action="settings"), context, session, messenger_adapter)
+        elif payload.action == "timeouts":
+            await handle_timeout_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "edit_timeout":
+            await handle_edit_timeout_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reset_timeouts":
+            await handle_reset_timeouts(event, payload, context, session, messenger_adapter)
+        elif payload.action == "escalation":
+            await handle_escalation_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "edit_escalation_channel":
+            await handle_edit_escalation_channel_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reset_escalation":
+            await handle_reset_escalation(event, payload, context, session, messenger_adapter)
+        elif payload.action == "duty_support":
+            await handle_duty_support_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "edit_duty_account":
+            await handle_edit_duty_account_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reset_duty_support":
+            await handle_reset_duty_support(event, payload, context, session, messenger_adapter)
+        elif payload.action == "nps":
+            await handle_nps_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "edit_nps_frequency":
+            await handle_edit_nps_frequency_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "edit_nps_trigger":
+            await handle_edit_nps_trigger_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reset_nps":
+            await handle_reset_nps(event, payload, context, session, messenger_adapter)
+        elif payload.action == "renewal_reminders":
+            await handle_renewal_reminders_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "add_renewal_reminder":
+            await handle_add_renewal_reminder_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "remove_renewal_reminder":
+            await handle_remove_renewal_reminder(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reset_renewal_reminders":
+            await handle_reset_renewal_reminders(event, payload, context, session, messenger_adapter)
+        elif payload.action == "history":
+            await handle_settings_history(event, payload, context, session, messenger_adapter)
+    
+    user_router.message_callback(SettingsPayload.filter())(route_settings)
+    
+    # Settings value input handlers
+    from bots.max_bot.states import SettingsStates
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_timeout_value
+    )(handle_timeout_value_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_nps_frequency
+    )(handle_nps_frequency_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_nps_trigger_timing
+    )(handle_nps_trigger_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_renewal_reminder_days
+    )(handle_renewal_reminder_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_escalation_chat_id
+    )(handle_escalation_channel_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        SettingsStates.entering_duty_account_id
+    )(handle_duty_account_input)
+    
+    # ========== Employee Focus Mode Handlers ==========
+    
+    # Manager closing ticket comment input
+    from bots.max_bot.states import EmployeeStates
+    
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeStates.manager_closing_ticket
+    )(handle_closing_comment_input)
+    
+    # Focus mode message handler (text and files)
+    # This handler catches all messages when employee is in focus mode
+    user_router.message_created(
+        EmployeeStates.in_focus
+    )(handle_focus_message)
+    
+    # Manager archive handlers
+    user_router.message_callback(ManagerArchiveFilterPayload.filter())(handle_archive_filter)
+    user_router.message_callback(ManagerArchivePaginationPayload.filter())(handle_archive_pagination)
+    user_router.message_callback(ManagerArchiveTicketPayload.filter())(handle_archive_ticket_select)
+    user_router.message_callback(ManagerArchiveBackPayload.filter())(handle_archive_back)
+    
+    # Manager archive custom search input handler
+    from bots.max_bot.states import EmployeeStates
+    
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeStates.archive_custom_search
+    )(handle_archive_custom_search_input)
 
-    @user_router.message(F.message.body.text == "🆘 Техподдержка")
-    async def support_button_handler(message, state, session, messenger_adapter):
-        """Handler for support button"""
-        await handle_support_button(message, state, session, messenger_adapter)
+    # ========== Renewal Callback Handlers ==========
+    
+    # Renewal action callback handler (currently only "renew" action is handled in show_subscription_status)
+    # Note: "contact_manager" action would need separate handler if implemented
+    # For now, renewal callbacks are handled within show_subscription_status flow
+    
+    # ========== Archive Callback Handlers ==========
+    
+    # Archive callback handlers using CallbackPayload classes
+    user_router.message_callback(ArchiveFilterPayload.filter())(handle_client_archive_filter)
+    user_router.message_callback(ArchivePaginationPayload.filter())(handle_client_archive_pagination)
+    user_router.message_callback(ViewArchivedTicketPayload.filter())(view_client_archived_ticket)
+    user_router.message_callback(ArchiveClosePayload.filter())(handle_client_archive_close)
+    
+    # ========== Active Tickets Callback Handlers ==========
+    
+    user_router.message_callback(TicketSelectPayload.filter())(handle_select_ticket_callback)
+    user_router.message_callback(TicketsPaginationPayload.filter())(handle_tickets_pagination_callback)
+    user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
+    user_router.message_callback(TicketHistoryPayload.filter())(handle_ticket_history)
+    user_router.message_callback(TicketHistoryBackPayload.filter())(handle_ticket_history_back)
 
-    @user_router.message(F.message.body.text == "👤 Мой профиль")
-    async def profile_button_handler(message, session, messenger_adapter):
-        """Handler for profile button"""
-        await handle_profile_button(message, session, messenger_adapter)
+    # ========== Profile Management Handlers ==========
+    
+    # Profile action callback handlers using different payload types
+    user_router.message_callback(ProfileActionPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileViewPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileAddPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileDeleteOrgPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileConfirmDeleteOrgPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileDeleteKeyPayload.filter())(handle_profile_callback)
+    user_router.message_callback(ProfileConfirmDeleteKeyPayload.filter())(handle_profile_callback)
+    
+    # Profile input handlers with FSM state filters
+    user_router.message_created(
+        F.message.body.text,
+        ProfileStates.adding_inn
+    )(process_add_inn)
+    
+    user_router.message_created(
+        F.message.body.text,
+        ProfileStates.adding_key
+    )(process_add_key)
+    
+    user_router.message_created(
+        F.message.body.text,
+        ProfileStates.changing_email
+    )(process_change_email)
+    
+    # Profile cancellation handler - registered for multiple states
+    user_router.message_created(
+        F.message.body.text == "❌ Отмена",
+        ProfileStates.adding_inn
+    )(cancel_profile_action)
+    user_router.message_created(
+        F.message.body.text == "❌ Отмена",
+        ProfileStates.adding_key
+    )(cancel_profile_action)
+    user_router.message_created(
+        F.message.body.text == "❌ Отмена",
+        ProfileStates.changing_email
+    )(cancel_profile_action)
 
-    @user_router.message(F.message.body.text == "❌ Отмена")
-    async def cancel_button_handler(message, state, session, messenger_adapter):
-        """Handler for cancel button"""
-        await handle_cancel_button(message, state, session, messenger_adapter)
+    # ========== Registration Flow Handlers ==========
+    
+    # Contact sharing handler - triggered when user shares contact in waiting_for_phone state
+    # Note: MAX may send contact as text or in attachments, so we handle both
+    user_router.message_created(
+        RegistrationStates.waiting_for_phone
+    )(process_phone_contact)
+    
+    # Full name handler
+    user_router.message_created(
+        F.message.body.text,
+        RegistrationStates.waiting_for_name
+    )(process_full_name)
+    
+    # Email handler (optional step)
+    user_router.message_created(
+        F.message.body.text,
+        RegistrationStates.waiting_for_email
+    )(process_email_registration)
+    
+    # Skip email callback - when user clicks "Пропустить"
+    user_router.message_callback(RegistrationSkipPayload.filter())(skip_email)
+    
+    # INN handler
+    user_router.message_created(
+        F.message.body.text,
+        RegistrationStates.waiting_for_inn
+    )(process_inn)
+    
+    # GS Key handler
+    user_router.message_created(
+        F.message.body.text,
+        RegistrationStates.waiting_for_key
+    )(process_gs_key)
+    
+    # Key help callback - when user clicks "Не знаю номер ключа"
+    user_router.message_callback(
+        lambda event: (
+            hasattr(event, 'callback') and 
+            hasattr(event.callback, 'payload') and
+            isinstance(event.callback.payload, str) and
+            '"action":"key_help"' in event.callback.payload or
+            '"action": "key_help"' in event.callback.payload
+        ),
+        RegistrationStates.waiting_for_key
+    )(show_key_help)
+    
+    # Registration callbacks - key conflict resolution
+    user_router.message_callback(KeyConflictChoicePayload.filter())(process_key_conflict_choice)
+    
+    # Registration cancel callback - handles cancel button clicks during registration
+    user_router.message_callback(RegistrationCancelPayload.filter())(cancel_registration_callback)
+    
+    # ========== Admin Creation Flow Handlers ==========
+    
+    # Contact sharing handler for admin creation
+    user_router.message_created(
+        AdminCreationStates.waiting_for_phone
+    )(process_admin_phone_contact)
+    
+    # Full name handler for admin creation
+    user_router.message_created(
+        F.message.body.text,
+        AdminCreationStates.waiting_for_full_name
+    )(process_admin_full_name)
+    
+    # Admin creation cancel callback
+    user_router.message_callback(AdminCreationCancelPayload.filter())(cancel_admin_creation_callback)
+    
+    # Admin creation cancel command
+    user_router.message_created(
+        Command("cancel"),
+        AdminCreationStates.waiting_for_phone
+    )(cancel_admin_creation_command)
+    
+    user_router.message_created(
+        Command("cancel"),
+        AdminCreationStates.waiting_for_full_name
+    )(cancel_admin_creation_command)
+    
+    # ========== Client Message Routing (Active Ticket Communication) ==========
+    
+    # This handler must be registered LAST to catch all unhandled messages
+    # It checks for active_ticket_id in FSM context and routes messages to manager
+    # Handles text, photos, documents, voice messages, and videos
+    
+    async def handle_client_message_wrapper(
+        event: MessageCreated,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        """
+        Wrapper to route client messages to active ticket.
+        
+        This is registered as a catch-all handler for messages that weren't
+        handled by specific handlers (commands, buttons, FSM states).
+        
+        IMPORTANT: Skip messages from employees in focus mode - those are handled
+        by handle_focus_message which is registered with EmployeeStates.in_focus filter.
+        """
+        # Check if user is in focus mode (employee sending message to client)
+        current_state = await context.get_state()
+        if current_state == EmployeeStates.in_focus:
+            # This message should be handled by handle_focus_message
+            # Skip catch-all routing
+            logger.debug(
+                f"Skipping catch-all for user {event.message.sender.user_id} "
+                f"in focus mode (state={current_state})"
+            )
+            return
+        
+        # Try to route message to active ticket
+        was_routed = await route_client_message_to_ticket(
+            event=event,
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+        
+        if not was_routed:
+            # No active ticket - ignore message (or show help)
+            # Don't send any response to avoid spam
+            logger.debug(
+                f"Message from user {event.message.sender.user_id} not routed "
+                f"(no active ticket)"
+            )
+    
+    # Register catch-all message handler
+    # This will only trigger if no other handler matched
+    user_router.message_created()(handle_client_message_wrapper)
 
-    logger.info("User router created with command and menu handlers (private chat filter applied)")
+    logger.info("User router created with command and menu handlers")
     return user_router
 
 
@@ -131,28 +1065,121 @@ def create_tickets_router() -> Router:
     """
     tickets_router = Router(router_id="tickets_handlers")
 
-    # Apply private chat filter to all message and callback handlers
-    tickets_router.message.filter(PrivateChatFilter())
-    tickets_router.message_callback.filter(PrivateChatFilter())
+    # TODO: Apply private chat filter when maxapi supports it
+    # tickets_router.message_created.filter(PrivateChatFilter())
+    # tickets_router.message_callback.filter(PrivateChatFilter())
+
+    # ========== Command Handlers ==========
+    
+    logger.info(f"Registering /invoice handler: {cmd_invoice}")
+    tickets_router.message_created(Command("invoice"))(cmd_invoice)
+    
+    logger.info(f"Registering /support handler: {cmd_support}")
+    tickets_router.message_created(Command("support"))(cmd_support)
 
     # ========== Invoice Flow Callbacks ==========
+    # Register callback handlers using CallbackPayload filters
+    # Each payload type routes to its specific handler with type-safe parsing
+    
+    tickets_router.message_callback(OrganizationSelectPayload.filter())(handle_organization_select_callback)
+    tickets_router.message_callback(OrganizationPagePayload.filter())(handle_organization_page_callback)
+    tickets_router.message_callback(OrganizationActionPayload.filter())(handle_organization_action_callback)
+    tickets_router.message_callback(KeyTogglePayload.filter())(handle_key_toggle_callback)
+    tickets_router.message_callback(KeyPagePayload.filter())(handle_key_page_callback)
+    tickets_router.message_callback(KeyActionPayload.filter())(handle_key_action_callback)
+    tickets_router.message_callback(DeliveryMethodPayload.filter())(handle_delivery_callback)
+    tickets_router.message_callback(EmailConfirmPayload.filter())(handle_email_confirm_callback)
+    
+    # ========== Invoice Flow Message Handlers ==========
+    # Import InvoiceStates for FSM state filters
+    from bots.max_bot.states import InvoiceStates, SupportStates
+    
+    # Handler for adding new INN
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.adding_new_inn
+    )(process_new_inn)
+    
+    # Handler for adding new key
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.adding_new_key
+    )(process_new_key)
+    
+    # Handler for entering description
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.entering_description
+    )(process_description)
+    
+    # Handler for entering email
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.entering_email
+    )(process_email)
+    
+    # Cancel handler for adding new INN state
+    tickets_router.message_callback(
+        F.callback.payload == '{"action": "cancel"}',
+        InvoiceStates.adding_new_inn
+    )(cancel_add_new_inn)
+    
+    # Cancel handler for adding new key state
+    tickets_router.message_callback(
+        F.callback.payload == '{"action": "cancel"}',
+        InvoiceStates.adding_new_key
+    )(cancel_add_new_key)
+    
+    # ========== Support Flow Callbacks ==========
+    # Register support callback handlers using CallbackPayload filters (like invoice flow)
+    
+    # Import support flow payload classes
+    from bots.max_bot.payloads import (
+        RenewalActionPayload,
+        KeyContextTogglePayload,
+        KeyContextPagePayload,
+        KeyContextActionPayload,
+    )
+    
+    # Renewal callback handler (when user clicks "Оформить заявку на продление")
+    tickets_router.message_callback(RenewalActionPayload.filter())(handle_renewal_callback)
+    
+    # Key context callback handlers - separate handlers for each payload type
+    tickets_router.message_callback(KeyContextTogglePayload.filter())(handle_key_context_callback)
+    tickets_router.message_callback(KeyContextPagePayload.filter())(handle_key_context_callback)
+    tickets_router.message_callback(KeyContextActionPayload.filter())(handle_key_context_callback)
+    
+    # Cancel callback handler for support flow (only in support states)
+    # Import SupportStates for state filtering
+    tickets_router.message_callback(
+        F.callback.payload == '{"action": "cancel"}',
+        SupportStates.entering_problem
+    )(cancel_support_flow)
+    
+    tickets_router.message_callback(
+        F.callback.payload == '{"action": "cancel"}',
+        SupportStates.selecting_key_context
+    )(cancel_support_flow)
+    
+    tickets_router.message_callback(
+        F.callback.payload == '{"action": "cancel"}',
+        SupportStates.adding_new_key
+    )(cancel_support_flow)
+    
+    # ========== Support Flow Message Handlers ==========
+    
+    # Handler for entering problem description (text, photo, voice, document)
+    tickets_router.message_created(
+        SupportStates.entering_problem
+    )(process_problem_description)
+    
+    # Handler for adding new key in support flow
+    tickets_router.message_created(
+        F.message.body.text,
+        SupportStates.adding_new_key
+    )(process_new_key_for_support)
 
-    @tickets_router.message_callback(OrganizationCallback.filter())
-    async def organization_callback_handler(event, payload, state, session, messenger_adapter):
-        """Handler for organization selection callbacks"""
-        await process_organization_selection(event, payload, state, session, messenger_adapter)
-
-    @tickets_router.message_callback(KeyCallback.filter())
-    async def key_callback_handler(event, payload, state, session, messenger_adapter):
-        """Handler for key selection callbacks"""
-        await process_key_selection(event, payload, state, session, messenger_adapter)
-
-    @tickets_router.message_callback(DeliveryCallback.filter())
-    async def delivery_callback_handler(event, payload, state, session, messenger_adapter):
-        """Handler for delivery method callbacks"""
-        await process_delivery_method(event, payload, state, session, messenger_adapter)
-
-    logger.info("Tickets router created with invoice and support handlers (private chat filter applied)")
+    logger.info("Tickets router created with invoice and support handlers")
     return tickets_router
 
 
@@ -171,38 +1198,22 @@ def create_common_router() -> Router:
     """
     common_router = Router(router_id="common_handlers")
 
-    # Apply private chat filter to all message and callback handlers
-    common_router.message.filter(PrivateChatFilter())
-    common_router.message_callback.filter(PrivateChatFilter())
+    # TODO: Apply private chat filter when maxapi supports it
+    # common_router.message_created.filter(PrivateChatFilter())
+    # common_router.message_callback.filter(PrivateChatFilter())
 
     # ========== Common Callback Handlers ==========
+    # Register callback handlers directly on router
+    # NOTE: Example handlers are disabled to avoid interfering with real handlers
+    # They only match actions starting with 'example_' or 'example_nav_'
+    
+    # common_router.message_callback(ExampleItemCallback.filter())(process_pagination)
+    # common_router.message_callback(ExampleItemCallback.filter())(process_item_selection)
+    # common_router.message_callback(ExampleItemCallback.filter())(process_cancel)
+    # common_router.message_callback(ExampleNavigationCallback.filter())(process_back_navigation)
+    common_router.message_callback(F.callback.payload == "noop")(process_noop)
 
-    @common_router.message_callback(ExampleItemCallback.filter(F.action == "view"))
-    async def pagination_handler(event, payload, state, session, messenger_adapter):
-        """Handler for pagination callbacks"""
-        await process_pagination(event, payload, messenger_adapter)
-
-    @common_router.message_callback(ExampleItemCallback.filter(F.action == "select"))
-    async def item_selection_handler(event, payload, state, session, messenger_adapter):
-        """Handler for item selection callbacks"""
-        await process_item_selection(event, payload, messenger_adapter)
-
-    @common_router.message_callback(ExampleItemCallback.filter(F.action == "cancel"))
-    async def cancel_callback_handler(event, payload, state, session, messenger_adapter):
-        """Handler for cancel callbacks"""
-        await process_cancel(event, payload, state, messenger_adapter)
-
-    @common_router.message_callback(ExampleNavigationCallback.filter(F.action == "back"))
-    async def back_navigation_handler(event, payload, state, session, messenger_adapter):
-        """Handler for back navigation callbacks"""
-        await process_back_navigation(event, payload, messenger_adapter)
-
-    @common_router.message_callback(F.callback.payload == "noop")
-    async def noop_handler(event):
-        """Handler for noop callbacks (page indicators)"""
-        await process_noop(event)
-
-    logger.info("Common router created with shared callback handlers (private chat filter applied)")
+    logger.info("Common router created with shared callback handlers")
     return common_router
 
 
@@ -221,9 +1232,9 @@ def create_employee_router() -> Router:
     """
     employee_router = Router(router_id="employee_handlers")
 
-    # Apply private chat filter to all message and callback handlers
-    employee_router.message.filter(PrivateChatFilter())
-    employee_router.message_callback.filter(PrivateChatFilter())
+    # TODO: Apply private chat filter when maxapi supports it
+    # employee_router.message_created.filter(PrivateChatFilter())
+    # employee_router.message_callback.filter(PrivateChatFilter())
 
     # TODO: Add employee handlers when migrated
     # @employee_router.message(Command("employee"))
@@ -239,11 +1250,10 @@ def register_max_handlers(dp, router):
     Register all MAX bot handlers with the dispatcher using router hierarchy.
     
     This function creates separate routers for each feature domain and includes
-    them in the main router. This provides a modular architecture where handlers
-    are organized into logical groups and maintained in separate files.
+    them DIRECTLY in the dispatcher (not in the main router).
     
     Router hierarchy:
-    - main_router (passed as parameter)
+    - dispatcher
       ├─ user_router (commands, registration, profile)
       ├─ tickets_router (invoice, support)
       ├─ common_router (shared callbacks, navigation)
@@ -252,32 +1262,37 @@ def register_max_handlers(dp, router):
     Dependencies are injected via middleware:
     - messenger_adapter: Injected via MessengerAdapterMiddleware
     - session: Injected via DatabaseSessionMiddleware
-    - state: Provided by maxapi FSMContext
+    - context: Provided by maxapi MemoryContext
     
     Args:
         dp: MAX Dispatcher instance
-        router: Main MAX Router instance
+        router: Main MAX Router instance (not used - kept for compatibility)
     
     Requirements: 9.1, 9.2, 9.4, 9.7, 10.1, 10.2, 10.3, 5.1, 5.2, 5.3, 9.8, 14.5
     """
 
+    logger.info("Creating feature-specific routers...")
+    
     # Create feature-specific routers
-    # messenger_adapter is now injected via middleware, not passed as parameter
     user_router = create_user_router()
     tickets_router = create_tickets_router()
     common_router = create_common_router()
     employee_router = create_employee_router()
+    nps_router = nps_handler.router  # NPS survey handlers
 
-    # Include all routers in the main router
-    # Order matters: more specific handlers should be registered first
-    router.include_routers(
-        user_router,      # User commands and menu handlers
-        tickets_router,   # Invoice and support handlers
+    # Include all routers DIRECTLY in the dispatcher (not in main router)
+    # maxapi processes routers in REVERSE order (last registered = first checked)
+    # So we register in reverse priority order
+    logger.info("Including routers in dispatcher...")
+    dp.include_routers(
+        employee_router,  # Employee interface handlers (registered FIRST, checked LAST)
         common_router,    # Shared callback handlers
-        employee_router,  # Employee interface handlers
+        tickets_router,   # Invoice and support handlers
+        nps_router,       # NPS survey handlers
+        user_router,      # User commands and menu handlers (registered LAST, checked FIRST)
     )
 
-    logger.info("MAX bot handlers registered successfully with router hierarchy")
+    logger.info("✅ MAX bot handlers registered successfully with router hierarchy")
 
 
 __all__ = ["register_max_handlers"]

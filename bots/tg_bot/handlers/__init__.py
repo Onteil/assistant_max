@@ -1,52 +1,28 @@
 """
 Handlers Package
 
-Паттерн: Модульная организация обработчиков
-- Разделяйте handlers по типам (commands, callbacks, messages)
-- Каждый модуль имеет свой Router
-- Все роутеры объединяются в главный tg_bot_router
+Role-based organization:
+- client/ - Handlers for regular users (estimators/clients)
+- staff/ - Handlers for staff members (managers, technical support, administrators)
+
+Each role has its own router with appropriate middleware applied.
 """
 
 from aiogram import Router
 
-from bots.tg_bot.middlewares.check_staff_middleware import StaffMemberCheckMiddleware
+from .client import client_router
+from .staff import staff_router
 
-from .callbacks import router as callbacks_router
-from .cancel import router as cancel_router
-from .commands import router as commands_router
-from .employee import router as employee_router
-from .employee_messages import router as employee_messages_router
-from .invoice import router as invoice_router
-from .messages import router as messages_router
-from .profile import router as profile_router
-from .registration import router as registration_router
-from .support import router as support_router
-
-# Главный роутер для всего бота
+# Main router for the entire Telegram bot
 tg_bot_router = Router(name="tg_bot_main")
 
-# Apply staff member check middleware to employee routers
-# This restricts access to employee interface to staff members only
-staff_check_middleware = StaffMemberCheckMiddleware()
-employee_router.message.middleware(staff_check_middleware)
-employee_router.callback_query.middleware(staff_check_middleware)
-employee_messages_router.message.middleware(staff_check_middleware)
-employee_messages_router.callback_query.middleware(staff_check_middleware)
-
-# Регистрация всех дочерних роутеров
-# Cancel router should be first to handle /cancel in any state
-# Registration router should be second to handle /start command
+# Register role-based routers
+# Client router registered BEFORE staff router
+# This allows client handlers to process client messages first
+# Staff handlers will only process messages from staff members (checked in handlers)
 tg_bot_router.include_routers(
-    cancel_router,
-    registration_router,
-    employee_router,
-    employee_messages_router,
-    invoice_router,
-    support_router,
-    profile_router,
-    commands_router,
-    callbacks_router,
-    messages_router
+    client_router,
+    staff_router
 )
 
 __all__ = ["tg_bot_router"]

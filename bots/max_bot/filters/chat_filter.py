@@ -10,13 +10,12 @@ Requirements: 10.4 - Implement private chat filtering
 import logging
 from typing import Any, Dict
 
-from maxapi.filters import BaseFilter
 from maxapi.types import MessageCallback, MessageCreated, UpdateUnion
 
 logger = logging.getLogger(__name__)
 
 
-class PrivateChatFilter(BaseFilter):
+class PrivateChatFilter:
     """
     Filter to accept only updates from private chats.
     
@@ -24,7 +23,7 @@ class PrivateChatFilter(BaseFilter):
     ensuring that bot handlers only process private conversations.
     
     Usage:
-        router.message.filter(PrivateChatFilter())
+        router.message_created.filter(PrivateChatFilter())
         router.message_callback.filter(PrivateChatFilter())
     
     Requirements: 10.4

@@ -13,7 +13,7 @@ from constants import (
     HOST,
     HTTP_PROXY,
     IS_LOCAL_BOT,
-    MAIN_BOT_TOKEN,
+    TG_BOT_TOKEN,
     MAX_BOT_TOKEN,
     REDIS,
     WEBHOOK_PATH_MAIN,
@@ -21,6 +21,7 @@ from constants import (
 )
 from bots.tg_bot.filters.chat_filter import ChatTypeFilter
 from bots.tg_bot.middlewares.album_midleware import AlbumMiddleware
+from bots.tg_bot.middlewares.debug_middleware import DebugSpyMiddleware
 from bots.tg_bot.middlewares.bot_reconstruction import BotInReconstruction
 from bots.tg_bot.middlewares.clear_state_middleware import StateClearerMiddleware
 from bots.tg_bot.middlewares.database import DatabaseSessionMiddleware
@@ -38,29 +39,28 @@ else:
 
 bot_session = AiohttpSession()
 
-tg_bot = Bot(MAIN_BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="Markdown"))
+tg_bot = Bot(TG_BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
 
 main_dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.USER_IN_CHAT)
 
-# Регистрация обработчиков
-tg_bot_router = Router(name="tgbot")
+# Глобальные фильтры для всех обработчиков (применяются к диспетчеру)
+main_dp.message.filter(ChatTypeFilter(chat_type=["private"]))
+main_dp.callback_query.filter(ChatTypeFilter(chat_type=["private"]))
 
-tg_bot_router.message.filter(ChatTypeFilter(chat_type=["private"]))
-tg_bot_router.callback_query.filter(ChatTypeFilter(chat_type=["private"]))
-
-
+# Регистрация middleware
 for middleware in [
     DatabaseSessionMiddleware(),
     ThrottlingMiddleware(),
     BotInReconstruction(),
     UserDataMiddleware(),
     ErrorHandler(),
+    DebugSpyMiddleware()
 ]:
     main_dp.message.middleware(middleware)
     main_dp.callback_query.middleware(middleware)
 
 
-main_dp.message.outer_middleware(StateClearerMiddleware())
+# main_dp.message.outer_middleware(StateClearerMiddleware())
 main_dp.message.middleware(AlbumMiddleware())
 
 
@@ -74,65 +74,29 @@ try:
     from maxapi import Router as MAXRouter
     from maxapi.context import MemoryContext
     from maxapi.enums.parse_mode import ParseMode
-    from maxapi.client import DefaultConnectionProperties
     from bots.max_bot.messenger_adapter import MAXMessengerAdapter
     from bots.max_bot.handlers import register_max_handlers
-    from bots.max_bot.middlewares import (
-        DatabaseSessionMiddleware,
-        ThrottlingMiddleware,
-        BotInReconstructionMiddleware,
-        UserDataMiddleware,
-        ErrorHandlerMiddleware,
-        StateClearerMiddleware,
-        AlbumMiddleware,
-        MessengerAdapterMiddleware,
-    )
+    from bots.max_bot.middlewares.database import DatabaseSessionMiddleware as MAXDatabaseSessionMiddleware
+    from bots.max_bot.middlewares.messenger_adapter import MessengerAdapterMiddleware
     
     # Initialize MAX bot with configuration
     if MAX_BOT_TOKEN:
-        # Configure connection properties for session management
-        # Requirements: 12.1, 12.4 - Initialize maxapi Bot with MAX_BOT_TOKEN and configure connection pooling
-        connection_props = DefaultConnectionProperties(
-            proxy=HTTP_PROXY if HTTP_PROXY else None,  # Use HTTP proxy if configured
-            trust_env=True,  # Read proxy settings from environment variables
-        )
-        
         # Initialize MAX bot with session management and connection pooling
         # The maxapi Bot handles connection pooling internally via aiohttp ClientSession
         # Connection pooling enables concurrent request handling for better performance
+        # Requirements: 12.1, 12.4 - Initialize maxapi Bot with MAX_BOT_TOKEN and configure connection pooling
         max_bot = MAXBot(
             token=MAX_BOT_TOKEN,
             parse_mode=ParseMode.HTML,  # Default parse mode for messages
-            notify=True,  # Enable notifications by default
-            disable_link_preview=False,  # Show link previews
-            auto_requests=True,  # Auto-populate chat/user objects via API
-            default_connection=connection_props,  # Connection properties with proxy support
-            after_input_media_delay=2.0,  # Delay after file uploads (seconds) to prevent rate limiting
-            auto_check_subscriptions=True,  # Warn if webhooks active during polling
         )
-        
-        # Initialize FSM storage (MemoryContext for development, can be switched to Redis for production)
-        # Requirements: 12.3 - Preserve Redis connection management for FSM storage
-        # Use Redis storage in production (non-local mode) for persistence and scalability
-        # Use MemoryContext in development (local mode) for simplicity
-        if not IS_LOCAL_BOT and redis:
-            # Use Redis for FSM storage in production
-            # This shares the same Redis connection pool as the Telegram bot
-            # Requirements: 12.3 - Maintain existing Redis connection pool for FSM storage
-            max_storage = MemoryContext()  # Note: maxapi uses MemoryContext, not RedisStorage
-            # TODO: If maxapi adds Redis storage support in the future, switch to:
-            # max_storage = RedisContext(redis=redis)
-            logging.info("MAX bot FSM storage: MemoryContext (Redis support pending in maxapi)")
-        else:
-            # Use in-memory storage for development
-            max_storage = MemoryContext()
-            logging.info("MAX bot FSM storage: MemoryContext (local development mode)")
         
         # Initialize MAX dispatcher using maxapi's built-in Dispatcher
         # The dispatcher handles routing updates to appropriate handlers
-        # Connect FSM storage to dispatcher for state management
+        # FSM storage is built-in to maxapi Dispatcher (uses in-memory storage by default)
+        # MemoryContext is automatically injected into handlers as a parameter
         # Requirements: 6.1, 6.2, 6.3 - FSM state management with maxapi
-        max_dp = MAXDispatcher(storage=max_storage)
+        # Note: maxapi Dispatcher doesn't accept storage parameter - FSM is built-in
+        max_dp = MAXDispatcher()
         
         # Create router for organizing handlers into logical groups
         # Router provides modular architecture for handler organization
@@ -141,37 +105,22 @@ try:
         # Initialize messenger adapter
         max_messenger_adapter = MAXMessengerAdapter(bot=max_bot)
         
-        # Register middleware in correct order (order matters for execution)
-        # Middleware is applied globally to all handlers via dp.middleware()
+        # Register middleware using maxapi pattern
+        # In maxapi, middleware is set via dp.middlewares list (not dp.middleware() method)
+        # Order matters: middleware executes in the order listed
         # Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 10.7, 14.5
-        for middleware in [
-            MessengerAdapterMiddleware(max_messenger_adapter),  # Inject messenger adapter (Requirement 14.5)
-            DatabaseSessionMiddleware(),      # Inject database session
-            ThrottlingMiddleware(),           # Rate limiting by chat_id
-            BotInReconstructionMiddleware(),  # Block updates during maintenance
-            UserDataMiddleware(),             # Load user data from database
-            ErrorHandlerMiddleware(),         # Global error handler - catches exceptions from all handlers (Requirement 10.7)
-        ]:
-            max_dp.middleware(middleware)
+        max_dp.middlewares = [
+            MAXDatabaseSessionMiddleware(),      # Inject database session (first - creates session)
+            MessengerAdapterMiddleware(max_messenger_adapter),  # Inject messenger adapter (second - adds adapter)
+        ]
         
-        # State clearer middleware (applied to message_created events only)
-        # This middleware clears FSM state on /start command
-        max_dp.middleware(StateClearerMiddleware())
-        
-        # Album middleware (applied to message_created events only)
-        # This middleware groups multiple media attachments into albums
-        max_dp.middleware(AlbumMiddleware())
-        
-        # Register all MAX bot handlers with the router
-        # Handlers are registered in priority order within the router
+        # Register all MAX bot handlers with the dispatcher
+        # Handlers are registered in priority order within feature-specific routers
+        # Routers are included directly in dispatcher (maxapi doesn't support nested routers)
         # Messenger adapter is injected via MessengerAdapterMiddleware
         register_max_handlers(max_dp, max_bot_router)
         
-        # Include router in dispatcher
-        # This makes all router handlers available to the dispatcher
-        max_dp.include_router(max_bot_router)
-        
-        logging.info("MAX bot initialized successfully: Dispatcher, Router, Middleware, and Handlers registered")
+        logging.info("MAX bot initialized with handlers and middleware")
     else:
         max_bot = None
         max_dp = None
@@ -217,8 +166,85 @@ async def set_all_webhooks():
             logging.info(f"MAX webhook subscribed successfully: {HOST}{WEBHOOK_PATH_MAX}")
         except Exception as e:
             logging.error(f"Failed to subscribe MAX webhook: {e}", exc_info=True)
+    
+    # Register MAX bot commands
+    await register_max_bot_commands()
 
     logging.info("All webhooks are set.")
+
+
+async def register_max_bot_commands():
+    """
+    Регистрирует команды MAX бота в MAX API.
+    
+    Использует информацию из docstring обработчиков (commands_info маркер)
+    для автоматической регистрации команд в MAX messenger.
+    
+    Команды будут отображаться в интерфейсе MAX messenger при вводе "/".
+    """
+    if not max_bot:
+        logging.warning("MAX bot not initialized. Skipping command registration.")
+        return
+    
+    try:
+        from maxapi.types import BotCommand
+        
+        # Вызываем внутренний метод __ready для извлечения команд из обработчиков
+        # Этот метод обычно вызывается в start_polling, но мы используем webhook через FastAPI
+        # Поэтому вызываем его вручную для извлечения commands_info из docstring
+        await max_dp._Dispatcher__ready(max_bot)
+        
+        # Получаем список команд из обработчиков
+        # max_bot.handlers_commands содержит CommandsInfo объекты с информацией о командах
+        commands_dict = {}
+        
+        for cmd_info in max_bot.handlers_commands:
+            # cmd_info.commands - список команд (без префикса "/")
+            # cmd_info.info - описание команды из docstring
+            for command_name in cmd_info.commands:
+                commands_dict[command_name] = cmd_info.info or "Команда бота"
+        
+        # Определяем желаемый порядок команд
+        # Команды, не указанные в этом списке, будут добавлены в конце в алфавитном порядке
+        command_order = [
+            "start",
+            "help",
+            "invoice",
+            "support",
+            "profile",
+            "cancel",
+        ]
+        
+        # Сортируем команды согласно заданному порядку
+        commands_to_register = []
+        
+        # Сначала добавляем команды в заданном порядке
+        for cmd_name in command_order:
+            if cmd_name in commands_dict:
+                bot_command = BotCommand(
+                    name=cmd_name,
+                    description=commands_dict[cmd_name]
+                )
+                commands_to_register.append(bot_command)
+        
+        # Затем добавляем остальные команды в алфавитном порядке
+        remaining_commands = sorted(set(commands_dict.keys()) - set(command_order))
+        for cmd_name in remaining_commands:
+            bot_command = BotCommand(
+                name=cmd_name,
+                description=commands_dict[cmd_name]
+            )
+            commands_to_register.append(bot_command)
+        
+        if commands_to_register:
+            # Регистрируем команды в MAX API
+            await max_bot.set_my_commands(*commands_to_register)
+            logging.info(f"MAX bot commands registered in order: {[cmd.name for cmd in commands_to_register]}")
+        else:
+            logging.warning("No commands found to register for MAX bot")
+    
+    except Exception as e:
+        logging.error(f"Failed to register MAX bot commands: {e}", exc_info=True)
 
 
 async def delete_all_webhooks():

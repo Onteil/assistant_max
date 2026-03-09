@@ -8,7 +8,7 @@ import logging
 from typing import Any, Awaitable, Callable, Dict
 
 from maxapi.filters.middleware import BaseMiddleware
-from maxapi.fsm.context import FSMContext
+from maxapi.context import MemoryContext
 from maxapi.types import MessageCreated, UpdateUnion
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class StateClearerMiddleware(BaseMiddleware):
                     # Check if this is a global command
                     if command_text in self.global_commands:
                         # Get FSM context
-                        state: FSMContext = data.get("state")
+                        state: MemoryContext = data.get("state")
 
                         if state:
                             # Get current state

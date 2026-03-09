@@ -6,11 +6,14 @@
 
 ```
 celery_app/
-├── __init__.py           # Экспорт app для удобного импорта
-├── celery_config.py      # Конфигурация Celery приложения
-├── tasks.py              # Определение всех задач
-├── jobs.py               # Бизнес-логика задач
-└── README.md             # Документация
+├── __init__.py              # Экспорт app для удобного импорта
+├── celery_config.py         # Конфигурация Celery приложения
+├── nps_tasks.py             # Задачи для NPS опросов
+├── renewal_tasks.py         # Задачи для напоминаний о подписке
+├── escalation_tasks.py      # Задачи для эскалаций
+├── broadcast_tasks.py       # Задачи для рассылок
+├── ticket_notification_tasks.py  # Задачи для уведомлений о заявках
+└── README.md                # Документация
 ```
 
 ### 1. `celery_config.py` - Конфигурация Celery
@@ -19,19 +22,35 @@ celery_app/
 - Настройки брокера (Redis)
 - Настройки таймзоны
 - Конфигурацию периодических задач (Beat Schedule)
+- Импорт модулей с задачами
 
-### 2. `tasks.py` - Определение задач
-Содержит все Celery задачи с использованием декоратора `@shared_task`:
-- `save_clipping_results_task` - Сохранение результатов клиппинга
-- `create_posts_from_clips_task` - Создание постов из клипов
-- `run_iec_cy_parser_task` - Периодический парсер (каждый час)
+### 2. `nps_tasks.py` - NPS опросы
+Содержит задачи для системы NPS опросов:
+- `send_nps_survey_task` - Отправка опроса пользователю
+- `cleanup_old_surveys_task` - Очистка старых опросов (периодическая)
 
-### 3. `jobs.py` - Бизнес-логика
-Содержит асинхронную бизнес-логику, которая вызывается из задач:
-- `save_results_task()` - Логика сохранения результатов
-- `create_posts_task()` - Логика создания постов
-- `run_iec_cy_parser()` - Логика парсера
-- Обработчики инициализации и завершения воркера
+### 3. `renewal_tasks.py` - Напоминания о подписке
+Содержит задачи для системы напоминаний о продлении:
+- `check_upcoming_expirations_task` - Проверка истечений (периодическая)
+- `send_renewal_reminder_task` - Отправка напоминания пользователю
+
+### 4. `escalation_tasks.py` - Эскалации
+Содержит задачи для системы эскалаций:
+- `check_escalations_task` - Проверка просроченных тикетов
+- `send_escalation_notification_task` - Отправка уведомления об эскалации
+
+### 5. `broadcast_tasks.py` - Рассылки
+Содержит задачи для системы массовых рассылок:
+- `send_broadcast_task` - Отправка рассылки пользователям
+
+### 6. `ticket_notification_tasks.py` - Уведомления о заявках
+Содержит задачи для обработки заявок на счет и продление, созданных в нерабочее время:
+- `process_pending_tickets_task` - Проверка и отправка уведомлений о заявках INVOICE и RENEWAL (периодическая)
+
+**Примечание:** Заявки техподдержки (TECHNICAL_SUPPORT) не обрабатываются этой задачей, так как:
+- В основное рабочее время уведомления отправляются сразу всем сотрудникам ТП
+- В продленное время уведомление отправляется дежурному инженеру сразу
+- В нерабочее время заявки просто ждут без уведомлений (согласно ТЗ раздел 7.1)
 
 ## Запуск Celery
 
@@ -146,17 +165,34 @@ volumes:
 ## Использование задач
 
 ### Вызов задачи асинхронно
+
+#### NPS опрос
 ```python
-from celery_app.tasks import save_clipping_results_task
+from celery_app.nps_tasks import send_nps_survey_task
+from datetime import datetime
 
-# Отправить задачу в очередь
-result = save_clipping_results_task.delay(results_dict)
-
-# Или с дополнительными параметрами
-result = save_clipping_results_task.apply_async(
-    args=[results_dict],
-    countdown=10  # Выполнить через 10 секунд
+# Отправить опрос немедленно
+result = send_nps_survey_task.delay(
+    user_id=1,
+    survey_type='loyalty',
+    trigger_event_id=12345,
+    event_date=datetime.utcnow().isoformat()
 )
+
+# Или запланировать на определенное время
+from datetime import timedelta
+result = send_nps_survey_task.apply_async(
+    args=[1, 'loyalty', 12345, datetime.utcnow().isoformat()],
+    eta=datetime.utcnow() + timedelta(days=10)  # Через 10 дней
+)
+```
+
+#### Напоминание о подписке
+```python
+from celery_app.renewal_tasks import send_renewal_reminder_task
+
+# Отправить напоминание
+result = send_renewal_reminder_task.delay(notification_event_id=1)
 ```
 
 ### Получение результата
@@ -221,12 +257,38 @@ celery -A celery_app.celery_config inspect stats
 
 ## Периодические задачи
 
-Настроены в `beat_schedule`:
+Настроены в `beat_schedule` в `celery_config.py`:
+
+### Текущие периодические задачи:
+
+1. **cleanup-old-nps-surveys-daily**
+   - Задача: `celery_app.nps_tasks.cleanup_old_surveys`
+   - Расписание: Ежедневно в 3:00
+   - Очередь: `nps_surveys`
+   - Описание: Удаляет опросы старше 90 дней
+
+2. **check-upcoming-expirations**
+   - Задача: `celery_app.renewal_tasks.check_upcoming_expirations`
+   - Расписание: Ежедневно в 9:00
+   - Очередь: `renewal_reminders`
+   - Описание: Проверяет подписки, истекающие через 30 и 7 дней
+
+3. **process-pending-tickets**
+   - Задача: `celery_app.ticket_notification_tasks.process_pending_tickets`
+   - Расписание: Ежедневно в 9:00 (начало рабочего дня)
+   - Очередь: `ticket_notifications`
+   - Описание: Обрабатывает заявки на счет (INVOICE) и продление (RENEWAL), созданные в нерабочее/продленное время, и отправляет уведомления менеджерам. Заявки техподдержки не обрабатываются, так как они либо отправляются сразу (в рабочее/продленное время), либо просто ждут (в нерабочее время)
+
+### Добавление новой периодической задачи
+
+Добавьте запись в `beat_schedule` в `celery_config.py`:
+
 ```python
-'run-iec-cy-parser-every-hour': {
-    'task': 'celery_app.tasks.run_iec_cy_parser_task',
-    'schedule': crontab(minute=0, hour='*'),  # Каждый час
+app.conf.beat_schedule = {
+    "my-periodic-task": {
+        "task": "celery_app.my_tasks.my_task_name",
+        "schedule": crontab(minute=0, hour=12),  # Ежедневно в 12:00
+        "options": {"queue": "my_queue"},
+    },
 }
 ```
-
-Для добавления новой периодической задачи добавьте запись в `beat_schedule` в `celery_config.py`.

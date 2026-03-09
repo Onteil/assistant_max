@@ -1,47 +1,71 @@
-"""
+﻿"""
 Registration Handler for MAX Bot
 
-Manages the user registration conversation flow.
-Migrated from Telegram bot to MAX messenger using maxapi.
+Handles user registration flow including:
+- /start command with deep link parsing
+- Phone number collection via RequestContactButton
+- Full name, email, INN, and GS_Key collection
+- Key conflict detection and resolution
+- Registration submission to i-TAT API
 
-Requirements: 1.1-1.5, 2.1-2.7, 3.1-3.5, 4.1-4.5, 25.1-25.5, 9.3, 9.5, 9.6, 9.7, 9.8
+Requirements: 1.1-1.16, 8.10
 """
 
 import logging
+import re
+from typing import Optional
 
-import httpx
-from maxapi.context import FSMContext
-from maxapi.types import Message
-from sqlalchemy import select
+from maxapi import F
+from maxapi.context import MemoryContext
+from maxapi.types import MessageCallback, MessageCreated
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.max_bot.keyboards.main_menu_kb import get_main_menu_keyboard
-from bots.max_bot.keyboards.registration_kb import (
-    get_cancel_keyboard,
-    get_phone_request_keyboard,
+from bots.max_bot.callback_datas import KeyConflictCallback
+from bots.max_bot.payloads import (
+    KeyConflictChoicePayload,
+    RegistrationCancelPayload,
+    RegistrationSkipPayload,
 )
+from bots.max_bot.keyboards.user.registration_kb import (
+    get_cancel_keyboard,
+    get_key_conflict_keyboard,
+    get_key_input_keyboard,
+    get_phone_keyboard,
+    get_skip_keyboard,
+)
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import RegistrationStates
 from bots.max_bot.texts import (
-    BTN_CANCEL,
+    ERROR_GENERAL,
+    ERROR_VALIDATION_EMAIL,
     ERROR_VALIDATION_INN,
     ERROR_VALIDATION_KEY,
     ERROR_VALIDATION_PHONE,
-    MAIN_MENU,
+    FLOW_CANCELLED,
+    REGISTRATION_ENTER_EMAIL,
     REGISTRATION_ENTER_INN,
     REGISTRATION_ENTER_KEY,
     REGISTRATION_KEY_CONFLICT,
+    REGISTRATION_KEY_HELP,
     REGISTRATION_PENDING,
-    REGISTRATION_PHONE_DUPLICATE,
     REGISTRATION_PHONE_SHARED,
-    REGISTRATION_PROCESSING,
     REGISTRATION_START,
     REGISTRATION_SUBMITTED,
 )
-from database.models import KeyConflictStatus, TicketType, User
+from database.models import KeyConflictStatus, RegistrationStatus
 from services.i_tat_service import get_itat_client
-from services.user_service import add_user_key, create_user, get_user_by_tg_id
+from services.user_service import (
+    add_user_key,
+    add_user_organization,
+    create_user,
+    get_user_by_id,
+    get_user_by_max_id,
+    get_user_by_tg_id,
+    update_user_status,
+)
 from services.validation_service import (
+    validate_email,
     validate_gs_key,
     validate_inn,
     validate_phone_number,
@@ -50,698 +74,1335 @@ from services.validation_service import (
 logger = logging.getLogger(__name__)
 
 
-# ========== Command Handlers ==========
+# ========== Helper Functions ==========
+
+
+def _extract_phone_from_contact(event: MessageCreated) -> Optional[str]:
+    """
+    Extract phone number from contact attachment in MAX message.
+    
+    maxapi does not provide built-in contact parsing utilities. Contacts arrive
+    as attachments with type='contact' and payload.vcf_info containing VCF format
+    string (e.g., "TEL;TYPE=cell:79196977974").
+    
+    This function parses the VCF format to extract the phone number.
+    
+    Args:
+        event: MessageCreated event from MAX
+    
+    Returns:
+        Phone number string with + prefix, or None if not found
+    
+    Note:
+        Manual VCF parsing is required because maxapi library does not provide
+        contact parsing utilities. See docs/reports/contact-handling-analysis.md
+    """
+    if not event.message.body or not hasattr(event.message.body, 'attachments'):
+        return None
+    
+    if not event.message.body.attachments:
+        return None
+    
+    for attachment in event.message.body.attachments:
+        # Check if this is a contact attachment
+        if not hasattr(attachment, 'type') or attachment.type != 'contact':
+            continue
+        
+        # Extract phone from VCF format
+        if not hasattr(attachment, 'payload') or not hasattr(attachment.payload, 'vcf_info'):
+            continue
+        
+        vcf_info = attachment.payload.vcf_info
+        logger.debug(f"Parsing VCF info: {vcf_info}")
+        
+        # Parse VCF to extract phone number
+        # Format: TEL;TYPE=cell:79196977974
+        tel_match = re.search(r'TEL[^:]*:(\+?\d+)', vcf_info)
+        if tel_match:
+            phone_number = tel_match.group(1)
+            # Add + prefix if not present
+            if not phone_number.startswith('+'):
+                phone_number = '+' + phone_number
+            logger.info(f"Phone extracted from VCF: {phone_number}")
+            return phone_number
+    
+    return None
+
+
+# ========== /start Command Handler ==========
 
 
 async def cmd_start(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Entry point for /start command.
+    Handle /start command - check registration status and route accordingly.
     
-    Checks if user is already registered:
-    - If registered and ACTIVE: show main menu
-    - If registered and PENDING: show waiting message and block menu access
-    - If not registered: start registration flow
+    Routes user based on registration status:
+    - ACTIVE: Show main menu with inline keyboard
+    - PENDING: Show waiting message
+    - Not registered: Start registration flow
     
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id (MAX API format).
+    Also parses deep links from message text (e.g., /start param123).
     
-    Requirements: 1.1, 5.4, 5.5, 6.1, 9.1, 9.2, 9.5, 9.6, 9.7
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    - Includes commands_info marker for automatic command registration
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    commands_info: Запускает бота и начинает регистрацию
+    
+    Requirements: 1.1, 1.2, 1.3, 1.4, 8.10, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7
     """
-    # Extract user_id and chat_id from MAX message
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    message_text = event.message.body.text or ""
+    
+    logger.info(f"🎯 cmd_start CALLED: max_user_id={max_user_id}, chat_id={chat_id}, text='{message_text}'")
+    
     try:
-        # Check if user exists
-        user = await get_user_by_tg_id(session, user_id)
-
+        # Parse deep link parameter if present
+        deep_link_param = None
+        if len(message_text.split()) > 1:
+            deep_link_param = message_text.split()[1]
+            logger.info(f"Deep link parameter detected: {deep_link_param}")
+        
+        # Check if user is registered (use MAX user ID)
+        user = await get_user_by_max_id(session, max_user_id)
+        
         if user:
-            # User exists - check registration status
-            if user.registration_status.value == "active":
-                # Show main menu for active users
-                main_menu_keyboard = await get_main_menu_keyboard()
-
-                # Send message via messenger adapter
+            # User exists - update/create MAX messenger data
+            from services.user_service import upsert_max_messenger_data
+            await upsert_max_messenger_data(
+                session=session,
+                user_id=user.id,
+                max_user_id=max_user_id,
+                max_chat_id=chat_id
+            )
+            await session.commit()
+            
+            # Route based on status
+            if user.registration_status == RegistrationStatus.ACTIVE:
+                # Get active tickets count
+                from services.ticket_service import get_user_active_tickets_count
+                active_tickets_count = await get_user_active_tickets_count(session, user.id)
+                
+                # Show main menu with inline keyboard
+                from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+                keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+                
+                welcome_text = (
+                    "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
+                    "Здесь вы можете:\n\n"
+                    "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
+                    "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
+                    "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
+                    "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                    "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
+                    "Выберите нужное действие:"
+                )
+                
+                logger.info(f"Active user accessed bot: user_id={user.id}, active_tickets={active_tickets_count}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=MAIN_MENU,
-                    keyboard=None,  # TODO: Convert reply keyboard to abstraction
+                    text=welcome_text,
+                    keyboard=keyboard,
                     parse_mode="HTML"
                 )
-                logger.info(f"Active user {user_id} accessed main menu")
-
-            elif user.registration_status.value == "pending":
-                # Show pending message and block menu access
+            
+            elif user.registration_status == RegistrationStatus.PENDING:
+                # Show waiting message
+                logger.info(f"Pending user accessed bot: user_id={user.id}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
                     text=REGISTRATION_PENDING,
-                    keyboard=None,
                     parse_mode="HTML"
                 )
-                logger.info(f"Pending user {user_id} blocked from menu access")
-
-            else:  # rejected
-                # Allow re-registration for rejected users
-                await start_registration(message, state, messenger_adapter)
-
+            
+            else:
+                # Rejected or other status - start new registration
+                logger.info(f"User with status {user.registration_status.value} starting registration: user_id={user.id}")
+                await start_registration(event, context, messenger_adapter)
+        
         else:
-            # User doesn't exist - start registration
-            await start_registration(message, state, messenger_adapter)
-
+            # User not registered - start registration flow
+            logger.info(f"New user starting registration: max_user_id={max_user_id}")
+            await start_registration(event, context, messenger_adapter)
+    
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error in cmd_start for user {user_id}: {e}",
+            f"Database error in cmd_start: max_user_id={max_user_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при проверке регистрации.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
-
-
-async def start_registration(message: Message, state: FSMContext, messenger_adapter):
-    """
-    Start the registration flow by requesting phone number.
     
-    Migrated from Telegram bot to MAX messenger.
-    Uses maxapi's FSM state.clear() and state.set_state() methods.
-    
-    Requirements: 1.1, 29.1, 29.2, 9.5, 9.6
-    """
-    chat_id = message.chat.chat_id
-    user_id = message.from_user.user_id
-
-    # Clear FSM state using maxapi's state.clear() method
-    await state.clear()
-    await state.set_state(RegistrationStates.waiting_for_phone)
-
-    # Create phone request keyboard
-    keyboard = await get_phone_request_keyboard()
-
-    # Send welcome message via messenger adapter
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=REGISTRATION_START,
-        keyboard=keyboard,
-        parse_mode="HTML"
-    )
-
-    logger.info(f"User {user_id} started registration flow")
+    except Exception as e:
+        logger.error(
+            f"Unexpected error in cmd_start: max_user_id={max_user_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
 # ========== Registration Flow Handlers ==========
 
 
+async def start_registration(
+    event: MessageCreated,
+    context: MemoryContext,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Initiate registration flow by requesting phone number.
+    
+    Displays welcome message and phone request keyboard with RequestContactButton.
+    
+    maxapi Pattern Notes:
+    - Sets FSM state using context.set_state()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.5
+    """
+    chat_id = event.message.recipient.chat_id
+    
+    logger.info(f"Starting registration flow: chat_id={chat_id}")
+    
+    # Set FSM state
+    await context.set_state(RegistrationStates.waiting_for_phone)
+    
+    # Send welcome message with phone request
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=REGISTRATION_START,
+        keyboard=get_phone_keyboard(),
+        parse_mode="HTML"
+    )
+
+
 async def process_phone_contact(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles phone number from contact button.
+    Process shared contact, validate phone, create User record.
     
-    Validates format, checks for duplicates, and stores in FSM.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
+    Extracts phone number from contact attachment using VCF parsing.
+    maxapi does not provide built-in contact parsing utilities, so manual
+    VCF parsing is required. Contact attachments arrive with type='contact'
+    and payload.vcf_info containing VCF format string (e.g., "TEL;TYPE=cell:79196977974").
     
-    Requirements: 1.2, 1.3, 1.4, 21.1-21.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    Validates phone number format (Russian +7XXXXXXXXXX).
+    Creates User record in database immediately after validation.
+    Stores user_id in FSM context data.
+    
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: RegistrationStates.waiting_for_phone
+    - Uses event.message.sender.user_id for user identification
+    - Manual VCF parsing required (no built-in contact handling in maxapi)
+    - Sets next FSM state using context.set_state()
+    - Stores data using context.update_data()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.6, 1.7
     """
-    contact = message.contact
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-
-    # Verify contact is from the user themselves
-    if contact.user_id != user_id:
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    
+    logger.info(f"process_phone_contact called: chat_id={chat_id}, max_user_id={max_user_id}")
+    
+    # Extract phone number from contact attachment
+    phone_number = _extract_phone_from_contact(event)
+    
+    if not phone_number:
+        logger.warning(f"No phone number found in message: chat_id={chat_id}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Пожалуйста, поделитесь своим собственным номером телефона.",
-            keyboard=await get_phone_request_keyboard(),
+            text="❌ Не удалось получить контакт. Пожалуйста, используйте кнопку 'Поделиться номером'.",
+            keyboard=get_phone_keyboard(),
             parse_mode="HTML"
         )
         return
-
-    phone = contact.phone_number
-
-    # Validate phone number format
-    is_valid, result = validate_phone_number(phone)
-
+    
+    logger.info(f"Processing phone contact: max_user_id={max_user_id}, phone={phone_number}")
+    
+    # Validate phone number
+    is_valid, result = validate_phone_number(phone_number)
+    
     if not is_valid:
+        logger.warning(f"Invalid phone number: phone={phone_number}, error={result}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_PHONE.format(error_details=result),
-            keyboard=await get_phone_request_keyboard(),
+            text=f"{ERROR_VALIDATION_PHONE}\n\n{result}",
+            keyboard=get_phone_keyboard(),
             parse_mode="HTML"
         )
-        logger.warning(f"Invalid phone format from user {user_id}: {phone}")
         return
-
+    
     normalized_phone = result
-
-    # Check for duplicate phone number
+    
     try:
-        existing_user = await session.execute(
-            select(User).where(User.phone_number == normalized_phone)
+        # Check for orphaned max_messenger_data record
+        # This can happen if User was deleted but max_messenger_data remained
+        from sqlalchemy import select
+        from database.models import MAX_Messenger_Data
+        
+        result_check = await session.execute(
+            select(MAX_Messenger_Data).where(
+                MAX_Messenger_Data.max_user_id == max_user_id
+            )
         )
-        if existing_user.scalar_one_or_none():
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=REGISTRATION_PHONE_DUPLICATE,
-                keyboard=None,
-                parse_mode="HTML"
-            )
-            logger.warning(
-                f"Duplicate phone registration attempt: {normalized_phone} "
-                f"by user {user_id}"
-            )
-            await state.clear()
-            return
-
+        orphaned_max_data = result_check.scalar_one_or_none()
+        
+        if orphaned_max_data:
+            # Check if corresponding user exists
+            orphaned_user = await get_user_by_id(session, orphaned_max_data.user_id)
+            
+            if not orphaned_user:
+                # Orphaned record found - delete it
+                logger.warning(
+                    f"Found orphaned max_messenger_data: id={orphaned_max_data.id}, "
+                    f"max_user_id={max_user_id}, user_id={orphaned_max_data.user_id}. Deleting..."
+                )
+                await session.delete(orphaned_max_data)
+                await session.flush()
+                logger.info(f"Orphaned max_messenger_data deleted: id={orphaned_max_data.id}")
+        
+        # Create User record immediately
+        user_data = {
+            "max_user_id": max_user_id,
+            "max_chat_id": chat_id,  # Add MAX chat ID for message sending
+            "phone_number": normalized_phone,
+            "full_name": "",  # Will be filled in next step
+            "username": getattr(event.message.sender, 'username', None),
+            "first_name": getattr(event.message.sender, 'first_name', None),
+            "last_name": getattr(event.message.sender, 'last_name', None),
+        }
+        
+        user = await create_user(session, user_data)
+        await session.commit()
+        
+        logger.info(f"User record created: user_id={user.id}, phone={normalized_phone}, chat_id={chat_id}")
+        
+        # Store user_id in FSM context
+        await context.update_data(
+            user_id=user.id,
+            phone_number=normalized_phone
+        )
+        
+        # Transition to name collection state
+        await context.set_state(RegistrationStates.waiting_for_name)
+        
+        # Send confirmation and request full name
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"{REGISTRATION_PHONE_SHARED}\n\n"
+                 f"📝 Теперь введите ваше полное имя:",
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except IntegrityError as e:
+        logger.error(
+            f"Phone number already exists: phone={normalized_phone}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Этот номер телефона уже зарегистрирован. "
+                 "Если это ваш номер, обратитесь в поддержку.",
+            parse_mode="HTML"
+        )
+        await context.clear()
+    
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error checking phone duplicate for {user_id}: {e}",
+            f"Database error creating user: phone={normalized_phone}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+        await context.clear()
+
+
+async def process_full_name(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process full name input, parse into first/last/middle names, proceed to INN.
+    
+    Parses input in format: "Фамилия Имя Отчество" or "Фамилия Имя"
+    - Last name (required)
+    - First name (required)
+    - Middle name (optional)
+    
+    Validates minimum 2 words (last name + first name).
+    Updates User record with parsed names and constructs full_name.
+    Transitions to INN collection state.
+    
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: RegistrationStates.waiting_for_name
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    - Retrieves context data using context.get_data()
+    - Sets next FSM state using context.set_state()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.8
+    """
+    chat_id = event.message.recipient.chat_id
+    full_name_input = event.message.body.text.strip()
+    
+    logger.info(f"Processing full name: chat_id={chat_id}, input='{full_name_input}'")
+    
+    # Parse name into parts
+    name_parts = full_name_input.split()
+    
+    # Validate minimum 2 parts (last name + first name)
+    if len(name_parts) < 2:
+        logger.warning(f"Full name too short: input='{full_name_input}'")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Пожалуйста, укажите минимум фамилию и имя.\n\n"
+                 "<b>Формат: Фамилия Имя Отчество</b>\n"
+                 "<i>(Отчество необязательно)</i>\n\n"
+                 "Попробуйте еще раз:",
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+    
+    # Parse components
+    last_name = name_parts[0]
+    first_name = name_parts[1]
+    middle_name = name_parts[2] if len(name_parts) >= 3 else None
+    
+    # Construct full_name
+    if middle_name:
+        full_name = f"{last_name} {first_name} {middle_name}"
+    else:
+        full_name = f"{last_name} {first_name}"
+    
+    logger.info(f"Parsed name: last='{last_name}', first='{first_name}', middle='{middle_name}'")
+    
+    try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Update User record with parsed names
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        user.last_name = last_name
+        user.first_name = first_name
+        user.middle_name = middle_name
+        user.full_name = full_name
+        await session.commit()
+        
+        logger.info(f"Full name updated: user_id={user_id}, full_name='{full_name}'")
+        
+        # Store full name in context
+        await context.update_data(full_name=full_name)
+        
+        # Transition to email collection state
+        await context.set_state(RegistrationStates.waiting_for_email)
+        
+        # Send email request
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_ENTER_EMAIL,
+            keyboard=get_skip_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error updating full name: user_id={user_id}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def process_email_registration(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process email input (optional step), validate format, update User record.
+    
+    Validates email format if provided.
+    Updates User record with email.
+    Transitions to INN collection state.
+    
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: RegistrationStates.waiting_for_email
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    - Retrieves context data using context.get_data()
+    - Sets next FSM state using context.set_state()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: Email collection step
+    """
+    chat_id = event.message.recipient.chat_id
+    email_input = event.message.body.text.strip()
+    
+    logger.info(f"Processing email: chat_id={chat_id}, input='{email_input}'")
+    
+    # Validate email format
+    is_valid, error_msg = validate_email(email_input)
+    
+    if not is_valid:
+        logger.warning(f"Invalid email: email={email_input}, error={error_msg}")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"❌ <b>Неверный формат email</b>\n\n{error_msg}\n\nПопробуйте еще раз или нажмите 'Пропустить':",
+            keyboard=get_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+    
+    try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Update User record with email
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        user.email = email_input
+        await session.commit()
+        
+        logger.info(f"Email updated: user_id={user_id}, email={email_input}")
+        
+        # Store email in context
+        await context.update_data(email=email_input)
+        
+        # Transition to INN collection state
+        await context.set_state(RegistrationStates.waiting_for_inn)
+        
+        # Send INN request
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_ENTER_INN,
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error updating email: user_id={user_id}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def skip_email(
+    event: MessageCallback,
+    payload: RegistrationSkipPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle skip button callback during email collection step.
+    
+    Skips email collection and proceeds to INN collection.
+    Deletes old message with buttons before sending new message.
+    
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification in callbacks
+    - Uses RegistrationSkipPayload for type-safe callback parsing
+    - Uses replace_message pattern (delete old + send new)
+    - Sets next FSM state using context.set_state()
+    
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed registration skip payload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: Email collection step (optional)
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Skipping email: chat_id={chat_id}, max_user_id={max_user_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
+    try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Store None for email in context (skipped)
+        await context.update_data(email=None)
+        
+        # Transition to INN collection state
+        await context.set_state(RegistrationStates.waiting_for_inn)
+        
+        # Send INN request
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_ENTER_INN,
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"Email skipped, proceeding to INN: user_id={user_id}")
+    
+    except Exception as e:
+        logger.error(
+            f"Error skipping email: chat_id={chat_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при проверке номера телефона.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
-        await state.clear()
-        return
-
-    # Store phone in FSM and move to next step
-    await state.update_data(phone_number=normalized_phone)
-    await state.set_state(RegistrationStates.waiting_for_name)
-
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=REGISTRATION_PHONE_SHARED,
-        keyboard=await get_cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-    logger.info(f"User {user_id} provided phone: {normalized_phone}")
 
 
-async def cancel_phone_input(message: Message, state: FSMContext, messenger_adapter):
+async def process_inn(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handle cancel during phone input.
+    Process INN input, validate format, add organization, proceed to key.
     
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
+    Validates INN format (10 or 12 digits).
+    Adds organization to user profile.
+    Transitions to key collection state.
     
-    Requirements: 9.3, 9.5, 9.6, 9.7, 9.8
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: RegistrationStates.waiting_for_inn
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    - Sets next FSM state using context.set_state()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.10
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-
-    await state.clear()
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="❌ Регистрация отменена.\n\nИспользуйте /start для начала регистрации.",
-        keyboard=None,
-        parse_mode="HTML"
-    )
-    logger.info(f"User {user_id} cancelled registration at phone step")
-
-
-async def process_full_name(message: Message, state: FSMContext, messenger_adapter):
-    """
-    Handles full name input.
+    chat_id = event.message.recipient.chat_id
+    inn = event.message.body.text.strip()
     
-    Validates minimum length and stores in FSM.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
+    logger.info(f"Processing INN: chat_id={chat_id}, inn={inn}")
     
-    Requirements: 2.1, 2.2, 9.3, 9.5, 9.6, 9.7, 9.8
-    """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    full_name = message.body.text.strip()
-
-    # Check for cancel
-    if full_name == BTN_CANCEL:
-        await state.clear()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Регистрация отменена.\n\nИспользуйте /start для начала регистрации.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.info(f"User {user_id} cancelled registration at name step")
-        return
-
-    # Validate length
-    if len(full_name) < 2:
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Имя должно содержать минимум 2 символа.\n\n"
-                 "Пожалуйста, введите ваше полное имя (Фамилия Имя):",
-            keyboard=await get_cancel_keyboard(),
-            parse_mode="HTML"
-        )
-        logger.warning(f"User {user_id} provided too short name: {full_name}")
-        return
-
-    # Store name in FSM and move to next step
-    await state.update_data(full_name=full_name)
-    await state.set_state(RegistrationStates.waiting_for_inn)
-
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=REGISTRATION_ENTER_INN,
-        keyboard=await get_cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-    logger.info(f"User {user_id} provided name: {full_name}")
-
-
-async def process_inn(message: Message, state: FSMContext, messenger_adapter):
-    """
-    Handles INN input.
-    
-    Validates format (10 or 12 digits) and stores in FSM.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
-    
-    Requirements: 2.3, 2.4, 22.1-22.5, 9.3, 9.5, 9.6, 9.7, 9.8
-    """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    inn = message.body.text.strip()
-
-    # Check for cancel
-    if inn == BTN_CANCEL:
-        await state.clear()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Регистрация отменена.\n\nИспользуйте /start для начала регистрации.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.info(f"User {user_id} cancelled registration at INN step")
-        return
-
     # Validate INN format
-    is_valid, error_message = validate_inn(inn)
-
+    is_valid, error_msg = validate_inn(inn)
+    
     if not is_valid:
+        logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_INN.format(error_details=error_message),
-            keyboard=await get_cancel_keyboard(),
+            text=f"{ERROR_VALIDATION_INN}\n\n{error_msg}",
+            keyboard=get_cancel_keyboard(),
             parse_mode="HTML"
         )
-        logger.warning(f"User {user_id} provided invalid INN: {inn}")
         return
-
-    # Store INN in FSM and move to next step
-    await state.update_data(inn=inn)
-    await state.set_state(RegistrationStates.waiting_for_key)
-
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=REGISTRATION_ENTER_KEY,
-        keyboard=await get_cancel_keyboard(),
-        parse_mode="HTML"
-    )
-
-    logger.info(f"User {user_id} provided INN: {inn}")
+    
+    try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Add organization to user profile
+        await add_user_organization(session, user_id, inn)
+        await session.commit()
+        
+        logger.info(f"Organization added: user_id={user_id}, inn={inn}")
+        
+        # Store INN in context
+        await context.update_data(inn=inn)
+        
+        # Transition to key collection state
+        await context.set_state(RegistrationStates.waiting_for_key)
+        
+        # Send key request
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_ENTER_KEY,
+            keyboard=get_key_input_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except IntegrityError as e:
+        logger.warning(
+            f"Organization already exists: user_id={user_id}, inn={inn}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        # Continue anyway - organization already associated
+        await context.update_data(inn=inn)
+        await context.set_state(RegistrationStates.waiting_for_key)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_ENTER_KEY,
+            keyboard=get_key_input_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error adding organization: user_id={user_id}, inn={inn}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
 async def process_gs_key(
-    message: Message,
-    state: FSMContext,
+    event: MessageCreated,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Handles GS_Key input.
+    Process GS_Key input, validate format, check conflicts, proceed to submission.
     
-    Validates format, checks for conflicts via CRM API, and stores in FSM.
-    If conflict detected, creates admin ticket and flags key.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
-    Uses maxapi's message.body.text for text content.
+    Validates GS_Key format (XXXXX_XXXXX).
+    Checks for key conflicts via i-TAT API using user_id.
+    Displays conflict resolution options if conflict detected.
+    Stores key with appropriate conflict status.
     
-    Requirements: 2.5, 2.6, 3.1-3.5, 23.1-23.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: RegistrationStates.waiting_for_key
+    - Uses event.message.sender.user_id for user identification
+    - Accesses message text via event.message.body.text
+    - Retrieves context data using context.get_data()
+    - Stores data using context.update_data()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.11, 1.12, 1.13
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-    key_input = message.body.text.strip()
-
-    # Check for cancel
-    if key_input == BTN_CANCEL:
-        await state.clear()
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Регистрация отменена.\n\nИспользуйте /start для начала регистрации.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-        logger.info(f"User {user_id} cancelled registration at key step")
-        return
-
+    chat_id = event.message.recipient.chat_id
+    key_number = event.message.body.text.strip()
+    
+    logger.info(f"Processing GS_Key: chat_id={chat_id}, key={key_number}")
+    
     # Validate GS_Key format
-    is_valid, result = validate_gs_key(key_input)
-
+    is_valid, result = validate_gs_key(key_number)
+    
     if not is_valid:
+        logger.warning(f"Invalid GS_Key: key={key_number}, error={result}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ERROR_VALIDATION_KEY.format(error_details=result),
-            keyboard=await get_cancel_keyboard(),
+            text=f"{ERROR_VALIDATION_KEY}\n\n{result}",
+            keyboard=get_key_input_keyboard(),
             parse_mode="HTML"
         )
-        logger.warning(f"User {user_id} provided invalid key format: {key_input}")
         return
-
+    
     normalized_key = result
-
-    # Check for key conflict via CRM API
-    api_client = get_itat_client()
-    conflict_detected = False
-
+    
     try:
-        conflict_response = await api_client.check_key_conflict(
-            grand_key=normalized_key,
-            telegram_id=user_id
-        )
-
-        if conflict_response.get("status") == "conflict":
-            conflict_detected = True
-            logger.warning(
-                f"Key conflict detected for user {user_id}: "
-                f"key={normalized_key}, owner={conflict_response.get('owner')}"
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if not user_id:
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
             )
-
-    except httpx.HTTPStatusError as e:
-        # HTTP error from API - log and continue with graceful degradation
-        logger.error(
-            f"API HTTP error checking key conflict for user {user_id}: "
-            f"status={e.response.status_code}, error={e}",
-            exc_info=True
+            await context.clear()
+            return
+        
+        # Check for key conflicts via i-TAT API
+        itat_client = get_itat_client()
+        conflict_response = await itat_client.check_key_conflict(
+            grand_key=normalized_key,
+            user_id=user_id
         )
-        # Continue without conflict check (graceful degradation)
-
-    except (httpx.TimeoutException, httpx.ConnectError) as e:
-        # Network/timeout error - log and continue with graceful degradation
-        logger.error(
-            f"API connection error checking key conflict for user {user_id}: {e}",
-            exc_info=True
-        )
-        # Continue without conflict check (graceful degradation)
-
+        
+        logger.info(f"Key conflict check result: {conflict_response}")
+        
+        if conflict_response.get("status") == "conflict":
+            # Conflict detected - offer resolution options
+            owner_info = conflict_response.get("owner", "Неизвестный владелец")
+            
+            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
+            
+            # Store conflict info in context
+            await context.update_data(
+                key_number=normalized_key,
+                has_conflict=True,
+                conflict_owner=owner_info
+            )
+            
+            # Display conflict resolution keyboard
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=REGISTRATION_KEY_CONFLICT.format(owner=owner_info),
+                keyboard=get_key_conflict_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        else:
+            # No conflict - add key and proceed to submission
+            await add_user_key(
+                session,
+                user_id,
+                normalized_key,
+                KeyConflictStatus.NONE
+            )
+            await session.commit()
+            
+            logger.info(f"GS_Key added without conflict: user_id={user_id}, key={normalized_key}")
+            
+            # Store key in context
+            await context.update_data(
+                key_number=normalized_key,
+                has_conflict=False
+            )
+            
+            # Submit registration
+            await submit_registration(context, session, messenger_adapter, chat_id, user_id)
+    
     except Exception as e:
-        # Unexpected error - log but continue with registration
         logger.error(
-            f"Unexpected error checking key conflict for user {user_id}: {e}",
+            f"Error processing GS_Key: key={key_number}, error={e}",
             exc_info=True
         )
-        # Continue without conflict check (graceful degradation)
-
-    # Store key and conflict status in FSM
-    await state.update_data(
-        gs_key=normalized_key,
-        key_conflict=conflict_detected
-    )
-
-    # Show conflict warning if detected
-    if conflict_detected:
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=REGISTRATION_KEY_CONFLICT,
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
-    # Proceed to submit registration
-    await submit_registration(message, state, session, messenger_adapter)
+
+async def show_key_help(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Show help message about where to find GS_Key number.
+    
+    Displays detailed instructions with text and image showing where to find
+    the key number in GRANS-Smeta program, documents, or packaging.
+    
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification in callbacks
+    - Answers callback to acknowledge button press
+    - Stays in same FSM state (waiting_for_key)
+    
+    Args:
+        event: MessageCallback event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    
+    logger.info(f"Showing key help: max_user_id={max_user_id}, chat_id={chat_id}")
+    
+    try:
+        # Answer callback
+        await event.answer()
+        
+        # Send help text
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_KEY_HELP,
+            parse_mode="HTML"
+        )
+        
+        # TODO: Send image showing where to find key number
+        # Image should be added to project and sent here
+        # await messenger_adapter.send_photo(
+        #     chat_id=chat_id,
+        #     photo_path="path/to/key_location_image.jpg",
+        #     caption="Пример расположения номера ключа в программе"
+        # )
+        
+        # Send prompt again with keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="Введите номер ключа или нажмите кнопку помощи снова:",
+            keyboard=get_key_input_keyboard(),
+            parse_mode="HTML"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error showing key help: max_user_id={max_user_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def process_key_conflict_choice(
+    event: MessageCallback,
+    payload: KeyConflictChoicePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle user choice when key conflict detected (retry or continue).
+    
+    If retry: Return to key input state.
+    If continue: Add key with PENDING_REVIEW status and proceed to submission.
+    
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification in callbacks
+    - Uses KeyConflictChoicePayload for type-safe callback parsing
+    - Retrieves context data using context.get_data()
+    - Sets FSM state using context.set_state()
+    
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed key conflict choice payload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.13
+    """
+    chat_id = event.message.recipient.chat_id
+    user_id_from_callback = event.callback.user.user_id
+    
+    logger.info(f"Processing key conflict choice: chat_id={chat_id}, action={payload.action}")
+    
+    try:
+        # Get data from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        key_number = data.get("key_number")
+        
+        if not user_id or not key_number:
+            logger.error(f"Missing data in context: user_id={user_id}, key={key_number}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        if payload.action == "retry":
+            # Return to key input state
+            logger.info(f"User chose to retry key input: user_id={user_id}")
+            
+            await context.set_state(RegistrationStates.waiting_for_key)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="🔑 Введите другой ключ Гранд-сметы (формат: 00001_00011):",
+                keyboard=get_cancel_keyboard(),
+                parse_mode="HTML"
+            )
+        
+        elif payload.action == "continue":
+            # Add key with PENDING_REVIEW status and proceed
+            logger.info(f"User chose to continue with conflict: user_id={user_id}, key={key_number}")
+            
+            await add_user_key(
+                session,
+                user_id,
+                key_number,
+                KeyConflictStatus.PENDING_REVIEW
+            )
+            await session.commit()
+            
+            logger.info(f"GS_Key added with PENDING_REVIEW: user_id={user_id}, key={key_number}")
+            
+            # Submit registration
+            await submit_registration(context, session, messenger_adapter, chat_id, user_id)
+    
+    except Exception as e:
+        logger.error(
+            f"Error processing key conflict choice: action={payload.action}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
 
 
 async def submit_registration(
-    message: Message,
-    state: FSMContext,
+    context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter
-):
+    messenger_adapter: MAXMessengerAdapter,
+    chat_id: int,
+    user_id: int
+) -> None:
     """
-    Submits complete registration data to CRM and creates User record.
+    Submit registration to i-TAT API, set status to PENDING.
     
-    Creates User with PENDING status and associated GS_Key.
-    If key conflict detected, creates admin ticket.
-    Migrated from Telegram bot to MAX messenger.
-    Uses message.from_user.user_id and message.chat.chat_id.
+    Submits all collected data to i-TAT API.
+    Sets user status to PENDING after submission.
+    Displays waiting message to user.
+    Logs registration completion.
     
-    Requirements: 4.1-4.5, 25.1-25.5, 9.3, 9.5, 9.6, 9.7, 9.8
+    maxapi Pattern Notes:
+    - Clears FSM state using context.clear() after completion
+    - Retrieves context data using context.get_data()
+    
+    Args:
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+        chat_id: Chat ID for sending messages
+        user_id: Internal user ID
+    
+    Requirements: 1.14, 1.15
     """
-    user_id = message.from_user.user_id
-    chat_id = message.chat.chat_id
-
-    # Show processing message
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text=REGISTRATION_PROCESSING,
-        keyboard=None,
-        parse_mode="HTML"
-    )
-
-    # Get all data from FSM
-    data = await state.get_data()
-    phone_number = data.get("phone_number")
-    full_name = data.get("full_name")
-    inn = data.get("inn")
-    gs_key = data.get("gs_key")
-    key_conflict = data.get("key_conflict", False)
-
-    # Extract first and last name from full_name
-    name_parts = full_name.split(maxsplit=1)
-    last_name = name_parts[0] if len(name_parts) > 0 else ""
-    first_name = name_parts[1] if len(name_parts) > 1 else ""
-
-    # Submit to CRM API
-    api_client = get_itat_client()
-    api_success = False
-    api_error_message = None
-
+    logger.info(f"Submitting registration: user_id={user_id}")
+    
     try:
-        api_response = await api_client.register_user(
-            telegram_id=user_id,
-            phone=phone_number,
-            first_name=first_name,
-            last_name=last_name,
-            grand_key=gs_key
-        )
-
-        if api_response.get("status") == "ok":
-            api_success = True
-            logger.info(f"CRM registration successful for user {user_id}")
-        else:
-            logger.warning(
-                f"CRM registration returned non-ok status for user {user_id}: "
-                f"{api_response}"
+        # Get user data
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found for submission: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
             )
-
-    except httpx.HTTPStatusError as e:
-        # HTTP error from API - provide user-friendly message based on status code
-        status_code = e.response.status_code
-        logger.error(
-            f"API HTTP error during registration for user {user_id}: "
-            f"status={status_code}, error={e}",
-            exc_info=True
+            await context.clear()
+            return
+        
+        # Get context data
+        data = await context.get_data()
+        key_number = data.get("key_number")
+        
+        # Submit to i-TAT API
+        itat_client = get_itat_client()
+        response = await itat_client.register_user(
+            user_id=user.max_user_id,
+            phone=user.phone_number,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            grand_key=key_number
         )
-
-        if status_code == 400:
-            api_error_message = "❌ Ошибка: неверные данные регистрации. Пожалуйста, проверьте введенную информацию."
-        elif status_code == 404:
-            api_error_message = "❌ Ошибка: ключ защиты не найден в системе. Проверьте правильность номера ключа."
-        elif status_code == 409:
-            api_error_message = "❌ Пользователь с такими данными уже зарегистрирован в системе."
-        else:
-            api_error_message = "❌ Ошибка при регистрации в системе. Попробуйте позже или обратитесь в поддержку."
-
-    except (httpx.TimeoutException, httpx.ConnectError) as e:
-        # Network/timeout error - provide user-friendly message
-        logger.error(
-            f"API connection error during registration for user {user_id}: {e}",
-            exc_info=True
-        )
-        api_error_message = "❌ Не удалось связаться с сервером. Проверьте подключение к интернету и попробуйте позже."
-
-    except Exception as e:
-        # Unexpected error - log and continue with local registration (graceful degradation)
-        logger.error(
-            f"Unexpected error during registration for user {user_id}: {e}",
-            exc_info=True
-        )
-        # Continue with local database creation
-
-    # If API error occurred, inform user but continue with local registration
-    if api_error_message:
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=f"{api_error_message}\n\n"
-                 "Ваша регистрация будет сохранена локально и синхронизирована позже.",
-            keyboard=None,
-            parse_mode="HTML"
-        )
-
-    # Create User record in database
-    try:
-        user_data = {
-            "tg_user_id": user_id,
-            "phone_number": phone_number,
-            "full_name": full_name,
-            "username": message.from_user.username if hasattr(message.from_user, 'username') else None,
-            "first_name": message.from_user.first_name if hasattr(message.from_user, 'first_name') else None,
-            "last_name": message.from_user.last_name if hasattr(message.from_user, 'last_name') else None,
-        }
-
-        user = await create_user(session, user_data)
-
-        # Add organization association
-        from services.user_service import add_user_organization
-        await add_user_organization(session, user_id, inn)
-
-        # Add GS_Key with conflict status
-        conflict_status = (
-            KeyConflictStatus.PENDING_REVIEW if key_conflict
-            else KeyConflictStatus.NONE
-        )
-
-        await add_user_key(
-            session,
-            user_id,
-            gs_key,
-            conflict_status
-        )
-
-        # Create admin ticket if conflict detected
-        if key_conflict:
-            await create_conflict_ticket(
-                session,
-                user_id,
-                gs_key,
-                phone_number
-            )
-
-        # Commit transaction
+        
+        logger.info(f"i-TAT registration response: {response}")
+        
+        # Set user status to PENDING
+        await update_user_status(session, user_id, RegistrationStatus.PENDING)
         await session.commit()
-
+        
+        logger.info(f"Registration submitted successfully: user_id={user_id}")
+        
         # Clear FSM state
-        await state.clear()
-
-        # Send success message
+        await context.clear()
+        
+        # Display waiting message
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=REGISTRATION_SUBMITTED,
-            keyboard=None,
             parse_mode="HTML"
         )
-
-        logger.info(
-            f"Registration completed for user {user_id}: "
-            f"phone={phone_number}, key={gs_key}, conflict={key_conflict}"
-        )
-
-    except IntegrityError as e:
-        await session.rollback()
+    
+    except Exception as e:
         logger.error(
-            f"Integrity error during registration for user {user_id}: {e}",
+            f"Error submitting registration: user_id={user_id}, error={e}",
             exc_info=True
         )
-
-        # Check if it's a duplicate phone error
-        if "phone_number" in str(e):
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=REGISTRATION_PHONE_DUPLICATE,
-                keyboard=None,
-                parse_mode="HTML"
-            )
-        else:
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text="❌ Произошла ошибка при регистрации.\n"
-                     "Возможно, эти данные уже используются.\n\n"
-                     "Пожалуйста, попробуйте снова с /start",
-                keyboard=None,
-                parse_mode="HTML"
-            )
-
-        await state.clear()
-
-    except SQLAlchemyError as e:
         await session.rollback()
-        logger.error(
-            f"Database error during registration for user {user_id}: {e}",
-            exc_info=True
-        )
-
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Произошла ошибка при сохранении регистрации.\n"
-                 "Пожалуйста, попробуйте позже.",
-            keyboard=None,
+            text=ERROR_GENERAL,
             parse_mode="HTML"
         )
 
-        await state.clear()
+
+# ========== Cancellation Handler ==========
 
 
-async def create_conflict_ticket(
+async def cancel_registration_callback(
+    event: MessageCallback,
+    payload: RegistrationCancelPayload,
+    context: MemoryContext,
     session: AsyncSession,
-    telegram_id: int,
-    key_number: str,
-    phone_number: str
-):
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
     """
-    Creates an admin ticket for GS_Key conflict resolution.
+    Handle cancellation callback during registration flow.
     
-    Requirements: 3.2, 3.3
+    Deletes old message with buttons.
+    Deletes partially created User record if exists.
+    Clears FSM state completely.
+    Shows main menu (like /start command for unregistered users).
+    
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification in callbacks
+    - Uses RegistrationCancelPayload for type-safe callback parsing
+    - Retrieves context data using context.get_data()
+    - Clears FSM state using context.clear()
+    - Uses replace_message pattern (delete old + send new)
+    
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed registration cancel payload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.16
     """
-    from database.models import Ticket, TicketStatus
-
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    logger.info(f"Cancelling registration (callback): chat_id={chat_id}, max_user_id={max_user_id}")
+    
+    # Delete old message with buttons
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+    
     try:
-        # Create ticket for admin review
-        ticket = Ticket(
-            ticket_type=TicketType.RENEWAL,  # Using RENEWAL type for admin tasks
-            ticket_status=TicketStatus.NEW,
-            tg_user_id=telegram_id,
-            description=(
-                f"⚠️ Конфликт ключа при регистрации\n\n"
-                f"Пользователь: {telegram_id}\n"
-                f"Телефон: {phone_number}\n"
-                f"Ключ: {key_number}\n\n"
-                f"Требуется проверка и разрешение конфликта."
-            ),
-            # assigned_staff_id will be set by admin or default manager
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if user_id:
+            # Delete partially created User record
+            user = await get_user_by_id(session, user_id)
+            if user and user.registration_status == RegistrationStatus.PENDING:
+                await session.delete(user)
+                await session.commit()
+                logger.info(f"Deleted partial user record: user_id={user_id}")
+        
+        # Clear FSM state
+        await context.clear()
+        
+        # Show cancellation message
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=FLOW_CANCELLED,
+            parse_mode="HTML"
         )
-
-        session.add(ticket)
-        await session.flush()
-
-        logger.info(
-            f"Conflict ticket created: ticket_id={ticket.id}, "
-            f"user={telegram_id}, key={key_number}"
-        )
-
-    except SQLAlchemyError as e:
+    
+    except Exception as e:
         logger.error(
-            f"Error creating conflict ticket for user {telegram_id}: {e}",
+            f"Error cancelling registration: chat_id={chat_id}, error={e}",
             exc_info=True
         )
-        # Don't raise - conflict ticket creation failure shouldn't block registration
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def cancel_registration(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle cancellation during registration flow.
+    
+    Deletes partially created User record if exists.
+    Clears FSM state completely.
+    Displays cancellation message.
+    
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Retrieves context data using context.get_data()
+    - Clears FSM state using context.clear()
+    
+    Args:
+        event: MessageCreated event from maxapi
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    
+    Requirements: 1.16
+    """
+    chat_id = event.message.recipient.chat_id
+    
+    logger.info(f"Cancelling registration: chat_id={chat_id}")
+    
+    try:
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        
+        if user_id:
+            # Delete partially created User record
+            user = await get_user_by_id(session, user_id)
+            if user and user.registration_status == RegistrationStatus.PENDING:
+                await session.delete(user)
+                await session.commit()
+                logger.info(f"Deleted partial user record: user_id={user_id}")
+        
+        # Clear FSM state
+        await context.clear()
+        
+        # Display cancellation message
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=FLOW_CANCELLED,
+            parse_mode="HTML"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error cancelling registration: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )

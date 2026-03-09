@@ -58,7 +58,7 @@ async def test_main_menu_keyboard():
         MENU_INVOICE,      # 💰 Получить счет
         MENU_SUPPORT,      # 🆘 Техподдержка
         MENU_RENEWAL,      # 🔄 Продление
-        MENU_RATE_SERVICE, # ⭐ Оценить сервис
+        # MENU_RATE_SERVICE, # ⭐ Оценить сервис
         MENU_PROFILE,      # 👤 Мой профиль
     ]
     

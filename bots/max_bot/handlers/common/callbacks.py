@@ -16,7 +16,7 @@ Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6
 import logging
 
 from maxapi import F, Router
-from maxapi.fsm.context import FSMContext
+from maxapi.context import MemoryContext
 from maxapi.types import MessageCallback
 
 from bots.max_bot.callback_datas import (
@@ -28,13 +28,12 @@ from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 
 logger = logging.getLogger(__name__)
 
-router = Router(name="callbacks")
+router = Router(router_id="callbacks")
 
 
 @router.message_callback(ExampleItemCallback.filter(F.action == "view"))
 async def process_pagination(
     event: MessageCallback,
-    payload: ExampleItemCallback,
     messenger_adapter: MAXMessengerAdapter
 ):
     """
@@ -43,44 +42,28 @@ async def process_pagination(
     Pattern:
     - Filter by action
     - Immediate callback response
-    - Update only keyboard (without changing text)
+    - In MAX API, we can't send keyboards in callback responses
+    - Just acknowledge the callback
     
     Requirements: 5.1, 5.2, 5.3, 5.6
     """
-    # Answer callback to remove loading indicator
-    await event.answer()
+    # Parse payload manually
+    import json
+    raw_payload = event.callback.payload
+    if isinstance(raw_payload, str):
+        payload_dict = json.loads(raw_payload) if raw_payload else {}
+    else:
+        payload_dict = raw_payload or {}
+    
+    page = payload_dict.get("page", 0)
 
-    page = payload.page or 0
-
-    # Here should be logic to get data from database
-    # items = await get_items_from_db()
-    items = [{"id": i, "name": f"Item {i}"} for i in range(1, 51)]
-
-    # Create paginated keyboard
-    keyboard = await create_paginated_keyboard_async(
-        items=items,
-        page=page,
-        callback_action="select",
-        page_action="view"
-    )
-
-    try:
-        # Edit message with new keyboard
-        await messenger_adapter.edit_message(
-            chat_id=event.chat.chat_id,
-            message_id=event.message.message_id,
-            text=event.message.body.text,  # Keep same text
-            keyboard=keyboard
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit message: {e}")
-        await event.answer(new_text="An error occurred. Please try again.")
+    # Answer callback with notification
+    await event.answer(new_text=f"Page {page + 1} selected")
 
 
 @router.message_callback(ExampleItemCallback.filter(F.action == "select"))
 async def process_item_selection(
     event: MessageCallback,
-    payload: ExampleItemCallback,
     messenger_adapter: MAXMessengerAdapter
 ):
     """
@@ -96,7 +79,15 @@ async def process_item_selection(
     # Answer callback
     await event.answer()
 
-    item_id = payload.item_id
+    # Parse payload manually
+    import json
+    raw_payload = event.callback.payload
+    if isinstance(raw_payload, str):
+        payload_dict = json.loads(raw_payload) if raw_payload else {}
+    else:
+        payload_dict = raw_payload or {}
+    
+    item_id = payload_dict.get("item_id")
 
     # Here should be logic to get data by ID
     # item = await get_item_by_id(item_id)
@@ -104,28 +95,27 @@ async def process_item_selection(
     text = f"✅ You selected item #{item_id}\n\nWhat would you like to do next?"
 
     try:
-        # Edit message with new text
-        await messenger_adapter.edit_message(
-            chat_id=event.chat.chat_id,
-            message_id=event.message.message_id,
-            text=text,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit message: {e}")
-        # If edit fails, send new message
+        # Delete old message and send new one
+        try:
+            await event.message.delete()
+        except Exception:
+            pass
+        
+        # Send new message
         await messenger_adapter.send_message(
             chat_id=event.chat.chat_id,
             text=text,
             parse_mode="HTML"
         )
+    except Exception as e:
+        logger.warning(f"Failed to send message: {e}")
+        await event.answer(new_text=text)
 
 
 @router.message_callback(ExampleItemCallback.filter(F.action == "cancel"))
 async def process_cancel(
     event: MessageCallback,
-    payload: ExampleItemCallback,
-    state: FSMContext,
+    state: MemoryContext,
     messenger_adapter: MAXMessengerAdapter
 ):
     """
@@ -147,26 +137,25 @@ async def process_cancel(
     text = "❌ Action cancelled.\nUse /start to begin."
 
     try:
-        # Edit message and remove keyboard
-        await messenger_adapter.edit_message(
-            chat_id=event.chat.chat_id,
-            message_id=event.message.message_id,
-            text=text,
-            keyboard=None
-        )
-    except Exception as e:
-        logger.warning(f"Failed to edit message: {e}")
-        # If edit fails, send new message
+        # Delete old message and send new one
+        try:
+            await event.message.delete()
+        except Exception:
+            pass
+        
+        # Send new message
         await messenger_adapter.send_message(
             chat_id=event.chat.chat_id,
             text=text
         )
+    except Exception as e:
+        logger.warning(f"Failed to send message: {e}")
+        await event.answer(new_text=text)
 
 
 @router.message_callback(ExampleNavigationCallback.filter(F.action == "back"))
 async def process_back_navigation(
     event: MessageCallback,
-    payload: ExampleNavigationCallback,
     messenger_adapter: MAXMessengerAdapter
 ):
     """
@@ -181,7 +170,15 @@ async def process_back_navigation(
     # Answer callback
     await event.answer()
 
-    from_section = payload.from_section
+    # Parse payload manually
+    import json
+    raw_payload = event.callback.payload
+    if isinstance(raw_payload, str):
+        payload_dict = json.loads(raw_payload) if raw_payload else {}
+    else:
+        payload_dict = raw_payload or {}
+    
+    from_section = payload_dict.get("from_section")
 
     text = f"⬅️ Returning from section: {from_section}"
 
@@ -189,7 +186,7 @@ async def process_back_navigation(
         # Edit message with new text
         await messenger_adapter.edit_message(
             chat_id=event.chat.chat_id,
-            message_id=event.message.message_id,
+            message_id=None,  # MAX API callbacks don't provide message_id
             text=text
         )
     except Exception as e:
@@ -214,3 +211,5 @@ async def process_noop(event: MessageCallback):
     """
     # Answer callback with informational text
     await event.answer(new_text="This is a page indicator")
+
+

@@ -5,6 +5,7 @@ import uvicorn
 from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from fastapi import BackgroundTasks, FastAPI, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -19,11 +20,12 @@ from constants import (
     COUNT_WORKERS,
     IS_LOCAL_BOT,
     LOG_LEVEL,
-    MAIN_BOT_TOKEN,
+    TG_BOT_TOKEN,
     PROJECT_HOST,
     PROJECT_PORT,
     WEBHOOK_PATH_MAIN,
     WEBHOOK_PATH_MAX,
+    engine,
 )
 from loaders import (
     bot_session,
@@ -34,6 +36,7 @@ from loaders import (
     max_dp,
     set_all_webhooks,
 )
+from api.sqladmin_panel import setup_admin
 
 ROOT_PATH = "" if IS_LOCAL_BOT else "/i-tat"
 
@@ -79,6 +82,9 @@ app = FastAPI(lifespan=lifespan, root_path=ROOT_PATH)
 
 templates = Jinja2Templates(directory="api/templates")
 
+# Setup SQLAdmin
+admin = setup_admin(app, engine)
+
 
 @app.exception_handler(StarletteHTTPException)
 async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -109,6 +115,14 @@ async def read_upload_form(request: Request):
     return templates.TemplateResponse("upload.html", {"request": request})
 
 
+# Add CORS middleware to allow admin panel to make requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify exact origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -122,10 +136,12 @@ async def on_init():
     2. Register handlers
     3. Set up middleware (already done in loaders.py)
     4. Configure FSM storage (already done in loaders.py)
+    5. Initialize default system settings
     
     This function is called during FastAPI lifespan startup.
     
     Requirements: 2.6, 2.7 - Initialize components and configure background task processing
+    Requirements: 1.4 - Initialize default settings on application startup
     """
     # Initialize Telegram bot (legacy)
     main_dp.include_router(main_bot_router)
@@ -137,12 +153,23 @@ async def on_init():
     # - Handlers registered via register_max_handlers()
     # - Router included in dispatcher
     
+    # Initialize default system settings
+    from constants import AsyncSessionLocal
+    from services.settings_service import initialize_default_settings
+    
+    try:
+        async with AsyncSessionLocal() as session:
+            await initialize_default_settings(session)
+        logging.info("Default system settings initialized")
+    except Exception as e:
+        logging.error(f"Failed to initialize default settings: {e}", exc_info=True)
+    
     logging.info("All bot components initialized successfully")
 
 
 async def main_feed_update(token, update):
     # print(f">>> Получено обновление: {update}")  # Дебаг
-    async with Bot(token, bot_session, DefaultBotProperties(parse_mode="markdown")).context(auto_close=False) as bot_:
+    async with Bot(token, bot_session, DefaultBotProperties(parse_mode="HTML")).context(auto_close=False) as bot_:
         await main_dp.feed_raw_update(bot_, update)
 
 
@@ -155,7 +182,7 @@ async def main_telegram_update(
     update_data = await request.json()
 
     # Передаем данные в фоновую задачу
-    background_tasks.add_task(main_feed_update, MAIN_BOT_TOKEN, update_data)
+    background_tasks.add_task(main_feed_update, TG_BOT_TOKEN, update_data)
 
     return Response(status_code=status.HTTP_202_ACCEPTED)
 
@@ -192,6 +219,36 @@ async def max_feed_update(update_data: dict):
             event_json=update_data,
             bot=max_bot
         )
+        
+        logging.info(f"Processing MAX update: type={event_object.update_type}, event={type(event_object).__name__}")
+        
+        # Log callback payload if it's a message_callback event
+        if event_object.update_type == "message_callback" and hasattr(event_object, 'callback'):
+            callback = event_object.callback
+            logging.info(f"Callback payload: {callback.payload!r}")
+        
+        # Log message details if it's a message_created event
+        if hasattr(event_object, 'message'):
+            msg = event_object.message
+            has_contact = hasattr(msg.body, 'contact') if msg.body else False
+            contact_value = getattr(msg.body, 'contact', None) if msg.body else None
+            has_attachments = hasattr(msg, 'attachments') and msg.attachments
+            attachments_info = []
+            if has_attachments:
+                for att in msg.attachments:
+                    att_type = type(att).__name__
+                    att_dict = att.__dict__ if hasattr(att, '__dict__') else str(att)
+                    attachments_info.append(f"{att_type}: {att_dict}")
+            
+            logging.info(
+                f"Message details: chat_id={msg.recipient.chat_id}, "
+                f"user_id={msg.sender.user_id}, "
+                f"text={msg.body.text if msg.body else 'None'}, "
+                f"has_contact={has_contact}, "
+                f"contact={contact_value}, "
+                f"has_attachments={has_attachments}, "
+                f"attachments={attachments_info if has_attachments else 'None'}"
+            )
         
         # Handle the event using the dispatcher
         # This triggers the middleware chain and routes to appropriate handlers
@@ -258,7 +315,7 @@ async def max_webhook_update(
 
 if __name__ == "__main__":
     logger = logging.getLogger()  # Корневой логгер
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     handler = logging.StreamHandler()  # Вывод в консоль
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logger.handlers = [handler]

@@ -55,6 +55,10 @@ class StaffMemberCheckMiddleware(BaseMiddleware):
             # Get telegram_id from user
             telegram_id = user.id
             
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"StaffMemberCheckMiddleware: Checking user {telegram_id}")
+            
             stmt = select(Staff_Member).where(
                 Staff_Member.tg_user_id == telegram_id,
                 Staff_Member.is_active == True
@@ -64,10 +68,12 @@ class StaffMemberCheckMiddleware(BaseMiddleware):
             
             if employee:
                 # User is a staff member, provide employee record to handlers
+                logger.info(f"StaffMemberCheckMiddleware: User {telegram_id} is staff member (ID: {employee.id})")
                 data["employee"] = employee
                 return await handler(event, data)
             else:
                 # User is not a staff member, deny access
+                logger.warning(f"StaffMemberCheckMiddleware: User {telegram_id} is NOT a staff member")
                 rejection_text = (
                     "❌ *Доступ запрещен*\n\n"
                     "Эта функция доступна только сотрудникам.\n\n"
@@ -77,9 +83,9 @@ class StaffMemberCheckMiddleware(BaseMiddleware):
                 
                 # Send rejection message based on event type
                 if isinstance(event, Message):
-                    await event.answer(rejection_text, parse_mode="Markdown")
+                    await event.answer(rejection_text, parse_mode="HTML")
                 elif isinstance(event, CallbackQuery):
-                    await event.message.answer(rejection_text, parse_mode="Markdown")
+                    await event.message.answer(rejection_text, parse_mode="HTML")
                     await event.answer("Доступ запрещен.", show_alert=True)
                 
                 # Stop further processing

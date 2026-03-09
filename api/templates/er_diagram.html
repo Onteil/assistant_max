@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ER Диаграмма БД - I-TAT Bot</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            overflow: hidden;
+        }
+        
+        #header {
+            background: white;
+            padding: 15px 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 1000;
+            position: relative;
+        }
+        
+        #header h1 {
+            font-size: 20px;
+            color: #333;
+        }
+        
+        #controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            background: #1976d2;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
+        }
+        
+        .btn:hover {
+            background: #1565c0;
+        }
+        
+        #search {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            width: 250px;
+        }
+        
+        #diagram-container {
+            width: 100vw;
+            height: calc(100vh - 60px);
+            position: relative;
+            overflow: hidden;
+            cursor: grab;
+        }
+        
+        #diagram-container.dragging {
+            cursor: grabbing;
+        }
+        
+        #diagram-wrapper {
+            position: absolute;
+            transform-origin: 0 0;
+            transition: transform 0.1s ease-out;
+        }
+        
+        #sidebar {
+            position: fixed;
+            right: -400px;
+            top: 60px;
+            width: 400px;
+            height: calc(100vh - 60px);
+            background: white;
+            box-shadow: -2px 0 8px rgba(0,0,0,0.1);
+            transition: right 0.3s;
+            overflow-y: auto;
+            z-index: 999;
+            padding: 20px;
+        }
+        
+        #sidebar.open {
+            right: 0;
+        }
+        
+        #sidebar h2 {
+            color: #1976d2;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        #sidebar h3 {
+            color: #333;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .column-list {
+            list-style: none;
+        }
+        
+        .column-item {
+            padding: 8px;
+            margin: 4px 0;
+            background: #f5f5f5;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .column-name {
+            font-weight: 600;
+            color: #1976d2;
+        }
+        
+        .column-type {
+            color: #666;
+            font-family: monospace;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-left: 5px;
+        }
+        
+        .badge-pk {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .badge-fk {
+            background: #ff9800;
+            color: white;
+        }
+        
+        .badge-uk {
+            background: #2196f3;
+            color: white;
+        }
+        
+        .table-node {
+            background: white;
+            border: 2px solid #1976d2;
+            border-radius: 8px;
+            padding: 12px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            min-width: 200px;
+            position: absolute;
+            transition: box-shadow 0.2s, transform 0.2s;
+        }
+        
+        .table-node:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            transform: translateY(-2px);
+            z-index: 10;
+        }
+        
+        .table-name {
+            font-weight: 600;
+            color: #1976d2;
+            font-size: 14px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #e0e0e0;
+            padding-bottom: 4px;
+        }
+        
+        .table-columns {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        .enum-section {
+            margin-top: 20px;
+        }
+        
+        .enum-item {
+            background: #f5f5f5;
+            padding: 8px;
+            margin: 4px 0;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        
+        .enum-value {
+            font-family: monospace;
+            color: #1976d2;
+        }
+        
+        #close-sidebar {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: #f44336;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+        }
+        
+        #zoom-info {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>📊 ER Диаграмма БД - I-TAT Bot</h1>
+        <div id="controls">
+            <input type="text" id="search" placeholder="Поиск таблиц...">
+            <button class="btn" onclick="showEnums()">📋 Enum типы</button>
+            <button class="btn" onclick="resetZoom()">🔍 Сбросить</button>
+        </div>
+    </div>
+    
+    <div id="diagram-container">
+        <div id="diagram-wrapper"></div>
+    </div>
+    
+    <div id="zoom-info">
+        Масштаб: <span id="zoom-value">100%</span> | Используйте колесо мыши для зума, перетаскивайте для навигации
+    </div>
+    
+    <div id="sidebar">
+        <button id="close-sidebar" onclick="closeSidebar()">×</button>
+        <div id="sidebar-content"></div>
+    </div>
+    
+    <script>
+        const schemaData = {"tables": [{"name": "messages", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "tickets.id"}, {"name": "sender_type", "type": "VARCHAR(6)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "sender_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "message_text", "type": "VARCHAR", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "message_type", "type": "VARCHAR(19)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "sent_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Message model - stores conversation history within tickets.\n    \n    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8, 6.9\n    "}, {"name": "tickets", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_type", "type": "VARCHAR(17)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_status", "type": "VARCHAR(14)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "assigned_staff_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "organization_inn", "type": "VARCHAR(12)", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "organizations.inn"}, {"name": "description", "type": "VARCHAR", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "delivery_method", "type": "VARCHAR(8)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "delivery_email", "type": "VARCHAR(256)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "escalation_level", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "escalated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "escalation_task_reminder_id", "type": "VARCHAR(255)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "escalation_task_escalation_id", "type": "VARCHAR(255)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "is_escalated", "type": "BOOLEAN", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "closed_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    Ticket model - stores customer requests with status and assignment tracking.\n    \n    Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.8, 5.9, 5.10, 5.11, 5.12, 5.13, 5.14\n    "}, {"name": "users", "columns": [{"name": "id", "type": "BIGINT", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "tg_user_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": true}, {"name": "max_user_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": true}, {"name": "phone_number", "type": "VARCHAR(15)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": true}, {"name": "email", "type": "VARCHAR(255)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "username", "type": "VARCHAR(32)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "first_name", "type": "VARCHAR(64)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "last_name", "type": "VARCHAR(64)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "middle_name", "type": "VARCHAR(64)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "full_name", "type": "VARCHAR(128)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "registration_status", "type": "VARCHAR(12)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "subscription_status", "type": "VARCHAR(7)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "subscription_end_date", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "notification_preferences", "type": "BOOLEAN", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "default_manager_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "last_nps_sent_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    User model - stores client profiles with authentication and subscription data.\n    \n    Supports multiple messengers (Telegram, MAX).\n    \n    Requirements: 1.1-1.10\n    "}, {"name": "broadcasts", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_by_staff_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "staff_members.id"}, {"name": "message_text", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "broadcast_status", "type": "VARCHAR(9)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "target_user_count", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "delivered_count", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "sent_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    Broadcast model - stores admin-initiated mass messages.\n    \n    Requirements: 11.1, 11.2, 11.3, 11.4, 11.5, 11.6\n    "}, {"name": "api_retry_queue", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "operation", "type": "VARCHAR(100)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "payload", "type": "JSON", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "users.id"}, {"name": "attempt_count", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "status", "type": "VARCHAR(7)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "next_retry_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "completed_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "last_error", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    API_Retry_Queue model - manages failed API operations with retry logic.\n    \n    Stores failed API calls for retry with exponential backoff.\n    After max attempts, escalates to admin notification.\n    \n    Requirements: 25.3, 34.1-34.5\n    "}, {"name": "organizations", "columns": [{"name": "inn", "type": "VARCHAR(12)", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "organization_name", "type": "VARCHAR(256)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Organization model - stores legal entities identified by INN.\n    \n    Requirements: 2.1, 2.2, 2.3\n    "}, {"name": "notification_events", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "event_type", "type": "VARCHAR(19)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "event_status", "type": "VARCHAR(9)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "scheduled_for", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "sent_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "related_ticket_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "tickets.id"}, {"name": "event_data", "type": "JSON", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Notification_Event model - schedules and tracks notification delivery.\n    \n    Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7, 10.8, 10.9, 10.10\n    "}, {"name": "action_logs", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "action_type", "type": "VARCHAR(23)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "tickets.id"}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "users.id"}, {"name": "staff_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "action_details", "type": "JSON", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "action_timestamp", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Action_Log model - audit trail for all significant system actions.\n    \n    Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8\n    "}, {"name": "gs_keys", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "key_number", "type": "VARCHAR(32)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": true}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "conflict_status", "type": "VARCHAR(14)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "conflict_reported_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    GS_Key model - stores GRAND-Smeta license keys with conflict tracking.\n    \n    Requirements: 2.5, 2.6, 2.7, 2.8, 2.9\n    "}, {"name": "broadcast_deliveries", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "broadcast_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "broadcasts.id"}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "delivery_status", "type": "VARCHAR(9)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "delivered_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "error_message", "type": "VARCHAR(512)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    Broadcast_Delivery model - tracks individual broadcast delivery status.\n    \n    Requirements: 11.7, 11.8, 11.9\n    "}, {"name": "manager_assignments", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "organization_inn", "type": "VARCHAR(12)", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "organizations.inn"}, {"name": "manager_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "staff_members.id"}, {"name": "assigned_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Manager_Assignment model - maps user-organization pairs to assigned managers.\n    \n    Requirements: 4.1, 4.2, 4.3, 4.5, 4.6\n    "}, {"name": "escalations", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "tickets.id"}, {"name": "escalation_type", "type": "VARCHAR(16)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "is_resolved", "type": "BOOLEAN", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "resolved_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "resolved_by_staff_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "resolution_action", "type": "VARCHAR(13)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    Escalation model - tracks ticket escalations with resolution tracking.\n    \n    Stores escalation events when tickets exceed time thresholds.\n    Supports reminder (10 min) and escalation (20 min) types.\n    \n    Requirements: 2.1, 2.2, 2.3\n    "}, {"name": "calendar_rules", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "start_date", "type": "DATE", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "end_date", "type": "DATE", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "work_mode", "type": "VARCHAR(11)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "work_start_time", "type": "TIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "work_end_time", "type": "TIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "rule_priority", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    Calendar_Rule model - defines working hours for specific dates and date ranges.\n    \n    Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 9.10\n    "}, {"name": "system_settings", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "key", "type": "VARCHAR(100)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": true}, {"name": "category", "type": "VARCHAR(17)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "value", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "data_type", "type": "VARCHAR(7)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "default_value", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "min_value", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "max_value", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "description", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "display_name", "type": "VARCHAR(200)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "requires_test", "type": "BOOLEAN", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_by", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}], "doc": "\n    System_Settings model - stores system-wide configuration parameters.\n    \n    Each setting has a key, value, data type, validation constraints,\n    and default value. Settings are organized into categories for\n    easier navigation.\n    \n    Requirements: 1.1, 1.2, 1.3, 1.4\n    "}, {"name": "file_attachments", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "ticket_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "tickets.id"}, {"name": "message_id", "type": "INTEGER", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "messages.id"}, {"name": "file_type", "type": "VARCHAR(8)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "telegram_file_id", "type": "VARCHAR(256)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "file_name", "type": "VARCHAR(256)", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "file_size", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "uploader_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "uploader_type", "type": "VARCHAR(5)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "uploaded_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}], "doc": "\n    File_Attachment model - stores references to files uploaded to Telegram.\n    \n    Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 7.10\n    "}, {"name": "staff_members", "columns": [{"name": "id", "type": "BIGINT", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "tg_user_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": true}, {"name": "max_user_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": true}, {"name": "full_name", "type": "VARCHAR(128)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "position", "type": "VARCHAR(128)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "staff_role", "type": "VARCHAR(17)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "is_active", "type": "BOOLEAN", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "backup_manager_1_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "backup_manager_2_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": true, "unique": null, "fk_target": "staff_members.id"}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    Staff_Member model - stores internal employees with roles and backup assignments.\n    \n    Supports multiple messengers (Telegram, MAX).\n    \n    Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8\n    "}, {"name": "max_messenger_data", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": true, "fk_target": "users.id"}, {"name": "max_user_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": true}, {"name": "max_chat_id", "type": "BIGINT", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    MAX messenger data - stores MAX user_id to chat_id mapping.\n    \n    MAX API requires chat_id for sending messages, not user_id.\n    This table maintains the relationship between user, max_user_id, and max_chat_id.\n    \n    Requirements: 15.3\n    "}, {"name": "nps_responses", "columns": [{"name": "id", "type": "INTEGER", "primary_key": true, "foreign_key": false, "nullable": false, "unique": null}, {"name": "user_id", "type": "BIGINT", "primary_key": false, "foreign_key": true, "nullable": false, "unique": null, "fk_target": "users.id"}, {"name": "survey_type", "type": "VARCHAR(15)", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "rating", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "trigger_event_id", "type": "INTEGER", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "sent_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "responded_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "feedback_comment", "type": "TEXT", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}, {"name": "created_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": false, "unique": null}, {"name": "updated_at", "type": "DATETIME", "primary_key": false, "foreign_key": false, "nullable": true, "unique": null}], "doc": "\n    NPS_Response model - stores user survey responses.\n    \n    Tracks NPS ratings with survey type, trigger event,\n    and timestamps for analytics.\n    \n    Requirements: 5.1, 12.1, 12.2, 12.3, 12.4\n    "}], "relationships": [{"source": "messages", "target": "tickets", "source_column": "ticket_id", "target_column": "id", "type": "many-to-one"}, {"source": "tickets", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "tickets", "target": "staff_members", "source_column": "assigned_staff_id", "target_column": "id", "type": "many-to-one"}, {"source": "tickets", "target": "organizations", "source_column": "organization_inn", "target_column": "inn", "type": "many-to-one"}, {"source": "users", "target": "staff_members", "source_column": "default_manager_id", "target_column": "id", "type": "many-to-one"}, {"source": "broadcasts", "target": "staff_members", "source_column": "created_by_staff_id", "target_column": "id", "type": "many-to-one"}, {"source": "api_retry_queue", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "notification_events", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "notification_events", "target": "tickets", "source_column": "related_ticket_id", "target_column": "id", "type": "many-to-one"}, {"source": "action_logs", "target": "tickets", "source_column": "ticket_id", "target_column": "id", "type": "many-to-one"}, {"source": "action_logs", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "action_logs", "target": "staff_members", "source_column": "staff_id", "target_column": "id", "type": "many-to-one"}, {"source": "gs_keys", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "broadcast_deliveries", "target": "broadcasts", "source_column": "broadcast_id", "target_column": "id", "type": "many-to-one"}, {"source": "broadcast_deliveries", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "manager_assignments", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}, {"source": "manager_assignments", "target": "organizations", "source_column": "organization_inn", "target_column": "inn", "type": "many-to-one"}, {"source": "manager_assignments", "target": "staff_members", "source_column": "manager_id", "target_column": "id", "type": "many-to-one"}, {"source": "escalations", "target": "tickets", "source_column": "ticket_id", "target_column": "id", "type": "many-to-one"}, {"source": "escalations", "target": "staff_members", "source_column": "resolved_by_staff_id", "target_column": "id", "type": "many-to-one"}, {"source": "system_settings", "target": "staff_members", "source_column": "updated_by", "target_column": "id", "type": "many-to-one"}, {"source": "file_attachments", "target": "tickets", "source_column": "ticket_id", "target_column": "id", "type": "many-to-one"}, {"source": "file_attachments", "target": "messages", "source_column": "message_id", "target_column": "id", "type": "many-to-one"}, {"source": "staff_members", "target": "staff_members", "source_column": "backup_manager_1_id", "target_column": "id", "type": "many-to-one"}, {"source": "staff_members", "target": "staff_members", "source_column": "backup_manager_2_id", "target_column": "id", "type": "many-to-one"}, {"source": "max_messenger_data", "target": "users", "source_column": "user_id", "target_column": "id", "type": "one-to-one"}, {"source": "nps_responses", "target": "users", "source_column": "user_id", "target_column": "id", "type": "many-to-one"}], "enums": {"RegistrationStatus": [{"name": "PENDING", "value": "pending"}, {"name": "ACTIVE", "value": "active"}, {"name": "REJECTED", "value": "rejected"}, {"name": "UNDER_REVIEW", "value": "under_review"}], "SubscriptionStatus": [{"name": "ACTIVE", "value": "active"}, {"name": "EXPIRED", "value": "expired"}, {"name": "NONE", "value": "none"}], "KeyConflictStatus": [{"name": "NONE", "value": "none"}, {"name": "PENDING_REVIEW", "value": "pending_review"}, {"name": "RESOLVED", "value": "resolved"}], "StaffRole": [{"name": "MANAGER", "value": "manager"}, {"name": "TECHNICAL_SUPPORT", "value": "technical_support"}, {"name": "DUTY_ENGINEER", "value": "duty_engineer"}, {"name": "ADMINISTRATOR", "value": "administrator"}], "TicketType": [{"name": "INVOICE", "value": "invoice"}, {"name": "TECHNICAL_SUPPORT", "value": "technical_support"}, {"name": "RENEWAL", "value": "renewal"}], "TicketStatus": [{"name": "NEW", "value": "new"}, {"name": "IN_PROGRESS", "value": "in_progress"}, {"name": "WAITING_CLIENT", "value": "waiting_client"}, {"name": "CLOSED", "value": "closed"}, {"name": "CANCELLED", "value": "cancelled"}], "DeliveryMethod": [{"name": "TELEGRAM", "value": "telegram"}, {"name": "EMAIL", "value": "email"}, {"name": "NONE", "value": "none"}], "SenderType": [{"name": "USER", "value": "user"}, {"name": "STAFF", "value": "staff"}, {"name": "SYSTEM", "value": "system"}], "MessageType": [{"name": "TEXT", "value": "text"}, {"name": "PHOTO", "value": "photo"}, {"name": "DOCUMENT", "value": "document"}, {"name": "VOICE", "value": "voice"}, {"name": "VIDEO", "value": "video"}, {"name": "AUDIO", "value": "audio"}, {"name": "VIDEO_NOTE", "value": "video_note"}, {"name": "SYSTEM_NOTIFICATION", "value": "system_notification"}], "FileType": [{"name": "PDF", "value": "pdf"}, {"name": "IMAGE", "value": "image"}, {"name": "DOCUMENT", "value": "document"}, {"name": "OTHER", "value": "other"}], "UploaderType": [{"name": "USER", "value": "user"}, {"name": "STAFF", "value": "staff"}], "ActionType": [{"name": "TICKET_CREATED", "value": "ticket_created"}, {"name": "TICKET_ASSIGNED", "value": "ticket_assigned"}, {"name": "TICKET_ESCALATED", "value": "ticket_escalated"}, {"name": "REMINDER_SENT", "value": "reminder_sent"}, {"name": "ESCALATED", "value": "escalated"}, {"name": "TICKET_CLOSED", "value": "ticket_closed"}, {"name": "STATUS_CHANGED", "value": "status_changed"}, {"name": "MESSAGE_SENT", "value": "message_sent"}, {"name": "FILE_UPLOADED", "value": "file_uploaded"}, {"name": "USER_REGISTERED", "value": "user_registered"}, {"name": "KEY_CONFLICT_DETECTED", "value": "key_conflict_detected"}, {"name": "API_RETRY_FAILED", "value": "api_retry_failed"}, {"name": "STAFF_ADDED", "value": "staff_added"}, {"name": "STAFF_UPDATED", "value": "staff_updated"}, {"name": "STAFF_DEACTIVATED", "value": "staff_deactivated"}, {"name": "STAFF_ACTIVATED", "value": "staff_activated"}, {"name": "CLIENTS_TRANSFERRED", "value": "clients_transferred"}, {"name": "CALENDAR_RULE_CREATED", "value": "calendar_rule_created"}, {"name": "CALENDAR_RULE_DELETED", "value": "calendar_rule_deleted"}, {"name": "CALENDAR_PERIOD_CLEARED", "value": "calendar_period_cleared"}, {"name": "BROADCAST_SENT", "value": "broadcast_sent"}, {"name": "SETTING_CHANGED", "value": "setting_changed"}, {"name": "SETTING_RESET", "value": "setting_reset"}], "WorkMode": [{"name": "REGULAR", "value": "regular"}, {"name": "EXTENDED", "value": "extended"}, {"name": "NON_WORKING", "value": "non_working"}], "EventType": [{"name": "RENEWAL_REMINDER_30", "value": "renewal_reminder_30"}, {"name": "RENEWAL_REMINDER_7", "value": "renewal_reminder_7"}, {"name": "NPS_SURVEY", "value": "nps_survey"}], "EventStatus": [{"name": "SCHEDULED", "value": "scheduled"}, {"name": "SENT", "value": "sent"}, {"name": "FAILED", "value": "failed"}, {"name": "CANCELLED", "value": "cancelled"}], "RetryStatus": [{"name": "PENDING", "value": "pending"}, {"name": "SUCCESS", "value": "success"}, {"name": "FAILED", "value": "failed"}], "BroadcastStatus": [{"name": "DRAFT", "value": "draft"}, {"name": "SENDING", "value": "sending"}, {"name": "COMPLETED", "value": "completed"}, {"name": "FAILED", "value": "failed"}], "DeliveryStatus": [{"name": "PENDING", "value": "pending"}, {"name": "DELIVERED", "value": "delivered"}, {"name": "FAILED", "value": "failed"}], "EscalationType": [{"name": "REMINDER_10MIN", "value": "reminder_10min"}, {"name": "ESCALATION_20MIN", "value": "escalation_20min"}], "SurveyType": [{"name": "LOYALTY", "value": "loyalty"}, {"name": "SERVICE_QUALITY", "value": "service_quality"}], "ResolutionAction": [{"name": "REASSIGNED", "value": "reassigned"}, {"name": "TAKEN_OVER", "value": "taken_over"}, {"name": "CONTACTED", "value": "contacted"}, {"name": "AUTO_RESOLVED", "value": "auto_resolved"}], "SettingDataType": [{"name": "INTEGER", "value": "integer"}, {"name": "JSON", "value": "json"}, {"name": "CHAT_ID", "value": "chat_id"}, {"name": "USER_ID", "value": "user_id"}], "SettingCategory": [{"name": "TIMEOUTS", "value": "timeouts"}, {"name": "ESCALATION", "value": "escalation"}, {"name": "DUTY_SUPPORT", "value": "duty_support"}, {"name": "NPS", "value": "nps"}, {"name": "RENEWAL_REMINDERS", "value": "renewal_reminders"}]}};
+        
+        let currentZoom = 1;
+        let currentX = 0;
+        let currentY = 0;
+        let isDragging = false;
+        let startX, startY;
+        
+        function renderDiagram() {
+            const wrapper = document.getElementById('diagram-wrapper');
+            wrapper.innerHTML = '';
+            
+            // Simple grid layout
+            const tables = schemaData.tables;
+            const cols = Math.ceil(Math.sqrt(tables.length));
+            const cellWidth = 250;
+            const cellHeight = 200;
+            
+            tables.forEach((table, index) => {
+                const row = Math.floor(index / cols);
+                const col = index % cols;
+                
+                const node = document.createElement('div');
+                node.className = 'table-node';
+                node.style.left = (col * cellWidth + 50) + 'px';
+                node.style.top = (row * cellHeight + 50) + 'px';
+                
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'table-name';
+                nameDiv.textContent = table.name;
+                node.appendChild(nameDiv);
+                
+                const columnsDiv = document.createElement('div');
+                columnsDiv.className = 'table-columns';
+                columnsDiv.textContent = `${table.columns.length} колонок`;
+                node.appendChild(columnsDiv);
+                
+                node.onclick = (e) => {
+                    e.stopPropagation();
+                    showTableDetails(table);
+                };
+                
+                wrapper.appendChild(node);
+            });
+        }
+        
+        function showTableDetails(table) {
+            const sidebar = document.getElementById('sidebar');
+            const content = document.getElementById('sidebar-content');
+            
+            let html = `<h2>${table.name}</h2>`;
+            
+            html += '<h3>Колонки</h3><ul class="column-list">';
+            
+            table.columns.forEach(col => {
+                html += '<li class="column-item">';
+                html += `<span class="column-name">${col.name}</span>`;
+                html += `<span class="column-type"> : ${col.type}</span>`;
+                
+                if (col.primary_key) html += '<span class="badge badge-pk">PK</span>';
+                if (col.foreign_key) html += '<span class="badge badge-fk">FK</span>';
+                if (col.unique && !col.primary_key) html += '<span class="badge badge-uk">UK</span>';
+                
+                if (col.fk_target) {
+                    html += `<br><small style="color: #999;">→ ${col.fk_target}</small>`;
+                }
+                
+                html += '</li>';
+            });
+            
+            html += '</ul>';
+            
+            content.innerHTML = html;
+            sidebar.classList.add('open');
+        }
+        
+        function showEnums() {
+            const sidebar = document.getElementById('sidebar');
+            const content = document.getElementById('sidebar-content');
+            
+            let html = '<h2>📋 Enum типы</h2>';
+            
+            Object.keys(schemaData.enums).forEach(enumName => {
+                html += `<div class="enum-section"><h3>${enumName}</h3>`;
+                
+                schemaData.enums[enumName].forEach(member => {
+                    html += `<div class="enum-item">`;
+                    html += `<span class="enum-value">${member.value}</span>`;
+                    html += ` <span style="color: #999;">(${member.name})</span>`;
+                    html += `</div>`;
+                });
+                
+                html += '</div>';
+            });
+            
+            content.innerHTML = html;
+            sidebar.classList.add('open');
+        }
+        
+        function closeSidebar() {
+            document.getElementById('sidebar').classList.remove('open');
+        }
+        
+        function resetZoom() {
+            currentZoom = 1;
+            currentX = 0;
+            currentY = 0;
+            updateTransform();
+        }
+        
+        function updateTransform() {
+            const wrapper = document.getElementById('diagram-wrapper');
+            wrapper.style.transform = `translate(${currentX}px, ${currentY}px) scale(${currentZoom})`;
+            document.getElementById('zoom-value').textContent = Math.round(currentZoom * 100) + '%';
+        }
+        
+        // Search functionality
+        document.getElementById('search').addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            const nodes = document.querySelectorAll('.table-node');
+            
+            nodes.forEach(node => {
+                const tableName = node.querySelector('.table-name').textContent.toLowerCase();
+                if (tableName.includes(query)) {
+                    node.style.display = 'block';
+                    node.style.opacity = '1';
+                } else {
+                    node.style.opacity = '0.3';
+                }
+            });
+        });
+        
+        // Pan and zoom
+        const container = document.getElementById('diagram-container');
+        
+        container.addEventListener('mousedown', (e) => {
+            if (e.target === container || e.target.id === 'diagram-wrapper') {
+                isDragging = true;
+                container.classList.add('dragging');
+                startX = e.clientX - currentX;
+                startY = e.clientY - currentY;
+                e.preventDefault();
+            }
+        });
+        
+        document.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                currentX = e.clientX - startX;
+                currentY = e.clientY - startY;
+                updateTransform();
+            }
+        });
+        
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            container.classList.remove('dragging');
+        });
+        
+        container.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            
+            // Get mouse position relative to container
+            const rect = container.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            
+            // Calculate position in diagram space before zoom
+            const beforeZoomX = (mouseX - currentX) / currentZoom;
+            const beforeZoomY = (mouseY - currentY) / currentZoom;
+            
+            // Update zoom
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            const newZoom = currentZoom * delta;
+            currentZoom = Math.max(0.1, Math.min(3, newZoom));
+            
+            // Calculate position in diagram space after zoom
+            const afterZoomX = beforeZoomX * currentZoom;
+            const afterZoomY = beforeZoomY * currentZoom;
+            
+            // Adjust pan to keep mouse position stable
+            currentX = mouseX - afterZoomX;
+            currentY = mouseY - afterZoomY;
+            
+            updateTransform();
+        }, { passive: false });
+        
+        // Initial render
+        renderDiagram();
+        updateTransform();
+    </script>
+</body>
+</html>

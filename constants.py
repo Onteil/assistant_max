@@ -18,10 +18,11 @@ DB_URL = os.getenv("DB_URL")
 HTTP_PROXY = os.getenv("HTTP_PROXY")
 HTTPS_PROXY = os.getenv("HTTPS_PROXY")
 
-# Bot tokens - MAX is the primary bot token after migration
+
 MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
-# Legacy Telegram bot token (kept for backward compatibility during transition)
-MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
+
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
+
 HOST = os.getenv("HOST")
 
 REDIS = os.getenv("REDIS")
@@ -56,6 +57,13 @@ REDIS_PORT = int(os.getenv("REDIS_PORT"))
 ITAT_API_BASE_URL = os.getenv("ITAT_API_BASE_URL", "https://api.i-tat.ru")
 ITAT_API_USERNAME = os.getenv("ITAT_API_USERNAME", "")
 ITAT_API_PASSWORD = os.getenv("ITAT_API_PASSWORD", "")
+
+# Registration Approval Method
+# Options: "bot" (approve in bot), "crm" (approve via 1C/CRM webhook)
+REGISTRATION_APPROVE_METHOD = os.getenv("REGISTRATION_APPROVE_METHOD", "bot").lower()
+
+# CRM Webhook API Key for authentication
+WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY", "")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -93,13 +101,13 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 
-@asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    Async context manager for database sessions.
+    Async generator for database sessions (for FastAPI Depends).
     
-    Usage:
-        async with get_session() as session:
+    Usage in FastAPI:
+        @router.post("/endpoint")
+        async def endpoint(session: Annotated[AsyncSession, Depends(get_session)]):
             result = await session.execute(query)
     """
     async with AsyncSessionLocal() as session:
@@ -157,3 +165,7 @@ else:
 
     # Используем все доступные ядра
     MAX_PARALLEL_WORKERS = multiprocessing.cpu_count() or 4
+
+
+ESCALATION_REMINDER_TIMEOUT = 600
+ESCALATION_TIMEOUT = 1200

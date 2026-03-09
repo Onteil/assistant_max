@@ -19,3 +19,12 @@ cleanup_drive.py
 .idea/
 *.vscode/
 .ruff_cache
+
+# Project folders
+analysis/
+docs/
+examples/
+test_results/
+tests/
+.pytest_cache/
+.hypothesis/

@@ -10,20 +10,20 @@ Requirements: 27.1-27.5, 28.1-28.5, 9.1, 9.2, 9.7
 
 import logging
 
-from maxapi.context import FSMContext
+from maxapi.context import MemoryContext
 from maxapi.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.texts import FLOW_CANCELLED, MAIN_MENU
 from database.models import RegistrationStatus
-from services.user_service import get_user_by_tg_id
+from services.user_service import get_user_by_max_id
 
 logger = logging.getLogger(__name__)
 
 
 async def cmd_cancel(
     message: Message,
-    state: FSMContext,
+    state: MemoryContext,
     session: AsyncSession,
     messenger_adapter
 ):
@@ -37,6 +37,8 @@ async def cmd_cancel(
     
     Migrated from Telegram bot to MAX messenger.
     Uses messenger_adapter for sending messages.
+    
+    commands_info: Отменить текущую операцию и вернуться в главное меню
     
     Requirements: 27.1, 27.2, 27.3, 27.4, 27.5, 28.1, 28.2, 28.3, 28.4, 28.5, 9.1, 9.2, 9.7
     """
@@ -56,7 +58,7 @@ async def cmd_cancel(
 
     # Check if user is registered and active
     try:
-        user = await get_user_by_tg_id(session, user_id)
+        user = await get_user_by_max_id(session, user_id)
 
         if user and user.registration_status == RegistrationStatus.ACTIVE:
             # Show main menu for active users
@@ -92,7 +94,7 @@ async def cmd_cancel(
 
 async def handle_cancel_button(
     message: Message,
-    state: FSMContext,
+    state: MemoryContext,
     session: AsyncSession,
     messenger_adapter
 ):
@@ -105,3 +107,4 @@ async def handle_cancel_button(
     Requirements: 28.2, 28.4, 9.2, 9.7
     """
     await cmd_cancel(message, state, session, messenger_adapter)
+

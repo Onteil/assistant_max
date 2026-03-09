@@ -10,7 +10,7 @@ Requirements: 14.5 - Inject dependencies into handlers
 import logging
 from typing import Any, Awaitable, Callable, Dict
 
-from maxapi import BaseMiddleware
+from maxapi.filters.middleware import BaseMiddleware
 
 logger = logging.getLogger(__name__)
 

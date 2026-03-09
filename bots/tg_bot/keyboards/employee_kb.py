@@ -2,7 +2,7 @@
 Employee Interface Keyboards
 
 Клавиатуры для интерфейса сотрудника.
-Включает главное меню сотрудника, действия с тикетами, выбор сотрудников для передачи.
+Включает главное меню сотрудника, действия с заявкими, выбор сотрудников для передачи.
 """
 
 from aiogram.types import InlineKeyboardButton
@@ -46,7 +46,7 @@ async def get_employee_menu_keyboard(is_admin: bool = False):
     """
     builder = InlineKeyboardBuilder()
     
-    # Кнопка "Активные тикеты"
+    # Кнопка "Активные заявки"
     builder.button(
         text=BTN_ACTIVE_TICKETS,
         callback_data=EmployeeMenuCallback(action="active_tickets")
@@ -58,11 +58,11 @@ async def get_employee_menu_keyboard(is_admin: bool = False):
         callback_data=EmployeeMenuCallback(action="archive_search")
     )
     
-    # Кнопка "Настройки"
-    builder.button(
-        text=BTN_EMPLOYEE_SETTINGS,
-        callback_data=EmployeeMenuCallback(action="settings")
-    )
+    # # Кнопка "Настройки"
+    # builder.button(
+    #     text=BTN_EMPLOYEE_SETTINGS,
+    #     callback_data=EmployeeMenuCallback(action="settings")
+    # )
     
     # Кнопка "Админ-панель" только для администраторов
     if is_admin:
@@ -79,21 +79,21 @@ async def get_employee_menu_keyboard(is_admin: bool = False):
 
 async def get_ticket_action_keyboard(ticket_id: int, status: str):
     """
-    Создает клавиатуру с действиями для тикета в зависимости от статуса.
+    Создает клавиатуру с действиями для заявки в зависимости от статуса.
     
     Args:
-        ticket_id: ID тикета
-        status: Текущий статус тикета (NEW, IN_PROGRESS, WAITING_CLIENT)
+        ticket_id: ID заявки
+        status: Текущий статус заявки (NEW, IN_PROGRESS, WAITING_CLIENT)
     
     Returns:
-        InlineKeyboardMarkup с кнопками действий для тикета
+        InlineKeyboardMarkup с кнопками действий для заявки
     
     Requirements: 3.1, 3.2, 3.3
     """
     builder = InlineKeyboardBuilder()
     
     if status == "NEW":
-        # Кнопки для нового тикета
+        # Кнопки для нового заявки
         builder.button(
             text=BTN_TAKE_TICKET,
             callback_data=TicketActionCallback(action="take_ticket", ticket_id=ticket_id)
@@ -113,7 +113,7 @@ async def get_ticket_action_keyboard(ticket_id: int, status: str):
         builder.adjust(1, 1, 1, 1)
     
     elif status == "IN_PROGRESS":
-        # Кнопки для тикета в работе
+        # Кнопки для заявки в работе
         builder.button(
             text=BTN_CLOSE_TICKET,
             callback_data=TicketActionCallback(action="close_ticket", ticket_id=ticket_id)
@@ -137,7 +137,7 @@ async def get_ticket_action_keyboard(ticket_id: int, status: str):
         builder.adjust(2, 1, 1, 1)
     
     elif status == "WAITING_CLIENT":
-        # Кнопки для тикета в ожидании клиента
+        # Кнопки для заявки в ожидании клиента
         builder.button(
             text=BTN_CLOSE_TICKET,
             callback_data=TicketActionCallback(action="close_ticket", ticket_id=ticket_id)
@@ -161,7 +161,7 @@ async def get_ticket_action_keyboard(ticket_id: int, status: str):
 
 async def get_employee_selection_keyboard(employees: list):
     """
-    Создает клавиатуру для выбора сотрудника при передаче тикета.
+    Создает клавиатуру для выбора сотрудника при передаче заявки.
     
     Args:
         employees: Список сотрудников (объекты Staff_Member)
@@ -198,10 +198,10 @@ async def get_employee_selection_keyboard(employees: list):
 
 async def get_ticket_history_keyboard(ticket_id: int, page: int = 0, has_more: bool = False):
     """
-    Создает клавиатуру для пагинации истории тикета.
+    Создает клавиатуру для пагинации истории заявки.
     
     Args:
-        ticket_id: ID тикета
+        ticket_id: ID заявки
         page: Текущая страница
         has_more: Есть ли еще страницы
     
@@ -234,7 +234,7 @@ async def get_ticket_history_keyboard(ticket_id: int, page: int = 0, has_more: b
             )
         )
     
-    # Кнопка "Назад к тикету"
+    # Кнопка "Назад к заявке"
     builder.button(
         text=BTN_BACK,
         callback_data=TicketHistoryCallback(
@@ -255,19 +255,19 @@ async def get_ticket_history_keyboard(ticket_id: int, page: int = 0, has_more: b
 
 async def get_active_tickets_list_keyboard(tickets: list):
     """
-    Создает клавиатуру со списком активных тикетов.
+    Создает клавиатуру со списком активных заявок.
     
     Args:
-        tickets: Список тикетов
+        tickets: Список заявок
     
     Returns:
-        InlineKeyboardMarkup с кнопками тикетов
+        InlineKeyboardMarkup с кнопками заявок
     
     Requirements: 10.1, 10.2, 10.4
     """
     builder = InlineKeyboardBuilder()
     
-    # Добавляем кнопку для каждого тикета
+    # Добавляем кнопку для каждого заявки
     for ticket in tickets:
         ticket_type = "💰" if ticket.ticket_type.value == "INVOICE" else "🆘"
         button_text = f"{ticket_type} #{ticket.id} - {ticket.client.full_name}"

@@ -8,7 +8,13 @@ Registration Keyboards
 from aiogram.types import KeyboardButton
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
-from bots.tg_bot.texts import BTN_CANCEL, BTN_SHARE_PHONE
+from bots.tg_bot.texts import (
+    BTN_CANCEL,
+    BTN_SHARE_PHONE,
+    BTN_SKIP,
+    BTN_ENTER_ANOTHER_KEY,
+    BTN_CONTINUE_REGISTRATION,
+)
 
 
 async def get_phone_request_keyboard():
@@ -50,5 +56,48 @@ async def get_cancel_keyboard():
     
     # Кнопка отмены
     builder.row(KeyboardButton(text=BTN_CANCEL))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+
+async def get_skip_cancel_keyboard():
+    """
+    Создает клавиатуру с кнопками пропуска и отмены.
+    
+    Используется для опциональных шагов регистрации,
+    где пользователь может пропустить ввод данных.
+    
+    Returns:
+        ReplyKeyboardMarkup с кнопками пропуска и отмены
+    """
+    builder = ReplyKeyboardBuilder()
+    
+    # Кнопка пропуска
+    builder.row(KeyboardButton(text=BTN_SKIP))
+    
+    # Кнопка отмены
+    builder.row(KeyboardButton(text=BTN_CANCEL))
+    
+    return builder.as_markup(resize_keyboard=True)
+
+
+async def get_key_conflict_keyboard():
+    """
+    Создает клавиатуру для выбора действия при конфликте ключа.
+    
+    Предлагает пользователю:
+    - Ввести другой ключ Гранд-сметы
+    - Продолжить регистрацию (создастся заявка на конфликт)
+    
+    Returns:
+        ReplyKeyboardMarkup с кнопками выбора
+    """
+    builder = ReplyKeyboardBuilder()
+    
+    # Кнопка ввода другого ключа
+    builder.row(KeyboardButton(text=BTN_ENTER_ANOTHER_KEY))
+    
+    # Кнопка продолжения регистрации
+    builder.row(KeyboardButton(text=BTN_CONTINUE_REGISTRATION))
     
     return builder.as_markup(resize_keyboard=True)

@@ -104,12 +104,12 @@ def validate_gs_key(key: str) -> tuple[bool, str | None]:
     """
     Validates GS_Key (GRAND-Smeta license key) format.
     
-    Expected format: [A-Z]{2}[0-9]{6}
-    Example: MG123456
+    Expected format: XXXXX_XXXXX (5 digits, underscore, 5 digits)
+    Example: 00001_00011
     
     Returns:
         tuple[bool, str | None]: (is_valid, normalized_key or error_message)
-        - If valid: (True, normalized_key in uppercase)
+        - If valid: (True, normalized_key)
         - If invalid: (False, error_message)
     
     Requirements: 23.1, 23.2, 23.3, 23.4, 23.5
@@ -117,14 +117,14 @@ def validate_gs_key(key: str) -> tuple[bool, str | None]:
     if not key:
         return False, "Номер ключа не может быть пустым"
     
-    # Trim whitespace and convert to uppercase
-    key = key.strip().upper()
+    # Trim whitespace
+    key = key.strip()
     
-    # Validate format: 2 letters + 6 digits
-    pattern = r'^[A-Z]{2}[0-9]{6}$'
+    # Validate format: 5 digits, underscore, 5 digits
+    pattern = r'^\d{5}_\d{5}$'
     
     if not re.match(pattern, key):
-        return False, "Неверный формат ключа. Ожидается формат: MG123456 (2 буквы + 6 цифр)"
+        return False, "Неверный формат ключа. Ожидается формат: 00001_00011 (5 цифр + _ + 5 цифр)"
     
     return True, key
 
@@ -134,8 +134,8 @@ def validate_email(email: str) -> tuple[bool, str | None]:
     Validates email address format.
     
     Returns:
-        tuple[bool, str | None]: (is_valid, error_message)
-        - If valid: (True, None)
+        tuple[bool, str | None]: (is_valid, normalized_email or error_message)
+        - If valid: (True, normalized_email in lowercase)
         - If invalid: (False, error_message)
     
     Requirements: 24.1, 24.2, 24.3, 24.4, 24.5
@@ -143,8 +143,8 @@ def validate_email(email: str) -> tuple[bool, str | None]:
     if not email:
         return False, "Email не может быть пустым"
     
-    # Trim whitespace
-    email = email.strip()
+    # Trim whitespace and convert to lowercase
+    email = email.strip().lower()
     
     # Check for @ symbol
     if "@" not in email:
@@ -176,7 +176,7 @@ def validate_email(email: str) -> tuple[bool, str | None]:
     if not re.match(pattern, email):
         return False, "Неверный формат email адреса"
     
-    return True, None
+    return True, email
 
 
 

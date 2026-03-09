@@ -7,7 +7,7 @@ enabling decoupling of business logic from messenger-specific APIs.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 
 @dataclass
@@ -27,7 +27,7 @@ class KeyboardButton:
     """Messenger-agnostic button representation."""
 
     text: str
-    payload: Optional[dict] = None
+    payload: Optional[Union[dict, str]] = None  # Can be dict or string (from CallbackPayload.pack())
     url: Optional[str] = None
     button_type: str = "callback"  # callback, link, contact, location
 
@@ -249,7 +249,8 @@ class MAXMessengerAdapter(IMessengerAdapter):
                 attachments=[max_keyboard] if max_keyboard else None,
                 parse_mode=max_parse_mode
             )
-            return response.message_id
+            # SendedMessage.message.body.mid contains the message ID
+            return response.message.body.mid
         except Exception as e:
             logger.error(f"Failed to send message to {chat_id}: {e}")
             # Convert to MAXAPIError if it's an API error
@@ -269,7 +270,21 @@ class MAXMessengerAdapter(IMessengerAdapter):
         keyboard: Optional[Keyboard] = None,
         parse_mode: Optional[str] = None
     ) -> bool:
-        """Edit a message via MAX API."""
+        """
+        Edit a message via MAX API.
+        
+        If message_id is None (e.g., in callback responses where message_id is not available),
+        sends a new message instead of editing.
+        """
+        # If no message_id, send new message instead
+        if message_id is None:
+            return await self.send_message(
+                chat_id=chat_id,
+                text=text,
+                keyboard=keyboard,
+                parse_mode=parse_mode
+            )
+        
         max_keyboard = self._convert_keyboard(keyboard) if keyboard else None
         max_parse_mode = self._convert_parse_mode(parse_mode)
 
@@ -312,6 +327,45 @@ class MAXMessengerAdapter(IMessengerAdapter):
                 )
             return False
 
+    async def replace_message(
+        self,
+        chat_id: int,
+        old_message_id: str,
+        text: str,
+        keyboard: Optional[Keyboard] = None,
+        parse_mode: Optional[str] = None
+    ) -> bool:
+        """
+        Replace a message by deleting the old one and sending a new one.
+        
+        This is useful for MAX API where editing messages with callbacks is not reliable.
+        The old message is deleted and a new message is sent with updated content.
+        
+        Args:
+            chat_id: Chat ID where the message is located
+            old_message_id: Message ID to delete (mid from message.body.mid)
+            text: New message text
+            keyboard: Optional keyboard for the new message
+            parse_mode: Optional parse mode (HTML, Markdown, etc.)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Delete the old message
+            await self.delete_message(chat_id=chat_id, message_id=old_message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message {old_message_id}: {e}")
+            # Continue anyway - send new message even if delete failed
+        
+        # Send new message
+        return await self.send_message(
+            chat_id=chat_id,
+            text=text,
+            keyboard=keyboard,
+            parse_mode=parse_mode
+        )
+
     async def send_photo(
         self,
         chat_id: int,
@@ -336,7 +390,8 @@ class MAXMessengerAdapter(IMessengerAdapter):
                 attachments=attachments,
                 parse_mode=max_parse_mode
             )
-            return response.message_id
+            # SendedMessage.message.body.mid contains the message ID
+            return response.message.body.mid
         except Exception as e:
             logger.error(f"Failed to send photo to {chat_id}: {e}")
             # Convert to MAXAPIError if it's an API error
@@ -372,7 +427,8 @@ class MAXMessengerAdapter(IMessengerAdapter):
                 attachments=attachments,
                 parse_mode=max_parse_mode
             )
-            return response.message_id
+            # SendedMessage.message.body.mid contains the message ID
+            return response.message.body.mid
         except Exception as e:
             logger.error(f"Failed to send document to {chat_id}: {e}")
             # Convert to MAXAPIError if it's an API error
@@ -508,8 +564,12 @@ class MAXMessengerAdapter(IMessengerAdapter):
         elif button.button_type == "location":
             return RequestGeoLocationButton(text=button.text)
         else:  # Default to callback button
-            # Serialize payload to JSON string for callback_data
-            payload_str = json.dumps(button.payload) if button.payload else ""
+            # If payload is already a string (from CallbackPayload.pack()), use it directly
+            # Otherwise serialize dict/object to JSON string
+            if isinstance(button.payload, str):
+                payload_str = button.payload
+            else:
+                payload_str = json.dumps(button.payload) if button.payload else ""
             return CallbackButton(text=button.text, payload=payload_str)
 
     def _convert_parse_mode(self, parse_mode: Optional[str]) -> Optional[ParseMode]:

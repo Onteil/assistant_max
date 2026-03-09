@@ -105,6 +105,14 @@ async def get_organization_keyboard(organizations: list, page: int = 0):
         )
     )
     
+    # Кнопка "Отмена"
+    builder.row(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=OrganizationCallback(action="cancel").pack()
+        )
+    )
+    
     return builder.as_markup()
 
 
@@ -197,6 +205,22 @@ async def get_key_selection_keyboard(keys: list, selected_key_ids: set[int], pag
             )
         )
     
+    # Кнопки навигации
+    nav_row = []
+    nav_row.append(
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=KeyCallback(action="back").pack()
+        )
+    )
+    nav_row.append(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=KeyCallback(action="cancel").pack()
+        )
+    )
+    builder.row(*nav_row)
+    
     return builder.as_markup()
 
 
@@ -227,5 +251,125 @@ async def get_delivery_method_keyboard():
     
     # Размещаем кнопки в один ряд
     builder.adjust(2)
+    
+    # Кнопки навигации
+    nav_row = []
+    nav_row.append(
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=DeliveryCallback(method="back").pack()
+        )
+    )
+    nav_row.append(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=DeliveryCallback(method="cancel").pack()
+        )
+    )
+    builder.row(*nav_row)
+    
+    return builder.as_markup()
+
+
+async def get_email_input_keyboard():
+    """
+    Создает клавиатуру для шага ввода email.
+    
+    Предоставляет кнопки "Назад" и "Отмена".
+    
+    Returns:
+        InlineKeyboardMarkup с навигационными кнопками
+    
+    Requirements: 9.4
+    """
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопки навигации
+    nav_row = []
+    nav_row.append(
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=DeliveryCallback(method="back_to_delivery").pack()
+        )
+    )
+    nav_row.append(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=DeliveryCallback(method="cancel").pack()
+        )
+    )
+    builder.row(*nav_row)
+    
+    return builder.as_markup()
+
+
+async def get_invoice_confirmation_keyboard():
+    """
+    Создает клавиатуру для подтверждения заявки на счет.
+    
+    Предоставляет кнопки "Подтвердить", "Заполнить заново" и "Отмена".
+    
+    Returns:
+        InlineKeyboardMarkup с кнопками подтверждения
+    
+    Requirements: 9.5
+    """
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопка "Подтвердить"
+    builder.row(
+        InlineKeyboardButton(
+            text="✅ Подтвердить",
+            callback_data=DeliveryCallback(method="confirm").pack()
+        )
+    )
+    
+    # Кнопка "Заполнить заново"
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Заполнить заново",
+            callback_data=DeliveryCallback(method="restart").pack()
+        )
+    )
+    
+    # Кнопка "Отмена"
+    builder.row(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=DeliveryCallback(method="cancel").pack()
+        )
+    )
+    
+    return builder.as_markup()
+
+
+async def get_description_input_keyboard():
+    """
+    Создает клавиатуру для шага ввода описания.
+    
+    Предоставляет кнопки "Назад" и "Отмена".
+    
+    Returns:
+        InlineKeyboardMarkup с навигационными кнопками
+    
+    Requirements: 9.2
+    """
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопки навигации
+    nav_row = []
+    nav_row.append(
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=KeyCallback(action="back_to_keys").pack()
+        )
+    )
+    nav_row.append(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data=KeyCallback(action="cancel").pack()
+        )
+    )
+    builder.row(*nav_row)
     
     return builder.as_markup()

@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Dict
 from maxapi.filters.middleware import BaseMiddleware
 from maxapi.types import UpdateUnion
 
-from constants import get_session
+from constants import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -47,14 +47,16 @@ class DatabaseSessionMiddleware(BaseMiddleware):
         Returns:
             Result from handler execution
         """
-        # Create session and add it to data
-        async with get_session() as session:
+        # Create session using AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
             data["session"] = session
             try:
                 result = await handler(event, data)
-                # Session is automatically committed by get_session context manager
+                # Commit the session on success
+                await session.commit()
                 return result
             except Exception as e:
-                # Session is automatically rolled back by get_session context manager
-                logger.error(f"Error in handler with database session: {e}")
+                # Rollback on error
+                await session.rollback()
+                logger.error(f"Error in handler with database session: {e}", exc_info=True)
                 raise

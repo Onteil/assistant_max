@@ -3,6 +3,15 @@ Celery application configuration.
 Этот файл содержит основную конфигурацию Celery приложения.
 """
 
+import sys
+import os
+
+# CRITICAL: Add project root to Python path BEFORE any other imports
+# This must be the FIRST thing that happens when Celery loads
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from celery import Celery
 from celery.schedules import crontab
 
@@ -13,7 +22,13 @@ app = Celery(
     "celery_app",
     broker=f"{REDIS}/{CELERY_REDIS_DB_NUMBER}",
     backend=f"{REDIS}/{CELERY_REDIS_DB_NUMBER}",
-    include=["celery_app.tasks"],  # Автоматически импортирует tasks.py
+    include=[
+        "celery_app.escalation_tasks",
+        "celery_app.nps_tasks",
+        "celery_app.renewal_tasks",
+        "celery_app.broadcast_tasks",
+        "celery_app.ticket_notification_tasks"
+    ],  # Автоматически импортирует escalation_tasks.py, nps_tasks.py, renewal_tasks.py, broadcast_tasks.py и ticket_notification_tasks.py
 )
 
 # Конфигурация Celery
@@ -38,8 +53,19 @@ app.conf.update(
 
 # Настройка периодических задач (Celery Beat)
 app.conf.beat_schedule = {
-    "run-iec-cy-parser-every-hour": {
-        "task": "celery_app.tasks.run_iec_cy_parser_task",
-        "schedule": crontab(minute=0, hour="*"),
+    "cleanup-old-nps-surveys-daily": {
+        "task": "celery_app.nps_tasks.cleanup_old_surveys",
+        "schedule": crontab(minute=0, hour=3),  # Run daily at 3:00 AM
+        "options": {"queue": "nps_surveys"},
+    },
+    "check-upcoming-expirations": {
+        "task": "celery_app.renewal_tasks.check_upcoming_expirations",
+        "schedule": crontab(minute=0, hour=9),  # Run daily at 9:00 AM Moscow time
+        "options": {"queue": "renewal_reminders"},
+    },
+    "process-pending-tickets": {
+        "task": "celery_app.ticket_notification_tasks.process_pending_tickets",
+        "schedule": crontab(minute=0, hour=9),  # Run daily at 9:00 AM Moscow time (start of work day)
+        "options": {"queue": "ticket_notifications"},
     },
 }

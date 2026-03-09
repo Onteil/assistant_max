@@ -7,47 +7,91 @@ Main Menu Keyboards for MAX Bot
 Migrated from Telegram bot to MAX messenger.
 """
 
-from maxapi.types import KeyboardButton
-from maxapi.utils.reply_keyboard import ReplyKeyboardBuilder
-
+from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+from bots.max_bot.payloads import MainMenuActionPayload
 from bots.max_bot.texts import (
+    MENU_ARCHIVE,
     MENU_INVOICE,
     MENU_PROFILE,
-    MENU_RATE_SERVICE,
     MENU_RENEWAL,
     MENU_SUPPORT,
 )
 
 
-async def get_main_menu_keyboard():
+async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
     """
-    Создает клавиатуру главного меню с всеми доступными функциями.
+    Создает inline клавиатуру главного меню с всеми доступными функциями.
     
     Отображается для пользователей со статусом ACTIVE после регистрации.
     Включает все основные функции бота согласно требованиям.
     
-    Returns:
-        ReplyKeyboardMarkup с кнопками главного меню
+    Args:
+        active_tickets_count: Количество активных заявок клиента
     
-    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 29.1, 29.3
+    Returns:
+        Keyboard с inline кнопками главного меню
+    
+    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 29.1, 29.3, AC-1.2, AC-1.3, TR-2
     """
-    builder = ReplyKeyboardBuilder()
-
-    # Первый ряд: Счет и Техподдержка
-    builder.row(
-        KeyboardButton(text=MENU_INVOICE),
-        KeyboardButton(text=MENU_SUPPORT)
+    buttons = [
+        # Первый ряд: Счет и Техподдержка
+        [
+            KeyboardButton(text="💰 Получить счёт", payload=MainMenuActionPayload(action="invoice").pack()),
+            KeyboardButton(text="🆘 Техподдержка", payload=MainMenuActionPayload(action="support").pack())
+        ],
+        # Второй ряд: Продление и Архив
+        [
+            KeyboardButton(text="🔄 Продление", payload=MainMenuActionPayload(action="renewal").pack()),
+            KeyboardButton(text="🗄 Архив обращений", payload=MainMenuActionPayload(action="archive").pack())
+        ],
+        # Третий ряд: Профиль
+        [
+            KeyboardButton(text="👤 Мой профиль", payload=MainMenuActionPayload(action="profile").pack())
+        ]
+    ]
+    
+    # Если есть активные заявки, добавить кнопку с количеством
+    if active_tickets_count > 0:
+        buttons.insert(2, [
+            KeyboardButton(
+                text=f"📥 Активные обращения ({active_tickets_count})",
+                payload=MainMenuActionPayload(action="active_tickets").pack()
+            )
+        ])
+    
+    return Keyboard(
+        buttons=buttons,
+        inline=True
     )
 
-    # Второй ряд: Продление и Оценка
-    builder.row(
-        KeyboardButton(text=MENU_RENEWAL),
-        KeyboardButton(text=MENU_RATE_SERVICE)
-    )
 
-    # Третий ряд: Профиль
-    builder.row(
-        KeyboardButton(text=MENU_PROFILE)
+async def get_main_menu_keyboard():
+    """
+    Создает reply клавиатуру главного меню (deprecated).
+    
+    Используется для обратной совместимости.
+    Рекомендуется использовать get_main_menu_inline_keyboard().
+    
+    Returns:
+        Keyboard с кнопками главного меню
+    """
+    return Keyboard(
+        buttons=[
+            # Первый ряд: Счет и Техподдержка
+            [
+                KeyboardButton(text=MENU_INVOICE),
+                KeyboardButton(text=MENU_SUPPORT)
+            ],
+            # Второй ряд: Продление и Архив
+            [
+                KeyboardButton(text=MENU_RENEWAL),
+                KeyboardButton(text=MENU_ARCHIVE)
+            ],
+            # Третий ряд: Профиль
+            [
+                KeyboardButton(text=MENU_PROFILE)
+            ]
+        ],
+        inline=False,
+        one_time=False
     )
-
-    return builder.as_markup(resize_keyboard=True)

@@ -1,0 +1,43 @@
+[Unit]
+Description=i-TAT Bot Celery Beat Scheduler
+After=network.target postgresql.service redis.service i-tat-celery-worker.service
+Wants=postgresql.service redis.service
+Requires=i-tat-celery-worker.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/i-tat-bot
+Environment="PATH=/opt/i-tat-bot/venv/bin"
+ExecStart=/opt/i-tat-bot/venv/bin/celery \
+    -A celery_app.celery_config \
+    beat \
+    --loglevel=info \
+    --pidfile=/var/run/celery/i-tat-beat.pid \
+    --logfile=/var/log/celery/i-tat-beat.log
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=200
+StartLimitBurst=5
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/i-tat-bot /var/run/celery /var/log/celery
+
+# Resource limits
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=i-tat-celery-beat
+
+[Install]
+WantedBy=multi-user.target

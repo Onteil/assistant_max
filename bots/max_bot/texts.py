@@ -1,805 +1,315 @@
 """
-Статичные тексты для MAX бота АЙТАТ-Диспетчер.
-Все сообщения, которые отправляет бот пользователям.
-
-Migrated from Telegram bot to MAX messenger.
-"""
-
-
-# ========== Регистрация ==========
-
-REGISTRATION_START = """
-👋 Добро пожаловать в АЙТАТ-Диспетчер!
-
-Для начала работы необходимо пройти регистрацию.
-Пожалуйста, поделитесь вашим номером телефона, нажав кнопку ниже:
-"""
-
-REGISTRATION_PHONE_SHARED = """
-Отлично! Теперь введите ваше полное имя (Фамилия Имя):
-"""
-
-REGISTRATION_ENTER_INN = """
-Спасибо! Теперь введите ИНН вашей организации (10 или 12 цифр):
-"""
-
-REGISTRATION_ENTER_KEY = """
-Отлично! Последний шаг - введите номер вашего ключа ГРАНД-Сметы (например, MG123456):
-"""
-
-REGISTRATION_PROCESSING = """
-⏳ Обрабатываем вашу заявку...
-Пожалуйста, подождите.
-"""
-
-REGISTRATION_SUBMITTED = """
-✅ Регистрация отправлена на проверку!
-
-Ваша заявка находится на рассмотрении.
-Мы уведомим вас, когда регистрация будет одобрена.
-
-Обычно это занимает несколько минут.
-"""
-
-REGISTRATION_SUCCESS = """
-✅ Регистрация успешно завершена!
-
-Добро пожаловать в систему АЙТАТ-Диспетчер.
-Ваша заявка одобрена менеджером {manager_name}.
-
-Теперь вам доступны все функции бота.
-"""
-
-REGISTRATION_REJECTED = """
-❌ К сожалению, ваша заявка отклонена.
-
-Причина: {reason}
-
-Вы можете попробовать зарегистрироваться снова с корректными данными.
-"""
-
-REGISTRATION_PENDING = """
-⏳ Ваша регистрация находится на рассмотрении
-
-Пожалуйста, дождитесь одобрения администратора.
-Мы уведомим вас, как только регистрация будет завершена.
-"""
-
-REGISTRATION_KEY_CONFLICT = """
-⚠️ Обнаружен конфликт ключа
-
-Указанный ключ уже зарегистрирован на другого пользователя.
-Мы создали заявку для администратора на разрешение конфликта.
-
-Вы можете продолжить регистрацию, ключ будет проверен вручную.
-"""
-
-REGISTRATION_PHONE_DUPLICATE = """
-❌ Этот номер телефона уже зарегистрирован
-
-Пожалуйста, используйте другой номер телефона или обратитесь в поддержку.
-"""
-
-REGISTRATION_INVALID_INN = """
-⚠️ Указан некорректный ИНН.
-
-Пожалуйста, проверьте правильность введенных данных и попробуйте снова.
-"""
-
-
-# ========== Главное меню ==========
-
-MAIN_MENU = """
-📋 Главное меню
-
-Выберите нужное действие:
-"""
-
-MENU_PROFILE = "👤 Мой профиль"
-MENU_INVOICE = "💰 Получить счет"
-MENU_SUPPORT = "🆘 Техподдержка"
-MENU_RENEWAL = "🔄 Продление"
-MENU_RATE_SERVICE = "⭐ Оценить сервис"
-
-
-# ========== Профиль ==========
-
-PROFILE_INFO = """
-👤 Ваш профиль
-
-ФИО: {full_name}
-Телефон: {phone}
-Дата регистрации: {registration_date}
-
-📊 Организации: {organizations_count}
-{organizations_list}
-
-🔑 Ключи ГРАНД-Сметы: {keys_count}
-{keys_list}
-
-📅 Статус подписки: {subscription_status}
-{subscription_details}
-
-🔔 Уведомления: {notification_status}
-"""
-
-PROFILE_NO_SUBSCRIPTION = "❌ Не активна"
-PROFILE_ACTIVE_SUBSCRIPTION = "✅ Активна до {expiry_date}"
-PROFILE_EXPIRED_SUBSCRIPTION = "⚠️ Истекла {expiry_date}"
-
-PROFILE_NOTIFICATIONS_ON = "Включены"
-PROFILE_NOTIFICATIONS_OFF = "Выключены"
-
-PROFILE_ADD_INN_PROMPT = """
-➕ Добавление организации
-
-Введите ИНН организации (10 или 12 цифр):
-"""
-
-PROFILE_INN_ADDED = """
-✅ Организация успешно добавлена в ваш профиль!
-
-ИНН: {inn}
-"""
-
-PROFILE_INN_DUPLICATE = """
-⚠️ Эта организация уже добавлена в ваш профиль.
-"""
-
-PROFILE_ADD_KEY_PROMPT = """
-➕ Добавление ключа
-
-Введите номер ключа ГРАНД-Сметы (например, MG123456):
-"""
-
-ADD_KEY_SUCCESS = """
-✅ Ключ успешно добавлен в ваш профиль!
-
-Номер ключа: {key_number}
-"""
-
-ADD_KEY_CONFLICT = """
-⚠️ Конфликт ключа
-
-Этот ключ уже зарегистрирован на другого пользователя.
-
-Заявка на разрешение конфликта отправлена администратору.
-Ключ добавлен в ваш профиль и будет проверен вручную.
-"""
-
-PROFILE_CHANGE_PHONE_PROMPT = """
-📱 Изменение номера телефона
-
-⚠️ Внимание! Изменение номера телефона требует одобрения администратора.
-
-Введите новый номер телефона:
-"""
-
-PROFILE_CHANGE_PHONE_SUBMITTED = """
-✅ Запрос на изменение номера отправлен
-
-Ваш запрос на изменение номера телефона отправлен администратору.
-Номер телефона будет обновлен после одобрения.
-
-Текущий номер: {current_phone}
-Новый номер: {new_phone}
-"""
-
-PROFILE_NOTIFICATIONS_TOGGLED = """
-✅ Настройки уведомлений обновлены
-
-Уведомления: {status}
-
-{description}
-"""
-
-PROFILE_NOTIFICATIONS_ENABLED_DESC = """
-Вы будете получать рассылки и уведомления от бота.
-"""
-
-PROFILE_NOTIFICATIONS_DISABLED_DESC = """
-Вы не будете получать рассылки от бота.
-Важные уведомления о ваших заявках будут приходить в любом случае.
-"""
-
-
-# ========== Счета ==========
-
-INVOICE_SELECT_ORGANIZATION = """
-💰 Запрос счета
-
-Выберите организацию, для которой нужен счет:
-"""
-
-INVOICE_ADD_NEW_INN = """
-➕ Добавление новой организации
-
-Введите ИНН организации (10 или 12 цифр):
-"""
-
-INVOICE_INN_ADDED = """
-✅ Организация добавлена!
-
-Теперь выберите ключи ГРАНД-Сметы для счета:
-"""
-
-INVOICE_SELECT_KEYS = """
-🔑 Выбор ключей
-
-Выберите один или несколько ключей для счета.
-Нажмите на ключ, чтобы выбрать/отменить выбор.
-"""
-
-INVOICE_ADD_NEW_KEY = """
-➕ Добавление нового ключа
-
-Введите номер ключа ГРАНД-Сметы (например, MG123456):
-"""
-
-INVOICE_KEY_ADDED = """
-✅ Ключ добавлен!
-
-Продолжите выбор ключей или нажмите "Готово".
-"""
-
-INVOICE_KEY_CONFLICT = """
-⚠️ Конфликт ключа
-
-Этот ключ уже зарегистрирован на другого пользователя.
-Заявка на разрешение конфликта отправлена администратору.
-
-Ключ добавлен в ваш профиль и будет проверен вручную.
-"""
-
-INVOICE_ENTER_DESCRIPTION = """
-📝 Описание счета
-
-Введите описание для счета (например, "Индексы февраль 2026"):
-"""
-
-INVOICE_SELECT_DELIVERY = """
-📬 Способ доставки
-
-Выберите, как вы хотите получить счет:
-"""
-
-INVOICE_ENTER_EMAIL = """
-📧 Email для доставки
-
-Введите ваш email адрес:
-"""
-
-INVOICE_PROCESSING = """
-⏳ Формируем счет...
-Пожалуйста, подождите.
-"""
-
-INVOICE_CREATED = """
-✅ Запрос на счет создан!
-
-Номер заявки: #{ticket_id}
-Организация: {organization_name}
-Способ доставки: {delivery_method}
-
-Ваш менеджер {manager_name} получил уведомление.
-{response_time_message}
-"""
-
-INVOICE_RESPONSE_TIME_WORKING = """
-Ожидайте ответа в течение рабочего дня.
-"""
-
-INVOICE_RESPONSE_TIME_EXTENDED = """
-Ожидайте ответа в расширенное рабочее время.
-"""
-
-INVOICE_RESPONSE_TIME_NON_WORKING = """
-Ваша заявка будет обработана в следующий рабочий день.
-"""
-
-INVOICE_READY = """
-✅ Счет готов!
-
-Организация: {company_name}
-ИНН: {inn}
-Сумма: {amount} ₽
-
-Счет отправлен вам в документе ниже.
-"""
-
-
-# ========== Техподдержка ==========
-
-SUPPORT_NO_SUBSCRIPTION = """
-❌ Техподдержка недоступна
-
-У вас нет активной подписки на техподдержку.
-Для получения доступа обратитесь к менеджеру или продлите подписку.
-"""
-
-SUPPORT_SUBSCRIPTION_EXPIRED = """
-⚠️ Подписка истекла
-
-Ваша подписка на техподдержку истекла {expiry_date}.
-
-Хотите связаться с менеджером для продления?
-"""
-
-SUPPORT_CREATE_TICKET = """
-🆘 Техподдержка
-
-Опишите вашу проблему или вопрос.
-Вы можете отправить текст, фото, голосовое сообщение или документ:
-"""
-
-SUPPORT_SELECT_KEY_CONTEXT = """
-🔑 Контекст проблемы
-
-С каким ключом связана проблема?
-Или нажмите "Не знаю / Пропустить", если не уверены:
-"""
-
-SUPPORT_TICKET_CREATED = """
-✅ Обращение #{ticket_id} создано
-
-Ваше обращение принято в работу.
-{routing_message}
-
-{response_time_message}
-"""
-
-SUPPORT_ROUTING_REGULAR = """
-Обращение направлено в службу поддержки.
-"""
-
-SUPPORT_ROUTING_EXTENDED = """
-Обращение направлено дежурному инженеру.
-"""
-
-SUPPORT_ROUTING_NON_WORKING = """
-Обращение будет обработано в следующий рабочий день.
-"""
-
-SUPPORT_RESPONSE_TIME_REGULAR = """
-Среднее время ответа: 15 минут.
-"""
-
-SUPPORT_RESPONSE_TIME_EXTENDED = """
-Среднее время ответа: 30 минут.
-"""
-
-SUPPORT_RESPONSE_TIME_NON_WORKING = """
-Обработка начнется в начале рабочего дня.
-"""
-
-SUPPORT_TICKET_ASSIGNED = """
-👨‍💼 Ваше обращение #{ticket_id} принято в работу
-
-Специалист: {engineer_name}
-Статус: В обработке
-"""
-
-SUPPORT_TICKET_CLOSED = """
-✅ Обращение #{ticket_id} закрыто
-
-Комментарий специалиста:
-{comment}
-
-Спасибо за обращение!
-"""
-
-
-# ========== Продление лицензии ==========
-
-RENEWAL_SELECT_KEY = """
-🔄 Продление лицензии
-
-Выберите ключ для продления:
-"""
-
-RENEWAL_ALERT = """
-⚠️ Напоминание о продлении
-
-Ваша лицензия для ключа {key_number} истекает через {days_left} дн.
-
-Рекомендуем продлить лицензию заранее, чтобы избежать перерывов в работе.
-"""
-
-RENEWAL_PROCESSING = """
-⏳ Обрабатываем запрос на продление...
-"""
-
-RENEWAL_SUCCESS = """
-✅ Лицензия успешно продлена!
-
-Ключ: {key_number}
-Новая дата окончания: {new_expiry_date}
-"""
-
-
-# ========== NPS опрос ==========
-
-NPS_SURVEY_START = """
-📊 Оцените качество обслуживания
-
-Насколько вероятно, что вы порекомендуете наши услуги коллегам?
-
-Оцените по шкале от 0 до 10:
-0 - точно не порекомендую
-10 - обязательно порекомендую
-"""
-
-NPS_SURVEY_COMMENT = """
-Спасибо за оценку!
-
-Не могли бы вы пояснить, что повлияло на вашу оценку?
-"""
-
-NPS_SURVEY_THANKS = """
-🙏 Спасибо за ваш отзыв!
-
-Ваше мнение очень важно для нас и помогает улучшать качество обслуживания.
-"""
-
-
-# ========== Ошибки ==========
-
-ERROR_GENERAL = """
-❌ Произошла ошибка
-
-Пожалуйста, попробуйте позже или обратитесь в поддержку.
-"""
-
-ERROR_NO_ACCESS = """
-🔒 Доступ запрещен
-
-У вас нет прав для выполнения этого действия.
-"""
-
-ERROR_INVALID_INPUT = """
-⚠️ Некорректный ввод
-
-Пожалуйста, проверьте введенные данные и попробуйте снова.
-"""
-
-ERROR_TIMEOUT = """
-⏱️ Время ожидания истекло
-
-Пожалуйста, начните операцию заново.
-"""
-
-ERROR_API_UNAVAILABLE = """
-⚠️ Сервис временно недоступен
-
-Ваш запрос сохранен и будет обработан в ближайшее время.
-Приносим извинения за неудобства.
-"""
-
-ERROR_VALIDATION_PHONE = """
-❌ Неверный формат номера телефона
-
-{error_details}
-
-Пожалуйста, введите номер в формате: +79991234567 или 89991234567
-"""
-
-ERROR_VALIDATION_INN = """
-❌ Неверный формат ИНН
-
-{error_details}
-
-ИНН должен содержать ровно 10 или 12 цифр.
-Пожалуйста, попробуйте снова:
-"""
-
-ERROR_VALIDATION_KEY = """
-❌ Неверный формат ключа
-
-{error_details}
-
-Ключ должен быть в формате: MG123456 (2 буквы + 6 цифр)
-Пожалуйста, попробуйте снова:
-"""
-
-ERROR_VALIDATION_EMAIL = """
-❌ Неверный формат email
-
-{error_details}
-
-Пожалуйста, введите корректный email адрес:
-"""
-
-ERROR_TEXT_TOO_LONG = """
-❌ Текст слишком длинный
-
-Максимальная длина: {max_length} символов
-Вы ввели: {actual_length} символов
-
-Пожалуйста, сократите текст и попробуйте снова:
-"""
-
-
-# ========== Кнопки ==========
-
-BTN_BACK = "◀️ Назад"
-BTN_CANCEL = "❌ Отмена"
-BTN_CONFIRM = "✅ Подтвердить"
-BTN_SKIP = "⏭️ Пропустить"
-BTN_RETRY = "🔄 Попробовать снова"
-BTN_CONTACT_SUPPORT = "📞 Связаться с поддержкой"
-BTN_MAIN_MENU = "🏠 Главное меню"
-BTN_SHARE_PHONE = "📱 Поделиться номером"
-BTN_ADD_NEW_INN = "➕ Добавить новый ИНН"
-BTN_ADD_ANOTHER_KEY = "➕ Добавить еще ключ"
-BTN_DONE = "✅ Готово"
-BTN_DONT_KNOW = "❓ Не знаю / Пропустить"
-BTN_DELIVERY_TELEGRAM = "📱 MAX"
-BTN_DELIVERY_EMAIL = "📧 Email"
-BTN_CONTACT_MANAGER = "👨‍💼 Связаться с менеджером"
-BTN_ADD_INN = "➕ Добавить ИНН"
-BTN_ADD_KEY = "➕ Добавить ключ"
-BTN_CHANGE_PHONE = "📱 Изменить телефон"
-BTN_TOGGLE_NOTIFICATIONS = "🔔 Уведомления"
-BTN_PREVIOUS_PAGE = "◀️ Назад"
-BTN_NEXT_PAGE = "▶️ Вперед"
-
-
-# ========== Отмена и управление потоком ==========
-
-FLOW_CANCELLED = """
-❌ Операция отменена
-
-Вы вернулись в главное меню.
-"""
-
-FLOW_CANCEL_PROMPT = """
-Вы можете отменить текущую операцию в любой момент, отправив команду /cancel
-"""
-
-COMMAND_CANCEL_HELP = """
-Используйте /cancel для отмены текущей операции и возврата в главное меню.
-"""
-
-
-# ========== Системные сообщения ==========
-
-SYSTEM_MAINTENANCE = """
-🔧 Технические работы
-
-Бот временно недоступен в связи с проведением технических работ.
-Приносим извинения за неудобства.
-
-Ожидаемое время завершения: {estimated_time}
-"""
-
-SYSTEM_UPDATED = """
-✨ Обновление завершено
-
-Бот обновлен до новой версии!
-Добавлены новые функции и улучшения.
-"""
-
-
-# ========== Помощь ==========
-
-HELP_TEXT = """
-ℹ️ Справка по боту
-
-Доступные команды:
-/start - Начать работу с ботом
-/help - Показать эту справку
-/cancel - Отменить текущее действие
-
-Основные функции:
-• 💰 Получение счетов
-• 🆘 Техническая поддержка
-• 🔄 Продление лицензий
-• 👤 Управление профилем
-
-По всем вопросам обращайтесь в техподдержку.
-"""
-
-
-# ========== Интерфейс сотрудника ==========
+Static texts for MAX Bot AITAT-Dispatcher.
+All messages that the bot sends to users.
+
+This file contains MAX-specific messages. For messages shared with Telegram bot,
+import from bots.tg_bot.texts where applicable.
+"""
+
+# Import shared texts from Telegram bot
+from bots.tg_bot.texts import (
+    # Registration messages
+    REGISTRATION_START,
+    REGISTRATION_PHONE_SHARED,
+    REGISTRATION_ENTER_EMAIL,
+    REGISTRATION_ENTER_INN,
+    REGISTRATION_ENTER_KEY,
+    REGISTRATION_KEY_HELP,
+    REGISTRATION_PROCESSING,
+    REGISTRATION_SUBMITTED,
+    REGISTRATION_SUCCESS,
+    REGISTRATION_REJECTED,
+    REGISTRATION_PENDING,
+    REGISTRATION_KEY_CONFLICT,
+    REGISTRATION_PHONE_DUPLICATE,
+    REGISTRATION_INVALID_INN,
+    
+    # Main menu
+    MAIN_MENU,
+    
+    # Profile messages
+    PROFILE_INFO,
+    PROFILE_ORGANIZATIONS_LIST,
+    PROFILE_KEYS_LIST,
+    PROFILE_NO_SUBSCRIPTION,
+    PROFILE_ACTIVE_SUBSCRIPTION,
+    PROFILE_EXPIRED_SUBSCRIPTION,
+    PROFILE_NOTIFICATIONS_ON,
+    PROFILE_NOTIFICATIONS_OFF,
+    PROFILE_ADD_INN_PROMPT,
+    PROFILE_INN_ADDED,
+    PROFILE_INN_DUPLICATE,
+    PROFILE_ADD_KEY_PROMPT,
+    ADD_KEY_SUCCESS,
+    ADD_KEY_CONFLICT,
+    PROFILE_CHANGE_PHONE_PROMPT,
+    PROFILE_CHANGE_PHONE_SUBMITTED,
+    PROFILE_NOTIFICATIONS_TOGGLED,
+    PROFILE_NOTIFICATIONS_ENABLED_DESC,
+    PROFILE_NOTIFICATIONS_DISABLED_DESC,
+    PROFILE_NOTIFICATIONS_DISABLE_CONFIRM,
+    PROFILE_NOTIFICATIONS_DISABLED_SUCCESS,
+    PROFILE_NOTIFICATIONS_ENABLED_SUCCESS,
+    ERROR_VALIDATION_EMAIL,
+    
+    # Invoice messages
+    INVOICE_SELECT_ORGANIZATION,
+    INVOICE_ADD_NEW_INN,
+    INVOICE_INN_ADDED,
+    INVOICE_SELECT_KEYS,
+    INVOICE_ADD_NEW_KEY,
+    INVOICE_KEY_ADDED,
+    INVOICE_DESCRIPTION_REMINDER,
+    INVOICE_KEY_CONFLICT,
+    INVOICE_ENTER_DESCRIPTION,
+    INVOICE_SELECT_DELIVERY,
+    INVOICE_CONFIRM_EMAIL,
+    INVOICE_ENTER_EMAIL,
+    INVOICE_CONFIRMATION,
+    INVOICE_PROCESSING,
+    INVOICE_CREATED,
+    INVOICE_RESPONSE_TIME_WORKING,
+    INVOICE_RESPONSE_TIME_EXTENDED,
+    INVOICE_RESPONSE_TIME_NON_WORKING,
+    INVOICE_READY,
+    INVOICE_SENT_TO_EMAIL,
+    
+    # Support messages
+    SUPPORT_CREATE_TICKET,
+    SUPPORT_SELECT_KEY_CONTEXT,
+    SUPPORT_TICKET_CREATED,
+    SUPPORT_ROUTING_REGULAR,
+    SUPPORT_ROUTING_EXTENDED,
+    SUPPORT_ROUTING_NON_WORKING,
+    SUPPORT_RESPONSE_TIME_REGULAR,
+    SUPPORT_RESPONSE_TIME_EXTENDED,
+    SUPPORT_RESPONSE_TIME_NON_WORKING,
+    SUPPORT_TICKET_ASSIGNED,
+    SUPPORT_TICKET_CLOSED,
+    
+    # Renewal messages
+    RENEWAL_STATUS_ACTIVE,
+    RENEWAL_STATUS_ACTIVE_NO_DATE,
+    RENEWAL_STATUS_EXPIRED,
+    RENEWAL_STATUS_NONE,
+    RENEWAL_TICKET_CREATED,
+    RENEWAL_ERROR_NO_MANAGER,
+    RENEWAL_ERROR_CREATE_TICKET,
+    RENEWAL_REMINDER_30_DAYS,
+    RENEWAL_REMINDER_7_DAYS,
+    SUPPORT_SUBSCRIPTION_EXPIRED,
+    SUPPORT_NO_SUBSCRIPTION,
+    
+    # Error messages
+    ERROR_GENERAL,
+    ERROR_NO_ACCESS,
+    ERROR_INVALID_INPUT,
+    ERROR_TIMEOUT,
+    ERROR_API_UNAVAILABLE,
+    ERROR_VALIDATION_PHONE,
+    ERROR_VALIDATION_INN,
+    ERROR_VALIDATION_KEY,
+    ERROR_VALIDATION_EMAIL,
+    ERROR_TEXT_TOO_LONG,
+    
+    # Flow control
+    FLOW_CANCELLED,
+    FLOW_CANCEL_PROMPT,
+    
+    # Help
+    HELP_TEXT,
+    
+    # Main Menu Buttons
+    MENU_PROFILE,
+    MENU_INVOICE,
+    MENU_SUPPORT,
+    MENU_RENEWAL,
+    MENU_RATE_SERVICE,
+    MENU_ARCHIVE,
+    
+    # Buttons
+    BTN_BACK,
+    BTN_CANCEL,
+    BTN_CONFIRM,
+    BTN_SKIP,
+    BTN_RETRY,
+    BTN_CONTACT_SUPPORT,
+    BTN_MAIN_MENU,
+    BTN_SHARE_PHONE,
+    BTN_ADD_NEW_INN,
+    BTN_ADD_ANOTHER_KEY,
+    BTN_DONE,
+    BTN_DONT_KNOW,
+    BTN_DELIVERY_TELEGRAM,
+    BTN_DELIVERY_EMAIL,
+    BTN_ADD_INN,
+    BTN_ADD_KEY,
+    BTN_CHANGE_PHONE,
+    BTN_TOGGLE_NOTIFICATIONS,
+    BTN_ENTER_ANOTHER_KEY,
+    BTN_CONTINUE_REGISTRATION,
+    BTN_CREATE_RENEWAL_REQUEST,
+    BTN_CONTACT_MANAGER,
+)
+
+
+# ========== MAX-Specific Messages ==========
+
+# These messages are specific to MAX messenger and differ from Telegram
+
+MAX_WELCOME = """
+👋 Привет! Рады видеть вас в MAX боте АЙТАТ!
+
+Я ваш персональный помощник для работы с ГРАНД-Сметой. Помогу получить счета, решить технические вопросы и продлить подписку.
+
+Нажмите /start, чтобы начать! 🚀
+"""
+
+# Main menu text with correct terminology
+# ГРАНД-Смета - это программа
+# Ключ ГРАНД-Сметы - это лицензионный ключ
+# Подписка на ИТС - это платная техподдержка
+MAX_MAIN_MENU_TEXT = """
+🏠 <b>Главное меню</b>
+
+Чем могу помочь?
+
+💰 <b>Получить счёт</b> — запросить счет на обновление базы
+🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета
+🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение
+🗄 <b>Архив обращений</b> — посмотреть историю ваших обращений
+👤 <b>Мой профиль</b> — управление данными и настройками
+
+Выберите нужное действие 👇
+"""
+
+
+# ========== Employee Interface ==========
 
 EMPLOYEE_MENU_TEXT = """
-👨‍💼 Меню сотрудника
+👨‍💼 <b>Меню сотрудника</b>
 
-Выберите действие:
-"""
-
-EMPLOYEE_MENU = """
-👨‍💼 Меню сотрудника
-
-Выберите действие:
-"""
-
-EMPLOYEE_ACTIVE_TICKETS = """
-📥 Активные тикеты
-
-{tickets_list}
-"""
-
-EMPLOYEE_NO_ACTIVE_TICKETS = """
-📥 Активные тикеты
-
-У вас нет активных тикетов.
+Добро пожаловать! Выберите действие 👇
 """
 
 EMPLOYEE_NO_ACTIVE_TICKETS_TEXT = """
-📥 Активные тикеты
+📥 <b>Активные заявки</b>
 
-У вас нет активных тикетов.
-"""
+Пока нет активных заявок — можно выдохнуть! 😊
 
-EMPLOYEE_SETTINGS = """
-⚙️ Настройки сотрудника
-
-ФИО: {full_name}
-Должность: {position}
-Роль: {role}
-
-Подпись: {signature}
+Как только появятся новые обращения, они отобразятся здесь.
 """
 
 EMPLOYEE_SETTINGS_TEXT = """
-⚙️ Настройки сотрудника
+⚙️ <b>Настройки сотрудника</b>
 
-ФИО: {full_name}
-Должность: {position}
-Роль: {role}
+<b>ФИО:</b> {full_name}
+<b>Должность:</b> {position}
+<b>Роль:</b> {role}
 
-Подпись: {signature}
+<b>Подпись:</b> {signature}
 """
 
-EMPLOYEE_ARCHIVE_SEARCH_PROMPT = """
-🗄 Поиск в архиве
 
-Введите критерии поиска:
-- Номер тикета (например: 123)
-- Имя клиента (например: Иванов)
-- Диапазон дат (например: 2026-01-01 to 2026-01-31)
-"""
+# ========== Employee Interface Buttons ==========
 
-EMPLOYEE_ARCHIVE_SEARCH_RESULTS = """
-🗄 Результаты поиска
-
-Найдено тикетов: {count}
-
-{results_list}
-"""
-
-EMPLOYEE_ARCHIVE_NO_RESULTS = """
-🗄 Результаты поиска
-
-По вашему запросу ничего не найдено.
-"""
-
-EMPLOYEE_TICKET_CARD = """
-🎫 Тикет #{ticket_id}
-
-Тип: {ticket_type}
-Клиент: {client_name}
-Статус: {status}
-Время: {elapsed_time}
-
-{ticket_details}
-
-{attachments_info}
-"""
-
-EMPLOYEE_TICKET_INVOICE_DETAILS = """
-Организация: {organization_name}
-ИНН: {inn}
-{gs_keys}
-Описание: {description}
-"""
-
-EMPLOYEE_TICKET_SUPPORT_DETAILS = """
-Проблема: {problem_description}
-{gs_key}
-"""
-
-EMPLOYEE_TICKET_ATTACHMENTS = """
-📎 Вложений: {count}
-"""
-
-EMPLOYEE_TICKET_TAKEN = """
-✅ Тикет взят в работу
-
-Вы вошли в режим фокуса.
-Все ваши сообщения будут отправлены клиенту.
-"""
-
-EMPLOYEE_TICKET_WAITING = """
-⏳ Статус изменен на "Ожидание клиента"
-
-Тикет переведен в режим ожидания ответа от клиента.
-"""
-
-EMPLOYEE_TICKET_CLOSE_PROMPT = """
-✅ Закрытие тикета
-
-Введите финальный комментарий для закрытия тикета:
-"""
-
-EMPLOYEE_TICKET_CLOSED = """
-✅ Тикет закрыт
-
-Тикет #{ticket_id} успешно закрыт.
-Вы вышли из режима фокуса.
-"""
-
-EMPLOYEE_TICKET_TRANSFER_PROMPT = """
-🔄 Передача тикета
-
-Выберите сотрудника для передачи тикета:
-"""
-
-EMPLOYEE_TICKET_TRANSFERRED = """
-🔄 Тикет передан
-
-Тикет #{ticket_id} передан сотруднику {employee_name}.
-Вы вышли из режима фокуса.
-"""
-
-EMPLOYEE_TICKET_HISTORY = """
-📁 История тикета #{ticket_id}
-
-{history_content}
-"""
-
-EMPLOYEE_FOCUS_EXITED = """
-❌ Выход из режима фокуса
-
-Вы вышли из режима фокуса.
-Для отправки сообщений выберите тикет.
-"""
-
-EMPLOYEE_MESSAGE_SENT = """
-✅ Сообщение отправлено клиенту
-"""
-
-EMPLOYEE_MESSAGE_NO_FOCUS = """
-⚠️ Выберите тикет
-
-Вы не находитесь в режиме фокуса.
-Выберите тикет из списка активных для отправки сообщений.
-"""
-
-EMPLOYEE_NEW_TICKET_NOTIFICATION = """
-🔔 Новый тикет назначен
-
-{ticket_card}
-"""
-
-EMPLOYEE_TRANSFER_NOTIFICATION = """
-🔔 Тикет передан вам
-
-{ticket_card}
-
-Тикет передан от: {source_employee}
-"""
-
-EMPLOYEE_CLIENT_MESSAGE_NOTIFICATION = """
-💬 Новое сообщение от клиента
-
-Тикет #{ticket_id}
-Клиент: {client_name}
-
-{message_preview}
-"""
-
-# ========== Кнопки интерфейса сотрудника ==========
-
-BTN_ACTIVE_TICKETS = "📥 Активные тикеты"
+BTN_ACTIVE_TICKETS = "📥 Активные заявки"
 BTN_ARCHIVE_SEARCH = "🗄 Архив обращений"
 BTN_EMPLOYEE_SETTINGS = "⚙️ Настройки"
 BTN_ADMIN_PANEL = "🔐 Админ-панель"
 
-BTN_TAKE_TICKET = "Взять в работу"
-BTN_CLOSE_TICKET = "✅ Закрыть"
-BTN_SET_WAITING = "⏳ Ждем клиента"
-BTN_TRANSFER_TICKET = "🔄 Передать"
-BTN_VIEW_HISTORY = "📁 История"
-BTN_EXIT_FOCUS = "❌ Выйти из фокуса"
+
+# ========== Registration Messages ==========
+
+REGISTRATION_APPROVED = """
+🎉 <b>Отличные новости!</b>
+
+Ваша регистрация одобрена — добро пожаловать в систему! 
+
+<b>Теперь вам доступно:</b>
+💰 Получение счетов на оплату
+🆘 Быстрая техническая поддержка  
+🔄 Продление подписки в пару кликов
+
+Нажмите /start, чтобы начать работу 🚀
+"""
+
+REGISTRATION_REJECTED = """
+😔 <b>Регистрация отклонена</b>
+
+К сожалению, мы не смогли одобрить вашу регистрацию.
+
+<b>Причина:</b> {reason}
+
+Если у вас есть вопросы или вы считаете, что произошла ошибка, свяжитесь с нами:
+📞 +7 (8552) 25-33-33
+"""
+
+
+# MAX-specific profile messages
+PROFILE_CHANGE_EMAIL_PROMPT = """
+📧 <b>Изменение Email</b>
+
+Введите новый email адрес:
+
+<i>Email будет обновлен сразу после ввода.</i>
+"""
+
+PROFILE_EMAIL_UPDATED = """
+✅ <b>Email успешно обновлен</b>
+
+Новый email: <b>{email}</b>
+"""
+
+PROFILE_EMAIL_REMOVED = """
+✅ <b>Email удален из профиля</b>
+"""
+
+
+# ============================================================================
+# Admin Creation Messages
+# ============================================================================
+
+ADMIN_CREATION_START = """
+🔐 <b>Создание администратора</b>
+
+Для создания нового администратора системы необходимо:
+1. Номер телефона
+2. Полное имя (ФИО)
+
+Пожалуйста, поделитесь номером телефона нового администратора.
+"""
+
+ADMIN_CREATION_ENTER_PHONE = """
+📱 Пожалуйста, поделитесь номером телефона нового администратора.
+"""
+
+ADMIN_CREATION_INVALID_PHONE = """
+❌ <b>Неверный формат номера телефона</b>
+
+Пожалуйста, используйте кнопку "Поделиться номером" для отправки контакта.
+"""
+
+ADMIN_CREATION_ENTER_FULL_NAME = """
+📝 <b>Введите полное имя администратора</b>
+
+Формат: Фамилия Имя Отчество
+Пример: Иванов Иван Иванович
+
+Минимум: Фамилия и Имя
+"""
+
+ADMIN_CREATION_SUCCESS = """
+✅ <b>Администратор успешно создан!</b>
+
+👤 <b>ФИО:</b> {full_name}
+📱 <b>Телефон:</b> {phone}
+🆔 <b>User ID:</b> {user_id}
+👔 <b>Staff ID:</b> {staff_id}
+
+Администратор может войти в систему, используя команду /manager.
+"""
+
+ADMIN_CREATION_CANCELLED = """
+❌ Создание администратора отменено.
+"""

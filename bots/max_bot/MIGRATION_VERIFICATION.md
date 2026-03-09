@@ -232,7 +232,7 @@ This document verifies that all business logic has been preserved during the mig
 ## Configuration Verification ✅
 
 ### Environment Variables:
-- ✅ `MAX_BOT_TOKEN`: MAX Bot API token (replaces MAIN_BOT_TOKEN)
+- ✅ `MAX_BOT_TOKEN`: MAX Bot API token (replaces TG_BOT_TOKEN)
 - ✅ `WEBHOOK_PATH_MAX`: MAX webhook endpoint path (e.g., /max/webhook)
 - ✅ `REDIS`: Redis connection string (shared with Telegram bot)
 - ✅ `DB_URL`: Database connection string (unchanged)

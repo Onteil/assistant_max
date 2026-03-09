@@ -19,11 +19,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create retry_status enum
-    retry_status_enum = postgresql.ENUM('pending', 'success', 'failed', name='retrystatus')
-    retry_status_enum.create(op.get_bind())
+    # Create retry_status enum only if it doesn't exist
+    op.execute("""
+        DO $$ BEGIN
+            CREATE TYPE retrystatus AS ENUM ('pending', 'success', 'failed');
+        EXCEPTION
+            WHEN duplicate_object THEN null;
+        END $$;
+    """)
     
     # Create api_retry_queue table
+    retry_status_enum = postgresql.ENUM('pending', 'success', 'failed', name='retrystatus', create_type=False)
     op.create_table(
         'api_retry_queue',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),

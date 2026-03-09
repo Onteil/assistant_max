@@ -1,10 +1,10 @@
 """
 Callback Data Structures for MAX Bot
 
-This module defines typed callback payload classes using maxapi's CallbackPayload.
-These provide type-safe callback data handling for inline keyboard buttons.
+This module defines typed callback payload classes for inline keyboard buttons.
+These provide type-safe callback data handling.
 
-Pattern: Use CallbackPayload with short prefixes to save bytes in callback_data
+Pattern: Use dataclasses with short prefixes to save bytes in callback_data
 - Document the purpose of each field
 - Use Optional for optional parameters
 - action: str - for determining the type of action (view, select, delete, etc.)
@@ -12,50 +12,85 @@ Pattern: Use CallbackPayload with short prefixes to save bytes in callback_data
 Requirements: 5.1, 5.2, 5.4, 5.5
 """
 
+from dataclasses import dataclass, asdict
 from typing import Optional
 
-from maxapi.filters.callback_payload import CallbackPayload
 
-
-class OrganizationCallback(CallbackPayload, prefix="org"):
+@dataclass
+class OrganizationCallback:
     """
     Callback data for organization selection.
     
     Fields:
-    - action: Type of action ('select', 'add_new', 'skip', 'page')
+    - action: Type of action ('select', 'add_new', 'skip', 'page', 'cancel')
     - inn: Organization INN (optional)
     - page: Page number for pagination (optional)
     """
     action: str
     inn: Optional[str] = None
     page: Optional[int] = None
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for organization selection callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["select", "add_new", "skip", "page", "cancel"])
 
 
-class KeyCallback(CallbackPayload, prefix="key"):
+@dataclass
+@dataclass
+class KeyCallback:
     """
     Callback data for GS_Key selection.
     
     Fields:
-    - action: Type of action ('toggle', 'add_new', 'done', 'skip', 'page')
+    - action: Type of action ('toggle', 'add_new', 'done', 'skip', 'page', 'cancel')
     - key_id: GS_Key ID (optional)
     - page: Page number for pagination (optional)
     """
     action: str
     key_id: Optional[int] = None
     page: Optional[int] = None
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for key selection callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["toggle", "add_new", "done", "skip", "page", "cancel"])
+        return lambda: True
 
 
-class DeliveryCallback(CallbackPayload, prefix="dlv"):
+@dataclass
+class DeliveryCallback:
     """
     Callback data for delivery method selection.
     
     Fields:
-    - method: Delivery method ('telegram', 'email')
+    - method: Delivery method ('telegram', 'email', 'cancel')
     """
     method: str
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for delivery method callbacks"""
+        from maxapi import F
+        return F.callback.payload.method.in_(["telegram", "email", "cancel"])
 
 
-class ProfileCallback(CallbackPayload, prefix="prof"):
+@dataclass
+class ProfileCallback:
     """
     Callback data for profile actions.
     
@@ -63,9 +98,58 @@ class ProfileCallback(CallbackPayload, prefix="prof"):
     - action: Type of action ('add_inn', 'add_key', 'change_phone', 'toggle_notif', 'back')
     """
     action: str
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for profile action callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["add_inn", "add_key", "change_phone", "toggle_notif", "back"])
 
 
-class ExampleItemCallback(CallbackPayload, prefix="item"):
+@dataclass
+class KeyConflictCallback:
+    """
+    Callback data for key conflict resolution.
+    
+    Fields:
+    - action: Type of action ('retry', 'continue')
+    """
+    action: str
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for key conflict resolution callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["retry", "continue"])
+
+
+# TODO: Add RenewalCallback for MAX bot subscription renewal feature
+# @dataclass
+# class RenewalCallback:
+#     """
+#     Callback data for subscription renewal actions.
+#     
+#     Fields:
+#     - action: Type of action ('renew', 'renew_from_notification', 'contact_manager', 'cancel')
+#     """
+#     action: str
+#     
+#     @staticmethod
+#     def filter():
+#         """Placeholder filter method for compatibility"""
+#         return lambda: True
+
+
+@dataclass
+class ExampleItemCallback:
     """
     Example callback factory for working with list items.
     
@@ -77,9 +161,17 @@ class ExampleItemCallback(CallbackPayload, prefix="item"):
     action: str
     item_id: Optional[int] = None
     page: Optional[int] = None
+    
+    @staticmethod
+    def filter(condition=None):
+        """Filter for example item callbacks - only matches 'example_' prefixed actions"""
+        from maxapi import F
+        # Only match actions that start with 'example_' to avoid interfering with real handlers
+        return F.callback.payload.action.startswith("example_")
 
 
-class ExampleNavigationCallback(CallbackPayload, prefix="nav"):
+@dataclass
+class ExampleNavigationCallback:
     """
     Example callback factory for navigation between sections.
     
@@ -91,9 +183,17 @@ class ExampleNavigationCallback(CallbackPayload, prefix="nav"):
     action: str
     from_section: Optional[str] = None
     data: Optional[str] = None
+    
+    @staticmethod
+    def filter(condition=None):
+        """Filter for example navigation callbacks - only matches 'example_nav_' prefixed actions"""
+        from maxapi import F
+        # Only match actions that start with 'example_nav_' to avoid interfering with real handlers
+        return F.callback.payload.action.startswith("example_nav_")
 
 
-class EmployeeMenuCallback(CallbackPayload, prefix="emp_menu"):
+@dataclass
+class EmployeeMenuCallback:
     """
     Callback data for employee main menu.
     
@@ -101,21 +201,60 @@ class EmployeeMenuCallback(CallbackPayload, prefix="emp_menu"):
     - action: Type of action ('active_tickets', 'archive_search', 'settings', 'admin_panel')
     """
     action: str
+    
+    @staticmethod
+    def filter():
+        """Filter for employee menu callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["active_tickets", "archive_search", "settings", "admin_panel"])
 
 
-class TicketActionCallback(CallbackPayload, prefix="ticket_act"):
+@dataclass
+class TicketListCallback:
+    """
+    Callback data for ticket list buttons.
+    
+    Used in active tickets list inline keyboard where each row represents one ticket.
+    
+    Fields:
+    - action: Type of action ('focus_ticket', 'ticket_actions')
+    - ticket_id: Ticket ID
+    
+    Actions:
+    - 'focus_ticket': Direct entry into focus mode on the ticket
+    - 'ticket_actions': Open actions menu with ticket card
+    """
+    action: str
+    ticket_id: int
+    
+    @staticmethod
+    def filter():
+        """Filter for ticket list callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["focus_ticket", "ticket_actions"])
+
+
+@dataclass
+class TicketActionCallback:
     """
     Callback data for ticket actions.
     
     Fields:
-    - action: Type of action ('take_ticket', 'close_ticket', 'set_waiting', 'transfer_ticket', 'view_history', 'exit_focus')
+    - action: Type of action ('take_ticket', 'close_ticket', 'set_waiting', 'transfer_ticket', 'view_history', 'exit_focus', 'back_to_list')
     - ticket_id: Ticket ID
     """
     action: str
     ticket_id: int
+    
+    @staticmethod
+    def filter():
+        """Filter for ticket action callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["take_ticket", "close_ticket", "set_waiting", "transfer_ticket", "view_history", "exit_focus", "back_to_list"])
 
 
-class EmployeeSelectionCallback(CallbackPayload, prefix="emp_sel"):
+@dataclass
+class EmployeeSelectionCallback:
     """
     Callback data for employee selection when transferring tickets.
     
@@ -125,9 +264,16 @@ class EmployeeSelectionCallback(CallbackPayload, prefix="emp_sel"):
     """
     action: str
     employee_id: Optional[int] = None
+    
+    @staticmethod
+    def filter():
+        """Filter for employee selection callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["select", "cancel"])
 
 
-class TicketHistoryCallback(CallbackPayload, prefix="ticket_hist"):
+@dataclass
+class TicketHistoryCallback:
     """
     Callback data for ticket history pagination.
     
@@ -139,9 +285,16 @@ class TicketHistoryCallback(CallbackPayload, prefix="ticket_hist"):
     action: str
     ticket_id: int
     page: int = 0
+    
+    @staticmethod
+    def filter():
+        """Filter for ticket history callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["page", "back"])
 
 
-class ArchiveSearchCallback(CallbackPayload, prefix="arch_srch"):
+@dataclass
+class ArchiveSearchCallback:
     """
     Callback data for archive search results.
     
@@ -153,3 +306,36 @@ class ArchiveSearchCallback(CallbackPayload, prefix="arch_srch"):
     action: str
     ticket_id: Optional[int] = None
     page: int = 0
+    
+    @staticmethod
+    def filter():
+        """Filter for archive search callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["view_ticket", "page", "back"])
+
+
+@dataclass
+class ClientArchiveCallback:
+    """
+    Callback data for client archive interactions.
+    
+    Fields:
+    - action: Type of action ('filter', 'page', 'view_ticket', 'close')
+    - filter_type: Filter type ('invoice', 'technical_support', 'renewal', 'all')
+    - ticket_id: Ticket ID (optional)
+    - page: Page number (default 0)
+    """
+    action: str
+    filter_type: Optional[str] = None
+    ticket_id: Optional[int] = None
+    page: int = 0
+    
+    def model_dump(self) -> dict:
+        """Convert dataclass to dict for compatibility with Pydantic-style code"""
+        return asdict(self)
+    
+    @staticmethod
+    def filter():
+        """Filter for client archive callbacks"""
+        from maxapi import F
+        return F.callback.payload.action.in_(["filter", "page", "view_ticket", "close"])

@@ -6,7 +6,7 @@ SQLAlchemy ORM models with async support.
 import datetime
 import enum
 
-from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Enum, ForeignKey, Integer, String, Table, Text, Time, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Table, Text, Time, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -30,6 +30,7 @@ class RegistrationStatus(enum.Enum):
     PENDING = "pending"
     ACTIVE = "active"
     REJECTED = "rejected"
+    UNDER_REVIEW = "under_review"
 
 
 class SubscriptionStatus(enum.Enum):
@@ -90,6 +91,9 @@ class MessageType(enum.Enum):
     PHOTO = "photo"
     DOCUMENT = "document"
     VOICE = "voice"
+    VIDEO = "video"
+    AUDIO = "audio"
+    VIDEO_NOTE = "video_note"
     SYSTEM_NOTIFICATION = "system_notification"
 
 
@@ -112,6 +116,8 @@ class ActionType(enum.Enum):
     TICKET_CREATED = "ticket_created"
     TICKET_ASSIGNED = "ticket_assigned"
     TICKET_ESCALATED = "ticket_escalated"
+    REMINDER_SENT = "reminder_sent"
+    ESCALATED = "escalated"
     TICKET_CLOSED = "ticket_closed"
     STATUS_CHANGED = "status_changed"
     MESSAGE_SENT = "message_sent"
@@ -119,6 +125,17 @@ class ActionType(enum.Enum):
     USER_REGISTERED = "user_registered"
     KEY_CONFLICT_DETECTED = "key_conflict_detected"
     API_RETRY_FAILED = "api_retry_failed"
+    STAFF_ADDED = "staff_added"
+    STAFF_UPDATED = "staff_updated"
+    STAFF_DEACTIVATED = "staff_deactivated"
+    STAFF_ACTIVATED = "staff_activated"
+    CLIENTS_TRANSFERRED = "clients_transferred"
+    CALENDAR_RULE_CREATED = "calendar_rule_created"
+    CALENDAR_RULE_DELETED = "calendar_rule_deleted"
+    CALENDAR_PERIOD_CLEARED = "calendar_period_cleared"
+    BROADCAST_SENT = "broadcast_sent"
+    SETTING_CHANGED = "setting_changed"
+    SETTING_RESET = "setting_reset"
 
 
 class WorkMode(enum.Enum):
@@ -165,6 +182,44 @@ class DeliveryStatus(enum.Enum):
     FAILED = "failed"
 
 
+class EscalationType(enum.Enum):
+    """Escalation type values"""
+    REMINDER_10MIN = "reminder_10min"
+    ESCALATION_20MIN = "escalation_20min"
+
+
+class SurveyType(enum.Enum):
+    """NPS survey type values"""
+    LOYALTY = "loyalty"  # Post-payment survey
+    SERVICE_QUALITY = "service_quality"  # Post-support survey
+
+
+class ResolutionAction(enum.Enum):
+    """Escalation resolution action values"""
+    REASSIGNED = "reassigned"
+    TAKEN_OVER = "taken_over"
+    CONTACTED = "contacted"
+    AUTO_RESOLVED = "auto_resolved"
+
+
+class SettingDataType(enum.Enum):
+    """Data types for system settings"""
+    INTEGER = "integer"
+    JSON = "json"
+    CHAT_ID = "chat_id"
+    USER_ID = "user_id"
+
+
+class SettingCategory(enum.Enum):
+    """Categories for organizing settings"""
+    TIMEOUTS = "timeouts"
+    ESCALATION = "escalation"
+    DUTY_SUPPORT = "duty_support"
+    NPS = "nps"
+    RENEWAL_REMINDERS = "renewal_reminders"
+
+
+
 # ========== Association Tables ==========
 # These must be defined before the models that reference them
 
@@ -173,10 +228,10 @@ user_organizations = Table(
     "user_organizations",
     Base.metadata,
     Column("id", Integer, primary_key=True, autoincrement=True, nullable=False),
-    Column("tg_user_id", BigInteger, ForeignKey("users.tg_user_id"), nullable=False),
+    Column("user_id", BigInteger, ForeignKey("users.id"), nullable=False),
     Column("organization_inn", String(12), ForeignKey("organizations.inn"), nullable=False),
     Column("added_at", DateTime, default=datetime.datetime.utcnow, nullable=False),
-    UniqueConstraint("tg_user_id", "organization_inn", name="uq_user_organization")
+    UniqueConstraint("user_id", "organization_inn", name="uq_user_organization")
 )
 
 
@@ -194,22 +249,57 @@ ticket_keys = Table(
 # ========== Core Identity Models ==========
 
 
+class MAX_Messenger_Data(Base, TimestampMixin):
+    """
+    MAX messenger data - stores MAX user_id to chat_id mapping.
+    
+    MAX API requires chat_id for sending messages, not user_id.
+    This table maintains the relationship between user, max_user_id, and max_chat_id.
+    
+    Requirements: 15.3
+    """
+    __tablename__ = "max_messenger_data"
+    
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
+    
+    # Foreign key to users table
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    
+    # MAX messenger identifiers
+    max_user_id = Column(BigInteger, nullable=False, unique=True, index=True)
+    max_chat_id = Column(BigInteger, nullable=False, index=True)
+    
+    # Timestamps inherited from TimestampMixin: created_at, updated_at
+    
+    # Relationships
+    user = relationship("User", back_populates="max_messenger_data")
+
+
 class User(Base, TimestampMixin):
     """
     User model - stores client profiles with authentication and subscription data.
+    
+    Supports multiple messengers (Telegram, MAX).
     
     Requirements: 1.1-1.10
     """
     __tablename__ = "users"
     
-    # Primary key
-    tg_user_id = Column(BigInteger, primary_key=True, nullable=False)
+    # Primary key - internal bot database ID
+    id = Column(BigInteger, primary_key=True, autoincrement=True, nullable=False)
+    
+    # Messenger IDs (nullable, unique, indexed)
+    tg_user_id = Column(BigInteger, unique=True, nullable=True, index=True)
+    max_user_id = Column(BigInteger, unique=True, nullable=True, index=True)
     
     # Contact information
     phone_number = Column(String(15), unique=True, nullable=False)
+    email = Column(String(255), nullable=True)
     username = Column(String(32), nullable=True)
     first_name = Column(String(64), nullable=True)
     last_name = Column(String(64), nullable=True)
+    middle_name = Column(String(64), nullable=True)  # Отчество (optional)
     full_name = Column(String(128), nullable=True)
     
     # Status fields
@@ -230,8 +320,8 @@ class User(Base, TimestampMixin):
     # Preferences
     notification_preferences = Column(Boolean, default=True, nullable=False)
     
-    # Manager assignment
-    default_manager_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=True)
+    # Manager assignment (references staff internal ID)
+    default_manager_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
     
     # NPS tracking
     last_nps_sent_at = Column(DateTime, nullable=True)
@@ -277,6 +367,34 @@ class User(Base, TimestampMixin):
         "API_Retry_Queue",
         back_populates="user"
     )
+    nps_responses = relationship(
+        "NPS_Response",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+    max_messenger_data = relationship(
+        "MAX_Messenger_Data",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+    
+    def __str__(self) -> str:
+        """Custom string representation for admin select fields"""
+        name = self.full_name or f"{self.first_name or ''} {self.last_name or ''}".strip() or "Без имени"
+        phone = self.phone_number or "N/A"
+        max_id = self.max_user_id or "N/A"
+        reg_date = self.created_at.strftime('%d.%m.%Y') if self.created_at else "N/A"
+        
+        # Add status indicator
+        status_icon = {
+            RegistrationStatus.ACTIVE: "✓",
+            RegistrationStatus.PENDING: "⏳",
+            RegistrationStatus.UNDER_REVIEW: "🔍",
+            RegistrationStatus.REJECTED: "✗"
+        }.get(self.registration_status, "?")
+        
+        return f"{status_icon} {name} | {phone} | MAX: {max_id} | Рег: {reg_date}"
 
 
 class Organization(Base):
@@ -310,6 +428,11 @@ class Organization(Base):
         "Manager_Assignment",
         back_populates="organization"
     )
+    
+    def __str__(self) -> str:
+        """Custom string representation for admin select fields"""
+        name = self.organization_name or "Без названия"
+        return f"{name} | ИНН: {self.inn}"
 
 
 class GS_Key(Base):
@@ -327,7 +450,7 @@ class GS_Key(Base):
     key_number = Column(String(32), unique=True, nullable=False)
     
     # Owner reference
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
     
     # Conflict tracking
     conflict_status = Column(
@@ -350,18 +473,31 @@ class GS_Key(Base):
         secondary=ticket_keys,
         back_populates="gs_keys"
     )
+    
+    def __str__(self) -> str:
+        """Custom string representation for admin select fields"""
+        user_name = f"{self.user.first_name} {self.user.last_name}" if self.user else "N/A"
+        conflict = "⚠️" if self.conflict_status != KeyConflictStatus.NONE else "✓"
+        return f"Ключ: {self.key_number} | Владелец: {user_name} | {conflict}"
 
 
 class Staff_Member(Base, TimestampMixin):
     """
     Staff_Member model - stores internal employees with roles and backup assignments.
     
+    Supports multiple messengers (Telegram, MAX).
+    
     Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8
     """
     __tablename__ = "staff_members"
     
-    # Primary key
-    tg_user_id = Column(BigInteger, primary_key=True, nullable=False)
+    # Primary key - internal bot database ID
+    id = Column(BigInteger, primary_key=True, autoincrement=True, nullable=False)
+    
+    # Messenger IDs (nullable, unique, indexed)
+    tg_user_id = Column(BigInteger, unique=True, nullable=True, index=True)
+    max_user_id = Column(BigInteger, unique=True, nullable=True, index=True)
+    max_chat_id = Column(BigInteger, nullable=True, index=True)
     
     # Staff details
     full_name = Column(String(128), nullable=False)
@@ -372,8 +508,8 @@ class Staff_Member(Base, TimestampMixin):
     is_active = Column(Boolean, default=True, nullable=False)
     
     # Self-referential backup manager references
-    backup_manager_1_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=True)
-    backup_manager_2_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=True)
+    backup_manager_1_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
+    backup_manager_2_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
     
     # Timestamps inherited from TimestampMixin: created_at, updated_at
     
@@ -390,13 +526,13 @@ class Staff_Member(Base, TimestampMixin):
     backup_manager_1 = relationship(
         "Staff_Member",
         foreign_keys=[backup_manager_1_id],
-        remote_side="Staff_Member.tg_user_id",
+        remote_side="Staff_Member.id",
         back_populates="backed_up_by_1"
     )
     backup_manager_2 = relationship(
         "Staff_Member",
         foreign_keys=[backup_manager_2_id],
-        remote_side="Staff_Member.tg_user_id",
+        remote_side="Staff_Member.id",
         back_populates="backed_up_by_2"
     )
     backed_up_by_1 = relationship(
@@ -422,6 +558,14 @@ class Staff_Member(Base, TimestampMixin):
         "Action_Log",
         back_populates="staff"
     )
+    
+    def __str__(self) -> str:
+        """Custom string representation for admin select fields"""
+        role = self.staff_role.value if self.staff_role else "N/A"
+        position = self.position or "N/A"
+        max_id = self.max_user_id or "N/A"
+        status = "✓" if self.is_active else "✗"
+        return f"{self.full_name} | {position} ({role}) | MAX: {max_id} | {status}"
 
 
 # ========== Assignment Models ==========
@@ -439,18 +583,18 @@ class Manager_Assignment(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
     
     # User-organization pair
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
     organization_inn = Column(String(12), ForeignKey("organizations.inn"), nullable=False)
     
     # Assigned manager
-    manager_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=False)
+    manager_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=False)
     
     # Timestamp
     assigned_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     
     # Unique constraint on user-organization pair
     __table_args__ = (
-        UniqueConstraint("tg_user_id", "organization_inn", name="uq_user_org_assignment"),
+        UniqueConstraint("user_id", "organization_inn", name="uq_user_org_assignment"),
     )
     
     # Relationships
@@ -491,8 +635,8 @@ class Ticket(Base, TimestampMixin):
     )
     
     # Foreign keys
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id", ondelete="RESTRICT"), nullable=False)
-    assigned_staff_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(BigInteger, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    assigned_staff_id = Column(BigInteger, ForeignKey("staff_members.id", ondelete="SET NULL"), nullable=True)
     organization_inn = Column(String(12), ForeignKey("organizations.inn"), nullable=True)
     
     # Ticket details
@@ -509,6 +653,9 @@ class Ticket(Base, TimestampMixin):
     # Escalation tracking
     escalation_level = Column(Integer, default=0, nullable=False)
     escalated_at = Column(DateTime, nullable=True)
+    escalation_task_reminder_id = Column(String(255), nullable=True, comment="ID Celery задачи напоминания")
+    escalation_task_escalation_id = Column(String(255), nullable=True, comment="ID Celery задачи эскалации")
+    is_escalated = Column(Boolean, default=False, nullable=False, index=True, comment="Флаг эскалированной заявки")
     
     # Timestamps
     closed_at = Column(DateTime, nullable=True)
@@ -551,6 +698,19 @@ class Ticket(Base, TimestampMixin):
         "Notification_Event",
         back_populates="related_ticket"
     )
+    escalations = relationship(
+        "Escalation",
+        back_populates="ticket",
+        cascade="all, delete-orphan"
+    )
+    
+    def __str__(self) -> str:
+        """Custom string representation for admin select fields"""
+        ticket_type = self.ticket_type.value if self.ticket_type else "N/A"
+        status = self.ticket_status.value if self.ticket_status else "N/A"
+        user_name = f"{self.user.first_name} {self.user.last_name}" if self.user else "N/A"
+        created = self.created_at.strftime('%d.%m.%Y %H:%M') if self.created_at else "N/A"
+        return f"#{self.id} | {ticket_type} | {status} | {user_name} | {created}"
 
 
 class Message(Base):
@@ -647,8 +807,8 @@ class Action_Log(Base):
     
     # Optional foreign keys for related entities
     ticket_id = Column(Integer, ForeignKey("tickets.id"), nullable=True)
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=True)
-    staff_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=True)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
+    staff_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
     
     # Action details as JSON
     action_details = Column(JSON, nullable=True)
@@ -714,7 +874,7 @@ class Notification_Event(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
     
     # User reference
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
     
     # Event classification
     event_type = Column(Enum(EventType), nullable=False)
@@ -761,7 +921,7 @@ class Broadcast(Base):
     id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
     
     # Creator reference
-    created_by_staff_id = Column(BigInteger, ForeignKey("staff_members.tg_user_id"), nullable=False)
+    created_by_staff_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=False)
     
     # Message content
     message_text = Column(Text, nullable=False)
@@ -805,7 +965,7 @@ class Broadcast_Delivery(Base):
     
     # Broadcast and user references
     broadcast_id = Column(Integer, ForeignKey("broadcasts.id"), nullable=False)
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=False)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=False)
     
     # Delivery status
     delivery_status = Column(
@@ -820,7 +980,7 @@ class Broadcast_Delivery(Base):
     
     # Unique constraint on broadcast-user pair
     __table_args__ = (
-        UniqueConstraint("broadcast_id", "tg_user_id", name="uq_broadcast_user_delivery"),
+        UniqueConstraint("broadcast_id", "user_id", name="uq_broadcast_user_delivery"),
     )
     
     # Relationships
@@ -853,7 +1013,7 @@ class API_Retry_Queue(Base):
     payload = Column(JSON, nullable=False)  # Request payload for retry
     
     # User context (optional)
-    tg_user_id = Column(BigInteger, ForeignKey("users.tg_user_id"), nullable=True)
+    user_id = Column(BigInteger, ForeignKey("users.id"), nullable=True)
     
     # Retry tracking
     attempt_count = Column(Integer, default=0, nullable=False)
@@ -871,4 +1031,171 @@ class API_Retry_Queue(Base):
     user = relationship(
         "User",
         back_populates="api_retries"
+    )
+
+
+class Escalation(Base, TimestampMixin):
+    """
+    Escalation model - tracks ticket escalations with resolution tracking.
+    
+    Stores escalation events when tickets exceed time thresholds.
+    Supports reminder (10 min) and escalation (20 min) types.
+    
+    Requirements: 2.1, 2.2, 2.3
+    """
+    __tablename__ = "escalations"
+    
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
+    
+    # Ticket reference
+    ticket_id = Column(
+        Integer,
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    
+    # Escalation classification
+    escalation_type = Column(Enum(EscalationType), nullable=False)
+    
+    # Resolution tracking
+    is_resolved = Column(Boolean, default=False, nullable=False, index=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolved_by_staff_id = Column(
+        BigInteger,
+        ForeignKey("staff_members.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    resolution_action = Column(Enum(ResolutionAction), nullable=True)
+    
+    # Timestamps inherited from TimestampMixin: created_at, updated_at
+    
+    # Relationships
+    ticket = relationship(
+        "Ticket",
+        back_populates="escalations"
+    )
+    resolved_by = relationship(
+        "Staff_Member",
+        foreign_keys=[resolved_by_staff_id]
+    )
+
+
+class System_Settings(Base):
+    """
+    System_Settings model - stores system-wide configuration parameters.
+    
+    Each setting has a key, value, data type, validation constraints,
+    and default value. Settings are organized into categories for
+    easier navigation.
+    
+    Requirements: 1.1, 1.2, 1.3, 1.4
+    """
+    __tablename__ = "system_settings"
+    
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
+    
+    # Setting identification
+    key = Column(String(100), unique=True, nullable=False, index=True)
+    category = Column(Enum(SettingCategory, values_callable=lambda x: [e.value for e in x]), nullable=False, index=True)
+    
+    # Setting value and type
+    value = Column(Text, nullable=True)  # Stored as string, converted based on data_type
+    data_type = Column(Enum(SettingDataType, values_callable=lambda x: [e.value for e in x]), nullable=False)
+    
+    # Default and constraints
+    default_value = Column(Text, nullable=False)
+    min_value = Column(Integer, nullable=True)  # For numeric types
+    max_value = Column(Integer, nullable=True)  # For numeric types
+    
+    # Metadata
+    description = Column(Text, nullable=False)
+    display_name = Column(String(200), nullable=False)
+    requires_test = Column(Boolean, default=False, nullable=False)  # Whether to test before saving
+    
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow, nullable=False)
+    updated_by = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
+    
+    # Relationships
+    updater = relationship("Staff_Member", foreign_keys=[updated_by])
+
+
+
+class NPS_Response(Base, TimestampMixin):
+    """
+    NPS_Response model - stores user survey responses.
+    
+    Tracks NPS ratings with survey type, trigger event,
+    and timestamps for analytics.
+    
+    Requirements: 5.1, 12.1, 12.2, 12.3, 12.4
+    """
+    __tablename__ = "nps_responses"
+    
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
+    
+    # User reference
+    user_id = Column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    
+    # Survey classification
+    survey_type = Column(
+        Enum(SurveyType),
+        nullable=False,
+        index=True
+    )
+    
+    # Rating value (0-10)
+    rating = Column(
+        Integer,
+        nullable=False
+    )
+    
+    # Trigger event reference
+    # For LOYALTY: invoice_id
+    # For SERVICE_QUALITY: ticket_id
+    trigger_event_id = Column(
+        Integer,
+        nullable=False
+    )
+    
+    # Timestamps
+    sent_at = Column(
+        DateTime,
+        nullable=False,
+        index=True
+    )
+    responded_at = Column(
+        DateTime,
+        nullable=False,
+        index=True
+    )
+    
+    # Optional feedback comment (for low ratings 0-7)
+    feedback_comment = Column(
+        Text,
+        nullable=True
+    )
+    
+    # Timestamps inherited from TimestampMixin: created_at, updated_at
+    
+    # Relationships
+    user = relationship(
+        "User",
+        back_populates="nps_responses"
+    )
+    
+    # Composite indexes for analytics queries
+    __table_args__ = (
+        Index("idx_nps_user_responded", "user_id", "responded_at"),
+        Index("idx_nps_type_responded", "survey_type", "responded_at"),
     )
