@@ -8,9 +8,9 @@ Requires=i-tat-celery-worker.service
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/i-tat-bot
-Environment="PATH=/opt/i-tat-bot/venv/bin"
-ExecStart=/opt/i-tat-bot/venv/bin/celery \
+WorkingDirectory=/home/razrab/i-tat-bot
+Environment="PATH=/home/razrab/i-tat-bot/venv/bin"
+ExecStart=/home/razrab/i-tat-bot/venv/bin/celery \
     -A celery_app.celery_config \
     beat \
     --loglevel=info \
@@ -28,7 +28,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/i-tat-bot /var/run/celery /var/log/celery
+ReadWritePaths=/home/razrab/i-tat-bot /var/run/celery /var/log/celery
 
 # Resource limits
 TimeoutStartSec=30

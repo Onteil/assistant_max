@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_DIR="/opt/i-tat-bot"
+PROJECT_DIR="i-tat-bot"
 SERVICE_USER="www-data"
 SERVICE_GROUP="www-data"
 SYSTEMD_DIR="/etc/systemd/system"

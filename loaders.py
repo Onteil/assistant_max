@@ -149,7 +149,7 @@ async def set_all_webhooks():
     Requirements: 12.2, 12.6 - Use maxapi Bot.subscribe_webhook() for webhook lifecycle management
     """
     # Set Telegram webhook
-    await tg_bot.set_webhook(url=f"{HOST}{WEBHOOK_PATH_MAIN}")
+    # await tg_bot.set_webhook(url=f"{HOST}{WEBHOOK_PATH_MAIN}")
     logging.info(f"Telegram webhook set to {HOST}{WEBHOOK_PATH_MAIN}")
     
     # Set MAX webhook if MAX bot is initialized
@@ -253,7 +253,7 @@ async def delete_all_webhooks():
     Requirements: 12.2, 12.6 - Webhook lifecycle management on shutdown
     """
     # Delete Telegram webhook
-    await tg_bot.delete_webhook(drop_pending_updates=True)
+    # await tg_bot.delete_webhook(drop_pending_updates=True)
     logging.info("Telegram webhook deleted")
     
     # Delete MAX webhook if MAX bot is initialized
@@ -277,7 +277,7 @@ async def close_bot_sessions():
     Requirements: 12.3 - Preserve Redis connection management
     """
     # Close Telegram bot session
-    await bot_session.close()
+    # await bot_session.close()
     
     # Close Redis storage if not in local mode
     # Requirements: 12.3 - Preserve Redis connection management for FSM storage

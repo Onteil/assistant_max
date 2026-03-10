@@ -38,7 +38,7 @@ from loaders import (
 )
 from api.sqladmin_panel import setup_admin
 
-ROOT_PATH = "" if IS_LOCAL_BOT else "/i-tat"
+ROOT_PATH = "" if IS_LOCAL_BOT else ""
 
 
 from aiogram.types import ErrorEvent

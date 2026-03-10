@@ -7,9 +7,9 @@ Wants=postgresql.service redis.service
 Type=notify
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/i-tat-bot
-Environment="PATH=/opt/i-tat-bot/venv/bin"
-ExecStart=/opt/i-tat-bot/venv/bin/uvicorn main:app \
+WorkingDirectory=/home/razrab/i-tat-bot
+Environment="PATH=/home/razrab/i-tat-bot/venv/bin"
+ExecStart=/home/razrab/i-tat-bot/venv/bin/uvicorn main:app \
     --host 0.0.0.0 \
     --port 8453 \
     --workers 4 \
@@ -28,7 +28,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/i-tat-bot/media /opt/i-tat-bot/logs
+ReadWritePaths=/home/razrab/i-tat-bot/media /home/razrab/i-tat-bot/logs
 
 # Resource limits
 LimitNOFILE=65536
