@@ -612,16 +612,19 @@ async def process_new_inn(
         return
     
     try:
-        # Get user_id with fallback to database lookup
-        user_id = await get_user_id_with_fallback_from_message(
-            context=context,
-            event=event,
-            session=session,
-            messenger_adapter=messenger_adapter
-        )
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
         
         if not user_id:
-            return  # Error already handled in helper function
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
         
         # Add organization to user profile
         await add_user_organization(session, user_id, inn)
@@ -1283,16 +1286,19 @@ async def process_new_key(
     normalized_key = result
     
     try:
-        # Get user_id with fallback to database lookup
-        user_id = await get_user_id_with_fallback_from_message(
-            context=context,
-            event=event,
-            session=session,
-            messenger_adapter=messenger_adapter
-        )
+        # Get user_id from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
         
         if not user_id:
-            return  # Error already handled in helper function
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
         
         # Check for key conflicts via i-TAT API
         itat_client = get_itat_client()
@@ -1748,18 +1754,20 @@ async def process_email(
         return
     
     try:
-        # Get user_id with fallback to database lookup
-        user_id = await get_user_id_with_fallback_from_message(
-            context=context,
-            event=event,
-            session=session,
-            messenger_adapter=messenger_adapter
-        )
+        # Get user from context
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        max_user_id = event.message.sender.user_id
         
         if not user_id:
-            return  # Error already handled in helper function
-        
-        max_user_id = event.message.sender.user_id
+            logger.error(f"No user_id in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
         
         # Get user from database
         user = await get_user_by_max_id(session, max_user_id)
