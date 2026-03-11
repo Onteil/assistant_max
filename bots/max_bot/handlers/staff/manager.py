@@ -710,17 +710,17 @@ async def show_active_tickets(
         result = await session.execute(stmt)
         employee = result.scalar_one_or_none()
         
-        if not employee or not employee.tg_user_id:
+        if not employee or not employee.max_user_id:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="❌ Не удалось загрузить заявки. Telegram ID не найден.",
+                text="❌ Не удалось загрузить заявки. ID сотрудника не найден.",
                 parse_mode="HTML"
             )
             return
         
         # Get filtered tickets
         ticket_type_filter = None if current_filter == "all" else current_filter
-        tickets = await get_employee_active_tickets(session, employee.tg_user_id, ticket_type_filter)
+        tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter)
         
         # Save filter to context
         await context.update_data(
@@ -1952,7 +1952,7 @@ async def handle_ticket_action(
             result = await session.execute(stmt)
             emp = result.scalar_one_or_none()
             
-            if not emp or not emp.tg_user_id:
+            if not emp or not emp.max_user_id:
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
                     text="❌ Не удалось получить список сотрудников.",
@@ -1962,7 +1962,7 @@ async def handle_ticket_action(
             
             # Get available employees for transfer
             available_employees = await get_available_employees_for_transfer(
-                session, ticket, emp.tg_user_id
+                session, ticket, emp.max_user_id
             )
             
             # Build employee selection keyboard (always show, even if empty)
@@ -2156,7 +2156,7 @@ async def handle_closing_comment_input(
             return
         
         # Get employee's Telegram ID
-        if not employee.tg_user_id:
+        if not employee.max_user_id:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ Не удалось закрыть заявку. Telegram ID не найден.",
@@ -2166,7 +2166,7 @@ async def handle_closing_comment_input(
         
         # Close ticket
         ticket = await close_ticket_service(
-            session, ticket_id, employee.tg_user_id, final_comment, messenger="max"
+            session, ticket_id, employee.max_user_id, final_comment, messenger="max"
         )
         
         # Clear FSM state

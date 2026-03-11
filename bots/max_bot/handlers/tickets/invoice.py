@@ -1263,6 +1263,7 @@ async def process_new_key(
     
     Requirements: 2.9
     """
+    data = await context.get_data()
     chat_id = event.message.recipient.chat_id
     key_number = event.message.body.text.strip()
     

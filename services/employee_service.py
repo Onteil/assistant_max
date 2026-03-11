@@ -108,7 +108,7 @@ async def get_employee_active_tickets(
     try:
         # First, get the staff member record to get their internal ID
         staff_stmt = select(Staff_Member).where(
-            Staff_Member.tg_user_id == employee_id,
+            Staff_Member.max_user_id == employee_id,
             Staff_Member.is_active == True
         )
         staff_result = await session.execute(staff_stmt)

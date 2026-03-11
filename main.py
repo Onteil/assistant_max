@@ -328,7 +328,7 @@ if __name__ == "__main__":
         reload=False,
         access_log=True,
         proxy_headers=True,
-        workers=COUNT_WORKERS,
+        workers=1,
         timeout_keep_alive=30,
         forwarded_allow_ips="*",
     )
