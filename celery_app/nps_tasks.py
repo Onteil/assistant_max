@@ -70,24 +70,20 @@ async def _send_survey_async(
                     "user_id": user_id
                 }
             
-            # Determine which messenger to use
-            # Priority: Telegram (tg_user_id) > MAX (max_user_id)
+            # Determine which messenger to use (MAX only)
             messenger_type = None
             messenger_id = None
             
-            if user.tg_user_id:
-                messenger_type = "telegram"
-                messenger_id = user.tg_user_id
-            elif user.max_user_id:
+            if user.max_user_id:
                 messenger_type = "max"
                 messenger_id = user.max_user_id
             else:
                 logger.error(
-                    f"User has no messenger ID: user_id={user_id}"
+                    f"User has no MAX messenger ID: user_id={user_id}"
                 )
                 return {
                     "status": "error",
-                    "reason": "no_messenger_id",
+                    "reason": "no_max_messenger_id",
                     "user_id": user_id
                 }
             
@@ -102,28 +98,13 @@ async def _send_survey_async(
             # Convert survey_type string to enum
             survey_type_enum = SurveyType(survey_type)
             
-            # Send survey via appropriate messenger
-            if messenger_type == "telegram":
-                result = await _send_telegram_survey(
-                    messenger_id=messenger_id,
-                    survey_type=survey_type_enum,
-                    trigger_event_id=trigger_event_id,
-                    event_date=event_datetime
-                )
-            elif messenger_type == "max":
-                result = await _send_max_survey(
-                    messenger_id=messenger_id,
-                    survey_type=survey_type_enum,
-                    trigger_event_id=trigger_event_id,
-                    event_date=event_datetime
-                )
-            else:
-                logger.error(f"Unknown messenger type: {messenger_type}")
-                return {
-                    "status": "error",
-                    "reason": "unknown_messenger",
-                    "user_id": user_id
-                }
+            # Send survey via MAX messenger
+            result = await _send_max_survey(
+                messenger_id=messenger_id,
+                survey_type=survey_type_enum,
+                trigger_event_id=trigger_event_id,
+                event_date=event_datetime
+            )
             
             return result
     

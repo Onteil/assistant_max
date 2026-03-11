@@ -427,7 +427,7 @@ INVOICE_PROCESSING = """
 INVOICE_CREATED = """
 ✅ Заявка #{ticket_id} принята! 👍🏻
 
-Вашим счетом занимается менеджер: {manager_name}. 👩
+Вашим счетом занимается {manager_position}: {manager_name}. 👨‍💼
 
 {response_time_message}
 """

@@ -20,7 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import NPSStates
 from database.models import SurveyType, User
-from services.nps_handler import handle_rating_response, format_thank_you_message
+from services.nps_handler import (
+    handle_rating_response,
+    format_thank_you_message,
+    notify_staff_about_low_rating,
+)
 from utils.time_helpers import format_relative_time
 
 logger = logging.getLogger(__name__)
@@ -237,9 +241,23 @@ async def handle_nps_rating_callback(
                 f"Пожалуйста, напишите, что мы можем улучшить?"
             )
             
+            # Build keyboard with "Skip" button
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            
+            skip_keyboard = Keyboard(
+                buttons=[
+                    [KeyboardButton(
+                        text="⏭️ Пропустить",
+                        payload=f"nps_skip_feedback:{survey_type.value}:{rating}:{trigger_event_id}"
+                    )]
+                ],
+                inline=True
+            )
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=feedback_text,
+                keyboard=skip_keyboard,
                 parse_mode="HTML"
             )
             
@@ -381,6 +399,24 @@ async def handle_nps_feedback(
                 f"NPS feedback stored: user_id={user.id}, rating={rating}, "
                 f"feedback_length={len(feedback_text)}, rows_updated={result.rowcount}"
             )
+            
+            # Send notification to staff about low rating
+            # Convert survey_type string back to enum
+            try:
+                survey_type_enum = SurveyType(survey_type_str)
+                await notify_staff_about_low_rating(
+                    session=session,
+                    user=user,
+                    rating=rating,
+                    survey_type=survey_type_enum,
+                    feedback_comment=feedback_text
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to send staff notification for low NPS: "
+                    f"user_id={user.id}, rating={rating}, error={e}",
+                    exc_info=True
+                )
         
         # Clear FSM state
         await context.clear()
@@ -404,6 +440,110 @@ async def handle_nps_feedback(
     except Exception as e:
         logger.error(
             f"Unexpected error in NPS feedback handler: {e}",
+            exc_info=True
+        )
+        await context.clear()
+
+
+@router.message_callback(F.callback.payload.startswith("nps_skip_feedback:"))
+async def handle_nps_skip_feedback(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Skip" button press for feedback request.
+    
+    Sends notification to staff without feedback comment.
+    
+    Callback data format: "nps_skip_feedback:{survey_type}:{rating}:{trigger_event_id}"
+    
+    Args:
+        event: MessageCallback from "Skip" button press
+        context: FSM context with rating data
+        session: Database session
+        messenger_adapter: MAX messenger adapter
+    """
+    try:
+        chat_id = event.message.recipient.chat_id
+        max_user_id = event.callback.user.user_id
+        message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+        
+        # Parse callback data
+        parts = event.callback.payload.split(":")
+        
+        if len(parts) != 4:
+            logger.error(f"Invalid callback data format: {event.callback.payload}")
+            return
+        
+        survey_type_str = parts[1]
+        rating_str = parts[2]
+        trigger_event_id_str = parts[3]
+        
+        # Convert to proper types
+        try:
+            survey_type = SurveyType(survey_type_str)
+            rating = int(rating_str)
+            trigger_event_id = int(trigger_event_id_str)
+        except (ValueError, KeyError) as e:
+            logger.error(f"Invalid callback data values: {e}")
+            return
+        
+        # Get user from database
+        stmt = select(User).where(User.max_user_id == max_user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            logger.error(f"User not found for max_user_id: {max_user_id}")
+            await context.clear()
+            return
+        
+        # Delete old message with "Skip" button
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+        
+        # Clear FSM state
+        await context.clear()
+        
+        # Send notification to staff about low rating WITHOUT feedback
+        try:
+            await notify_staff_about_low_rating(
+                session=session,
+                user=user,
+                rating=rating,
+                survey_type=survey_type,
+                feedback_comment=None  # User skipped feedback
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to send staff notification for low NPS (skipped): "
+                f"user_id={user.id}, rating={rating}, error={e}",
+                exc_info=True
+            )
+        
+        # Send thank you message
+        thank_you_text = format_thank_you_message()
+        confirmation_text = (
+            f"Спасибо за вашу оценку! 🙏\n\n"
+            f"{thank_you_text}"
+        )
+        
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=confirmation_text,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"NPS feedback skipped: user_id={user.id}, rating={rating}")
+        
+    except Exception as e:
+        logger.error(
+            f"Unexpected error in NPS skip feedback handler: {e}",
             exc_info=True
         )
         await context.clear()

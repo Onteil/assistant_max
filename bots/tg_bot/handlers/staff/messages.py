@@ -168,7 +168,7 @@ async def handle_focus_file_message(
         
         # Confirm to employee
         await message.answer(
-            f"✅ Файл '{file_name}' отправлен клиенту."
+            "✅ Файл успешно отправлен клиенту."
         )
         
         logger.info(

@@ -11,9 +11,10 @@ import logging
 from datetime import datetime
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import NPS_Response, SurveyType, User
+from database.models import NPS_Response, SurveyType, User, Staff_Member, StaffRole
 from services.i_tat_service import get_itat_client
 
 logger = logging.getLogger(__name__)
@@ -296,3 +297,255 @@ def format_thank_you_message() -> str:
     Requirements: 4.5, 11.5
     """
     return "🙏 Спасибо за ваш отзыв! Ваше мнение помогает нам становиться лучше."
+
+
+async def notify_staff_about_low_rating(
+    session: AsyncSession,
+    user: User,
+    rating: int,
+    survey_type: SurveyType,
+    feedback_comment: str | None = None
+) -> bool:
+    """
+    Send notification to all administrators about low NPS rating (0-7).
+    
+    Notifies all active administrators about negative feedback.
+    Supports both Telegram and MAX messengers.
+    
+    Args:
+        session: Database session
+        user: User who provided the rating
+        rating: User's rating (0-7)
+        survey_type: Type of survey (LOYALTY or SERVICE_QUALITY)
+        feedback_comment: Optional feedback comment from user
+    
+    Returns:
+        bool: True if at least one notification sent successfully, False otherwise
+    """
+    try:
+        # Get all active administrators
+        stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True
+        )
+        result = await session.execute(stmt)
+        administrators = result.scalars().all()
+        
+        if not administrators:
+            logger.warning(
+                f"No active administrators found for low NPS notification: "
+                f"user_id={user.id}, rating={rating}"
+            )
+            return False
+        
+        logger.info(
+            f"Found {len(administrators)} active administrators for low NPS notification"
+        )
+        
+        # Build notification message
+        survey_type_text = "оценка услуги" if survey_type == SurveyType.LOYALTY else "качество поддержки"
+        user_name = user.full_name or user.first_name or f"ID {user.id}"
+        
+        # Collect client contact information
+        contact_info = []
+        if user.phone_number:
+            contact_info.append(f"📱 {user.phone_number}")
+        if user.email:
+            contact_info.append(f"📧 {user.email}")
+        
+        contact_text = "\n".join(contact_info) if contact_info else "Контакты не указаны"
+        
+        # Add manager info if available
+        manager_info = ""
+        if user.default_manager_id:
+            manager_stmt = select(Staff_Member).where(Staff_Member.id == user.default_manager_id)
+            manager_result = await session.execute(manager_stmt)
+            manager = manager_result.scalar_one_or_none()
+            if manager:
+                manager_info = f"<b>Менеджер:</b> {manager.full_name}\n"
+        
+        notification_text = (
+            f"⚠️ <b>Низкая оценка NPS</b>\n\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Контакты:</b>\n{contact_text}\n\n"
+            f"{manager_info}"
+            f"<b>Тип опроса:</b> {survey_type_text}\n"
+            f"<b>Оценка:</b> {rating}/10\n"
+        )
+        
+        if feedback_comment:
+            notification_text += f"\n<b>Комментарий:</b>\n{feedback_comment}\n"
+        
+        notification_text += (
+            f"\n💡 Пожалуйста, свяжитесь с клиентом для выяснения причин "
+            f"и улучшения качества обслуживания."
+        )
+        
+        # Send notification to all administrators
+        success_count = 0
+        for admin in administrators:
+            # Determine which messenger to use (Telegram or MAX)
+            messenger_type = None
+            messenger_id = None
+            
+            if admin.tg_user_id:
+                messenger_type = "telegram"
+                messenger_id = admin.tg_user_id
+            elif admin.max_chat_id:
+                messenger_type = "max"
+                messenger_id = admin.max_chat_id
+            else:
+                logger.warning(
+                    f"Administrator {admin.id} ({admin.full_name}) has no messenger ID, skipping"
+                )
+                continue
+            
+            # Send notification via appropriate messenger
+            if messenger_type == "telegram":
+                success = await _send_telegram_notification(
+                    messenger_id=messenger_id,
+                    text=notification_text
+                )
+            else:  # max
+                success = await _send_max_notification(
+                    messenger_id=messenger_id,
+                    text=notification_text
+                )
+            
+            if success:
+                success_count += 1
+                logger.info(
+                    f"Low NPS notification sent to administrator: "
+                    f"admin_id={admin.id}, admin_name={admin.full_name}, "
+                    f"user_id={user.id}, rating={rating}, messenger={messenger_type}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to send low NPS notification to administrator: "
+                    f"admin_id={admin.id}, admin_name={admin.full_name}, "
+                    f"user_id={user.id}, rating={rating}"
+                )
+        
+        if success_count > 0:
+            logger.info(
+                f"Low NPS notifications sent successfully: "
+                f"user_id={user.id}, rating={rating}, "
+                f"sent_to={success_count}/{len(administrators)} administrators"
+            )
+            return True
+        else:
+            logger.error(
+                f"Failed to send low NPS notification to any administrator: "
+                f"user_id={user.id}, rating={rating}"
+            )
+            return False
+        
+    except Exception as e:
+        logger.error(
+            f"Error sending low NPS notification: user_id={user.id}, "
+            f"rating={rating}, error={e}",
+            exc_info=True
+        )
+        return False
+
+
+async def _send_telegram_notification(
+    messenger_id: int,
+    text: str
+) -> bool:
+    """
+    Send notification via Telegram bot.
+    
+    Args:
+        messenger_id: Telegram user ID
+        text: Notification text (HTML formatted)
+    
+    Returns:
+        bool: True if sent successfully, False otherwise
+    """
+    try:
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+        from constants import TG_BOT_TOKEN
+        
+        bot = Bot(
+            token=TG_BOT_TOKEN,
+            default=DefaultBotProperties(parse_mode="HTML")
+        )
+        
+        try:
+            await bot.send_message(
+                chat_id=messenger_id,
+                text=text
+            )
+            return True
+            
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            logger.warning(
+                f"Failed to send Telegram notification: messenger_id={messenger_id}, "
+                f"error={e}"
+            )
+            return False
+            
+        finally:
+            await bot.session.close()
+            
+    except Exception as e:
+        logger.error(
+            f"Error sending Telegram notification: messenger_id={messenger_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+        return False
+
+
+async def _send_max_notification(
+    messenger_id: int,
+    text: str
+) -> bool:
+    """
+    Send notification via MAX bot.
+    
+    Args:
+        messenger_id: MAX chat ID
+        text: Notification text (HTML formatted)
+    
+    Returns:
+        bool: True if sent successfully, False otherwise
+    """
+    try:
+        from maxapi import Bot as MAXBot
+        from maxapi.enums.parse_mode import ParseMode
+        from maxapi.exceptions import MaxApiError
+        from constants import MAX_BOT_TOKEN
+        
+        bot = MAXBot(
+            token=MAX_BOT_TOKEN,
+            parse_mode=ParseMode.HTML
+        )
+        
+        try:
+            await bot.send_message(
+                chat_id=messenger_id,
+                text=text
+            )
+            return True
+            
+        except MaxApiError as e:
+            logger.warning(
+                f"Failed to send MAX notification: messenger_id={messenger_id}, "
+                f"error={e}"
+            )
+            return False
+            
+        finally:
+            await bot.session.close()
+            
+    except Exception as e:
+        logger.error(
+            f"Error sending MAX notification: messenger_id={messenger_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+        return False

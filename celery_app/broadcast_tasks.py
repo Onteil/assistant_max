@@ -60,13 +60,11 @@ async def _send_broadcast_message_async(
         Dict with delivery status
     """
     try:
-        # Determine messenger ID
-        if messenger == "telegram":
-            messenger_id = user.tg_user_id
-        elif messenger == "max":
+        # Determine messenger ID (MAX only)
+        if messenger == "max":
             messenger_id = user.max_user_id
         else:
-            logger.error(f"Invalid messenger type: {messenger}")
+            logger.error(f"Invalid messenger type (only MAX supported): {messenger}")
             return {
                 "status": "error",
                 "reason": "invalid_messenger",
@@ -75,25 +73,19 @@ async def _send_broadcast_message_async(
         
         if not messenger_id:
             logger.warning(
-                f"User {user.id} has no {messenger} ID, skipping"
+                f"User {user.id} has no MAX ID, skipping"
             )
             return {
                 "status": "error",
-                "reason": "no_messenger_id",
+                "reason": "no_max_messenger_id",
                 "user_id": user.id
             }
         
-        # Send message via appropriate messenger
-        if messenger == "telegram":
-            result = await _send_telegram_broadcast(
-                messenger_id=messenger_id,
-                message_text=message_text
-            )
-        elif messenger == "max":
-            result = await _send_max_broadcast(
-                messenger_id=messenger_id,
-                message_text=message_text
-            )
+        # Send message via MAX messenger
+        result = await _send_max_broadcast(
+            messenger_id=messenger_id,
+            message_text=message_text
+        )
         
         result["user_id"] = user.id
         return result

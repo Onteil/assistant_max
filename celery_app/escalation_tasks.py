@@ -291,24 +291,21 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
                 "assigned_staff_id": ticket.assigned_staff_id
             }
         
-        # Determine messenger type and ID
+        # Determine messenger type and ID (MAX only)
         messenger_type = None
         messenger_id = None
         
-        if ticket.assigned_staff.tg_user_id:
-            messenger_type = "telegram"
-            messenger_id = ticket.assigned_staff.tg_user_id
-        elif ticket.assigned_staff.max_user_id:
+        if ticket.assigned_staff.max_user_id:
             messenger_type = "max"
             messenger_id = ticket.assigned_staff.max_user_id
         else:
             logger.info(
-                f"Staff has no messenger ID: ticket_id={ticket_id}, "
+                f"Staff has no MAX messenger ID: ticket_id={ticket_id}, "
                 f"staff_id={ticket.assigned_staff.id}"
             )
             return {
                 "status": "skipped",
-                "message": "Staff has no messenger ID",
+                "message": "Staff has no MAX messenger ID",
                 "ticket_id": ticket_id,
                 "staff_id": ticket.assigned_staff.id
             }
@@ -325,83 +322,65 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
         # Use centralized notification template
         reminder_text = get_reminder_notification_text(ticket, time_elapsed)
         
-        # Send reminder via appropriate messenger
+        # Send reminder via MAX messenger
         try:
-            if messenger_type == "telegram":
-                # Send via Telegram
-                async with Bot(
-                    token=TG_BOT_TOKEN,
-                    default=DefaultBotProperties(parse_mode="HTML")
-                ).context(auto_close=True) as bot:
-                    await bot.send_message(
-                        chat_id=messenger_id,
-                        text=reminder_text
-                    )
+            # Get MAX chat_id from staff member
+            chat_id = ticket.assigned_staff.max_chat_id
+            
+            if chat_id is None:
+                logger.error(
+                    f"No MAX chat_id found: ticket_id={ticket_id}, "
+                    f"staff_id={ticket.assigned_staff.id}, "
+                    f"max_user_id={messenger_id}"
+                )
+                return {
+                    "status": "error",
+                    "message": "No MAX chat_id found for staff",
+                    "ticket_id": ticket_id,
+                    "staff_id": ticket.assigned_staff.id
+                }
+            
+            # Send via MAX
+            from constants import MAX_BOT_TOKEN
+            
+            max_bot = MAXBot(
+                token=MAX_BOT_TOKEN,
+                parse_mode=ParseMode.HTML
+            )
+            
+            try:
+                await max_bot.send_message(
+                    chat_id=chat_id,
+                    text=reminder_text
+                )
                 
                 logger.info(
-                    f"Telegram reminder sent: ticket_id={ticket_id}, "
+                    f"MAX reminder sent: ticket_id={ticket_id}, "
                     f"staff_id={ticket.assigned_staff.id}, "
-                    f"tg_user_id={messenger_id}, time_elapsed={time_elapsed} min"
+                    f"max_user_id={messenger_id}, chat_id={chat_id}, "
+                    f"time_elapsed={time_elapsed} min"
                 )
             
-            elif messenger_type == "max":
-                # Get MAX chat_id from staff member
-                chat_id = ticket.assigned_staff.max_chat_id
-                
-                if chat_id is None:
-                    logger.error(
-                        f"No MAX chat_id found: ticket_id={ticket_id}, "
+            except MaxApiError as e:
+                error_str = str(e).lower()
+                if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                    logger.warning(
+                        f"MAX bot blocked by staff: ticket_id={ticket_id}, "
                         f"staff_id={ticket.assigned_staff.id}, "
-                        f"max_user_id={messenger_id}"
+                        f"max_user_id={messenger_id}, chat_id={chat_id}"
                     )
                     return {
-                        "status": "error",
-                        "message": "No MAX chat_id found for staff",
+                        "status": "bot_blocked",
+                        "message": "MAX bot blocked by staff",
                         "ticket_id": ticket_id,
                         "staff_id": ticket.assigned_staff.id
                     }
-                
-                # Send via MAX
-                from constants import MAX_BOT_TOKEN
-                
-                max_bot = MAXBot(
-                    token=MAX_BOT_TOKEN,
-                    parse_mode=ParseMode.HTML
-                )
-                
-                try:
-                    await max_bot.send_message(
-                        chat_id=chat_id,
-                        text=reminder_text
-                    )
-                    
-                    logger.info(
-                        f"MAX reminder sent: ticket_id={ticket_id}, "
-                        f"staff_id={ticket.assigned_staff.id}, "
-                        f"max_user_id={messenger_id}, chat_id={chat_id}, "
-                        f"time_elapsed={time_elapsed} min"
-                    )
-                
-                except MaxApiError as e:
-                    error_str = str(e).lower()
-                    if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
-                        logger.warning(
-                            f"MAX bot blocked by staff: ticket_id={ticket_id}, "
-                            f"staff_id={ticket.assigned_staff.id}, "
-                            f"max_user_id={messenger_id}, chat_id={chat_id}"
-                        )
-                        return {
-                            "status": "bot_blocked",
-                            "message": "MAX bot blocked by staff",
-                            "ticket_id": ticket_id,
-                            "staff_id": ticket.assigned_staff.id
-                        }
-                    raise
-                
-                finally:
-                    # Close MAX bot session
-                    if max_bot and max_bot.session:
-                        await max_bot.session.close()
+                raise
+            
+            finally:
+                # Close MAX bot session
+                if max_bot and max_bot.session:
+                    await max_bot.session.close()
         
         except Exception as e:
             logger.error(
@@ -593,16 +572,10 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
         failed_count = 0
         failed_admins = []
         
-        # Initialize bots
-        tg_bot = None
+        # Initialize MAX bot only
         max_bot = None
         
         try:
-            tg_bot = Bot(
-                token=TG_BOT_TOKEN,
-                default=DefaultBotProperties(parse_mode="HTML")
-            )
-            
             from constants import MAX_BOT_TOKEN
             max_bot = MAXBot(
                 token=MAX_BOT_TOKEN,
@@ -611,21 +584,8 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
             
             for admin in admins:
                 try:
-                    # Determine messenger type
-                    if admin.tg_user_id:
-                        # Send via Telegram
-                        await tg_bot.send_message(
-                            chat_id=admin.tg_user_id,
-                            text=notification_text,
-                            reply_markup=notification_keyboard
-                        )
-                        notified_count += 1
-                        logger.info(
-                            f"Admin notified via Telegram: admin_id={admin.id}, "
-                            f"tg_user_id={admin.tg_user_id}, ticket_id={ticket_id}"
-                        )
-                    
-                    elif admin.max_user_id:
+                    # Send via MAX only
+                    if admin.max_user_id:
                         # Get MAX chat_id from staff member
                         chat_id = admin.max_chat_id
                         
@@ -671,7 +631,7 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                     
                     else:
                         logger.warning(
-                            f"Admin has no messenger ID: admin_id={admin.id}"
+                            f"Admin has no MAX messenger ID: admin_id={admin.id}"
                         )
                         failed_count += 1
                         failed_admins.append(admin.id)
@@ -686,13 +646,11 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                     # Continue notifying other admins (FR-1.3.4)
         
         finally:
-            # Close bot sessions
-            if tg_bot and tg_bot.session:
-                await tg_bot.session.close()
+            # Close bot session
             if max_bot and max_bot.session:
                 await max_bot.session.close()
         
-        # Send to escalation channels based on ticket type
+        # Send to escalation channels based on ticket type (MAX only)
         channels_notified = []
         
         # Helper function to determine messenger type
@@ -701,22 +659,14 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
             try:
                 chat_id_int = int(chat_id)
                 # MAX chat IDs are typically very long negative numbers (> 10^13 in absolute value)
-                # Telegram chat IDs are shorter (< 10^13 in absolute value)
                 return abs(chat_id_int) > 10000000000000
             except (ValueError, TypeError):
                 return False
         
-        # Re-initialize bots for channel notifications
-        tg_bot = None
+        # Initialize MAX bot for channel notifications
         max_bot = None
         
         try:
-            if TG_BOT_TOKEN:
-                tg_bot = Bot(
-                    token=TG_BOT_TOKEN,
-                    default=DefaultBotProperties(parse_mode="HTML")
-                )
-            
             from constants import MAX_BOT_TOKEN
             if MAX_BOT_TOKEN:
                 try:
@@ -752,27 +702,10 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                                 f"Failed to send escalation to MAX manager channel {manager_channel}: {e}",
                                 exc_info=True
                             )
-                    elif not is_max and tg_bot:
-                        try:
-                            await tg_bot.send_message(
-                                chat_id=manager_channel,
-                                text=notification_text,
-                                parse_mode="HTML"
-                            )
-                            channels_notified.append("escalation_manager_channel (Telegram)")
-                            logger.info(
-                                f"Escalation notification sent to Telegram manager channel: {manager_channel}, "
-                                f"ticket_id={ticket_id}"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send escalation to Telegram manager channel {manager_channel}: {e}",
-                                exc_info=True
-                            )
                     else:
                         logger.warning(
                             f"Cannot send to manager channel {manager_channel}: "
-                            f"{'MAX' if is_max else 'Telegram'} bot not available"
+                            f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
                         )
             
             elif ticket.ticket_type.value == "technical_support":
@@ -797,33 +730,14 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                                 f"Failed to send escalation to MAX duty channel {duty_channel}: {e}",
                                 exc_info=True
                             )
-                    elif not is_max and tg_bot:
-                        try:
-                            await tg_bot.send_message(
-                                chat_id=duty_channel,
-                                text=notification_text,
-                                parse_mode="HTML"
-                            )
-                            channels_notified.append("escalation_duty_channel (Telegram)")
-                            logger.info(
-                                f"Escalation notification sent to Telegram duty channel: {duty_channel}, "
-                                f"ticket_id={ticket_id}"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send escalation to Telegram duty channel {duty_channel}: {e}",
-                                exc_info=True
-                            )
                     else:
                         logger.warning(
                             f"Cannot send to duty channel {duty_channel}: "
-                            f"{'MAX' if is_max else 'Telegram'} bot not available"
+                            f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
                         )
         
         finally:
-            # Close bot sessions
-            if tg_bot and tg_bot.session:
-                await tg_bot.session.close()
+            # Close bot session
             if max_bot and max_bot.session:
                 await max_bot.session.close()
         

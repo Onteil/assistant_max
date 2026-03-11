@@ -279,22 +279,13 @@ async def handle_calendar_action(
         elif action == "back":
             # Return to admin panel
             from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard
+            from bots.max_bot.texts import ADMIN_PANEL_MENU
             
             keyboard = get_admin_panel_keyboard()
             
-            admin_panel_text = (
-                "🔐 <b>Административная панель</b>\n\n"
-                "Выберите раздел для управления:\n\n"
-                "👥 <b>Сотрудники</b> - управление персоналом\n"
-                "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-                "📅 <b>График работы</b> - настройка расписания\n"
-                "⚙️ <b>Настройки</b> - системные параметры\n"
-                "📊 <b>Статистика</b> - аналитика и отчеты"
-            )
-            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=admin_panel_text,
+                text=ADMIN_PANEL_MENU,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )

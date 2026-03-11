@@ -1928,8 +1928,15 @@ async def create_invoice_ticket(
             await context.clear()
             return
         
-        # Determine assigned manager (use default_manager_id)
-        assigned_staff_id = user.default_manager_id
+        # Determine assigned manager (with admin fallback if no manager)
+        from services.ticket_service import determine_assigned_manager
+        
+        assigned_staff_id = await determine_assigned_manager(
+            session=session,
+            tg_user_id=user.tg_user_id or user.max_user_id,  # Use available ID
+            organization_inn=selected_inn,
+            assign_admin_if_no_manager=True  # Auto-assign admin if no manager
+        )
         has_manager = assigned_staff_id is not None
         
         # Create ticket
@@ -1955,8 +1962,9 @@ async def create_invoice_ticket(
         # Clear FSM state
         await context.clear()
         
-        # Get manager name and response time message
+        # Get manager name, position and response time message
         manager_name = "Менеджер"
+        manager_position = "Менеджер"
         if has_manager and assigned_staff_id:
             from database.models import Staff_Member
             from sqlalchemy import select
@@ -1967,6 +1975,7 @@ async def create_invoice_ticket(
             
             if staff_member:
                 manager_name = staff_member.full_name or "Менеджер"
+                manager_position = staff_member.position or "Менеджер"
         
         # Determine response time message based on working hours
         from services.calendar_service import get_current_work_mode
@@ -1987,6 +1996,7 @@ async def create_invoice_ticket(
             text=INVOICE_CREATED.format(
                 ticket_id=ticket.id,
                 manager_name=manager_name,
+                manager_position=manager_position,
                 response_time_message=response_time_message
             ),
             parse_mode="HTML"
@@ -2000,13 +2010,7 @@ async def create_invoice_ticket(
         keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
         
         main_menu_text = (
-            "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-            "Здесь вы можете:\n\n"
-            "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-            "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-            "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-            "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-            "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
+            "У Вас остались вопросы?\n\n"
             "Выберите нужное действие:"
         )
         
@@ -2023,7 +2027,7 @@ async def create_invoice_ticket(
         from loaders import max_bot
         
         if has_manager:
-            # Send notification to assigned manager
+            # Send notification to assigned manager or admin
             notification_sent = await send_staff_notification(
                 bot=max_bot,
                 staff_id=assigned_staff_id,
@@ -2033,104 +2037,19 @@ async def create_invoice_ticket(
             
             if notification_sent:
                 logger.info(
-                    f"Manager notification sent: ticket_id={ticket.id}, "
+                    f"Staff notification sent: ticket_id={ticket.id}, "
                     f"staff_id={assigned_staff_id}"
                 )
             else:
                 logger.warning(
-                    f"Failed to send manager notification: ticket_id={ticket.id}, "
+                    f"Failed to send staff notification: ticket_id={ticket.id}, "
                     f"staff_id={assigned_staff_id}"
                 )
         else:
-            # No manager assigned - notify administrators
-            logger.warning(
-                f"User has no assigned manager: user_id={user_id}, ticket_id={ticket.id}"
+            # No manager or admin available - log error
+            logger.error(
+                f"No staff member assigned to ticket: user_id={user_id}, ticket_id={ticket.id}"
             )
-            
-            admins = await get_active_admins(session)
-            
-            if admins:
-                # Build admin notification message
-                admin_message = (
-                    f"⚠️ <b>Новая заявка на счет без назначенного менеджера</b>\n\n"
-                    f"<b>Заявка:</b> #{ticket.id}\n"
-                    f"<b>Тип:</b> Запрос счета\n\n"
-                    f"<b>Клиент:</b>\n"
-                    f"• ФИО: {user.full_name or 'Не указано'}\n"
-                    f"• Телефон: {user.phone_number or 'Не указан'}\n"
-                    f"• MAX ID: {user.max_user_id}\n"
-                    f"• Email: {user.email or 'Не указан'}\n\n"
-                )
-                
-                if selected_inn:
-                    admin_message += f"<b>Организация:</b> {selected_inn}\n"
-                
-                if description:
-                    desc_preview = description[:150]
-                    if len(description) > 150:
-                        desc_preview += "..."
-                    admin_message += f"\n<b>Описание:</b>\n{desc_preview}\n"
-                
-                admin_message += (
-                    f"\n<b>Способ доставки:</b> {delivery_method.value if delivery_method else 'Не указан'}\n"
-                )
-                
-                if delivery_email:
-                    admin_message += f"<b>Email для доставки:</b> {delivery_email}\n"
-                
-                admin_message += (
-                    f"\n❗️ <b>У клиента не назначен менеджер!</b>\n"
-                    f"Необходимо назначить менеджера для обработки заявки."
-                )
-                
-                # Send to all admins
-                for admin in admins:
-                    try:
-                        # Determine messenger and get appropriate chat_id
-                        if admin.tg_user_id:
-                            # Telegram: user_id can be used directly as chat_id
-                            chat_id_admin = admin.tg_user_id
-                        elif admin.max_user_id:
-                            # MAX: need to query MAX_Messenger_Data to get chat_id
-                            from database.models import MAX_Messenger_Data
-                            from sqlalchemy import select
-                            
-                            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                                MAX_Messenger_Data.max_user_id == admin.max_user_id
-                            )
-                            result_chat = await session.execute(stmt_chat)
-                            chat_id_admin = result_chat.scalar_one_or_none()
-                            
-                            if not chat_id_admin:
-                                logger.error(
-                                    f"No MAX chat_id found for admin: admin_id={admin.id}, "
-                                    f"max_user_id={admin.max_user_id}"
-                                )
-                                continue
-                        else:
-                            logger.warning(f"Admin has no messenger ID: admin_id={admin.id}")
-                            continue
-                        
-                        await max_bot.send_message(
-                            chat_id=chat_id_admin,
-                            text=admin_message,
-                            parse_mode="HTML"
-                        )
-                        logger.info(
-                            f"Admin notification sent: ticket_id={ticket.id}, "
-                            f"admin_id={admin.id}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to send admin notification: ticket_id={ticket.id}, "
-                            f"admin_id={admin.id}, error={e}",
-                            exc_info=True
-                        )
-            else:
-                logger.error(
-                    f"No active admins found to notify about ticket without manager: "
-                    f"ticket_id={ticket.id}"
-                )
     
     except Exception as e:
         logger.error(

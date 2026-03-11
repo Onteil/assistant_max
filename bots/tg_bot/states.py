@@ -68,6 +68,12 @@ class EmployeeStates(StatesGroup):
     archive_custom_search = State()  # Сотрудник вводит произвольный поисковый запрос
 
 
+class NPSStates(StatesGroup):
+    """Состояния для NPS опроса."""
+
+    waiting_for_feedback = State()  # Пользователь вводит комментарий для низкой оценки (0-7)
+
+
 class AdminStates(StatesGroup):
     """Состояния для административной панели."""
 

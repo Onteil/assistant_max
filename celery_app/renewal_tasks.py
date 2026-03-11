@@ -320,19 +320,16 @@ async def _send_reminder_async(notification_event_id: int) -> dict:
                     "error": "User not found"
                 }
             
-            # Determine messenger type
+            # Determine messenger type (MAX only)
             messenger_type = None
             messenger_id = None
             
-            if user.tg_user_id:
-                messenger_type = "telegram"
-                messenger_id = user.tg_user_id
-            elif user.max_user_id:
+            if user.max_user_id:
                 messenger_type = "max"
                 messenger_id = user.max_user_id
             else:
                 logger.error(
-                    f"User has no messenger ID: user_id={event.user_id}, "
+                    f"User has no MAX messenger ID: user_id={event.user_id}, "
                     f"event_id={notification_event_id}"
                 )
                 
@@ -345,7 +342,7 @@ async def _send_reminder_async(notification_event_id: int) -> dict:
                     "status": "failed",
                     "notification_event_id": notification_event_id,
                     "user_id": event.user_id,
-                    "error": "User has no messenger ID"
+                    "error": "User has no MAX messenger ID"
                 }
             
             # Format expiration date
@@ -374,37 +371,64 @@ async def _send_reminder_async(notification_event_id: int) -> dict:
                     "error": f"Unknown event type: {event.event_type}"
                 }
             
-            # Send reminder via appropriate messenger
+            # Send reminder via MAX messenger
             try:
-                if messenger_type == "telegram":
-                    # Get renewal keyboard
-                    keyboard = await get_subscription_status_keyboard(user.subscription_status)
-                    
-                    # Initialize Telegram bot
-                    bot = Bot(
-                        token=TG_BOT_TOKEN,
-                        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+                # Get MAX chat_id from database
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == messenger_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id is None:
+                    logger.error(
+                        f"No MAX chat_id found: event_id={notification_event_id}, "
+                        f"user_id={user.id}, max_user_id={messenger_id}"
                     )
                     
-                    try:
-                        # Send Telegram message
-                        await bot.send_message(
-                            chat_id=messenger_id,
-                            text=message_text,
-                            reply_markup=keyboard
-                        )
-                        
-                        logger.info(
-                            f"Telegram renewal reminder sent: event_id={notification_event_id}, "
-                            f"user_id={user.id}, tg_user_id={messenger_id}, "
-                            f"event_type={event.event_type.value}"
-                        )
+                    # Update event status to FAILED
+                    event.event_status = EventStatus.FAILED
+                    event.sent_at = datetime.now()
+                    await session.commit()
                     
-                    except TelegramForbiddenError as e:
+                    return {
+                        "status": "failed",
+                        "notification_event_id": notification_event_id,
+                        "user_id": user.id,
+                        "messenger": messenger_type,
+                        "error": "No MAX chat_id found"
+                    }
+                
+                # Initialize MAX bot
+                from constants import MAX_BOT_TOKEN
+                
+                bot = MAXBot(
+                    token=MAX_BOT_TOKEN,
+                    parse_mode=MAXParseMode.HTML
+                )
+                
+                try:
+                    # Send MAX message
+                    # Note: MAX keyboards need to be sent as attachments
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=message_text
+                    )
+                    
+                    logger.info(
+                        f"MAX renewal reminder sent: event_id={notification_event_id}, "
+                        f"user_id={user.id}, max_user_id={messenger_id}, "
+                        f"chat_id={chat_id}, event_type={event.event_type.value}"
+                    )
+                
+                except MaxApiError as e:
+                    error_str = str(e).lower()
+                    if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
                         # Bot blocked by user - don't retry
                         logger.warning(
-                            f"Telegram bot blocked by user: event_id={notification_event_id}, "
-                            f"user_id={user.id}, tg_user_id={messenger_id}, error={e}"
+                            f"MAX bot blocked by user: event_id={notification_event_id}, "
+                            f"user_id={user.id}, max_user_id={messenger_id}, "
+                            f"chat_id={chat_id}, error={e}"
                         )
                         
                         # Update event status to FAILED
@@ -421,116 +445,17 @@ async def _send_reminder_async(notification_event_id: int) -> dict:
                             "error": str(e)
                         }
                     
-                    except TelegramBadRequest as e:
-                        # Invalid request - log and mark as failed
-                        logger.error(
-                            f"Telegram bad request: event_id={notification_event_id}, "
-                            f"user_id={user.id}, tg_user_id={messenger_id}, error={e}",
-                            exc_info=True
-                        )
-                        
-                        # Update event status to FAILED
-                        event.event_status = EventStatus.FAILED
-                        event.sent_at = datetime.now()
-                        await session.commit()
-                        
-                        return {
-                            "status": "failed",
-                            "notification_event_id": notification_event_id,
-                            "user_id": user.id,
-                            "messenger": messenger_type,
-                            "messenger_id": messenger_id,
-                            "error": str(e)
-                        }
-                    
-                    finally:
-                        # Close bot session
-                        await bot.session.close()
+                    # Other MAX API errors - will trigger retry
+                    logger.error(
+                        f"MAX API error: event_id={notification_event_id}, "
+                        f"user_id={user.id}, max_user_id={messenger_id}, "
+                        f"chat_id={chat_id}, error={e}",
+                        exc_info=True
+                    )
+                    raise
                 
-                elif messenger_type == "max":
-                    # Get MAX chat_id from database
-                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                        MAX_Messenger_Data.max_user_id == messenger_id
-                    )
-                    result_chat = await session.execute(stmt_chat)
-                    chat_id = result_chat.scalar_one_or_none()
-                    
-                    if chat_id is None:
-                        logger.error(
-                            f"No MAX chat_id found: event_id={notification_event_id}, "
-                            f"user_id={user.id}, max_user_id={messenger_id}"
-                        )
-                        
-                        # Update event status to FAILED
-                        event.event_status = EventStatus.FAILED
-                        event.sent_at = datetime.now()
-                        await session.commit()
-                        
-                        return {
-                            "status": "failed",
-                            "notification_event_id": notification_event_id,
-                            "user_id": user.id,
-                            "messenger": messenger_type,
-                            "error": "No MAX chat_id found"
-                        }
-                    
-                    # Initialize MAX bot
-                    from constants import MAX_BOT_TOKEN
-                    
-                    bot = MAXBot(
-                        token=MAX_BOT_TOKEN,
-                        parse_mode=MAXParseMode.HTML
-                    )
-                    
-                    try:
-                        # Send MAX message
-                        # Note: MAX keyboards need to be sent as attachments
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text=message_text
-                        )
-                        
-                        logger.info(
-                            f"MAX renewal reminder sent: event_id={notification_event_id}, "
-                            f"user_id={user.id}, max_user_id={messenger_id}, "
-                            f"chat_id={chat_id}, event_type={event.event_type.value}"
-                        )
-                    
-                    except MaxApiError as e:
-                        error_str = str(e).lower()
-                        if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
-                            # Bot blocked by user - don't retry
-                            logger.warning(
-                                f"MAX bot blocked by user: event_id={notification_event_id}, "
-                                f"user_id={user.id}, max_user_id={messenger_id}, "
-                                f"chat_id={chat_id}, error={e}"
-                            )
-                            
-                            # Update event status to FAILED
-                            event.event_status = EventStatus.FAILED
-                            event.sent_at = datetime.now()
-                            await session.commit()
-                            
-                            return {
-                                "status": "bot_blocked",
-                                "notification_event_id": notification_event_id,
-                                "user_id": user.id,
-                                "messenger": messenger_type,
-                                "messenger_id": messenger_id,
-                                "error": str(e)
-                            }
-                        
-                        # Other MAX API errors - will trigger retry
-                        logger.error(
-                            f"MAX API error: event_id={notification_event_id}, "
-                            f"user_id={user.id}, max_user_id={messenger_id}, "
-                            f"chat_id={chat_id}, error={e}",
-                            exc_info=True
-                        )
-                        raise
-                    
-                    finally:
-                        await bot.session.close()
+                finally:
+                    await bot.session.close()
                 
                 # Update event status to SENT
                 event.event_status = EventStatus.SENT

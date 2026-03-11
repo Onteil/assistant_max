@@ -184,7 +184,8 @@ async def create_ticket(
 async def determine_assigned_manager(
     session: AsyncSession,
     tg_user_id: int,
-    organization_inn: str | None = None
+    organization_inn: str | None = None,
+    assign_admin_if_no_manager: bool = False
 ) -> int | None:
     """
     Determine assigned manager based on Manager_Assignment or default_manager_id.
@@ -192,15 +193,17 @@ async def determine_assigned_manager(
     Logic:
     1. If organization_inn provided, check Manager_Assignment for user-organization pair
     2. If no organization-specific manager, use user's default_manager_id
-    3. If no manager found, return None
+    3. If no manager found and assign_admin_if_no_manager=True, assign first active admin
+    4. If no manager found and assign_admin_if_no_manager=False, return None
     
     Args:
         session: Database session
         tg_user_id: Telegram user ID
         organization_inn: Organization INN (optional)
+        assign_admin_if_no_manager: If True, assign first active admin when no manager found
     
     Returns:
-        Staff member ID (tg_user_id) or None if no manager assigned
+        Staff member ID (internal ID) or None if no manager/admin assigned
     
     Raises:
         SQLAlchemyError: If database operation fails
@@ -238,13 +241,32 @@ async def determine_assigned_manager(
                 f"Default manager found: tg_user_id={tg_user_id}, "
                 f"manager_id={default_manager_id}"
             )
-        else:
-            logger.warning(
-                f"No manager found for user: tg_user_id={tg_user_id}, "
-                f"organization_inn={organization_inn}"
-            )
+            return default_manager_id
         
-        return default_manager_id
+        # No manager found - assign admin if requested
+        if assign_admin_if_no_manager:
+            from services.escalation_service import get_active_admins
+            
+            admins = await get_active_admins(session)
+            if admins:
+                # Assign first active admin
+                assigned_admin_id = admins[0].id
+                logger.info(
+                    f"No manager found for user, assigning admin: tg_user_id={tg_user_id}, "
+                    f"admin_id={assigned_admin_id}, admin_name={admins[0].full_name}"
+                )
+                return assigned_admin_id
+            else:
+                logger.error(
+                    f"No manager and no active admins found for user: tg_user_id={tg_user_id}"
+                )
+                return None
+        
+        logger.warning(
+            f"No manager found for user: tg_user_id={tg_user_id}, "
+            f"organization_inn={organization_inn}"
+        )
+        return None
     
     except SQLAlchemyError as e:
         logger.error(
@@ -2097,7 +2119,12 @@ async def send_message_to_client_max(
     
     Appends employee signature to message_text, sends message to client via MAX API,
     stores message in Messages table with sender_type STAFF, and logs the action.
-    If file_id is provided, stores file attachment and sends file to client.
+    
+    File Handling:
+    - Downloads files from MAX URLs to temporary storage
+    - Re-uploads files to client's chat with appropriate type (photo/document)
+    - Cleans up temporary files after sending
+    - Falls back to URL links if file forwarding fails
     
     Args:
         messenger_adapter: MAXMessengerAdapter instance
@@ -2155,20 +2182,90 @@ async def send_message_to_client_max(
         # Send message to client via MAX
         try:
             if file_id:
-                # Send file with caption
-                # Note: MAX API requires different handling for different file types
-                # For now, send as text with file URL (TODO: implement proper file sending)
-                await messenger_adapter.send_message(
-                    chat_id=client_chat_id,
-                    text=f"{message_with_signature}\n\n📎 Файл: {file_id}",
-                    parse_mode="HTML"
-                )
+                # Send file with caption by downloading and re-uploading
+                try:
+                    from pathlib import Path
+                    import uuid
+                    
+                    # Ensure temp directory exists
+                    temp_dir = Path("media/temp")
+                    temp_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Generate unique filename
+                    file_extension = ""
+                    if max_media_type == "image":
+                        file_extension = ".jpg"
+                    elif max_media_type == "file":
+                        # Try to extract extension from URL
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(file_id)
+                        path_parts = Path(parsed_url.path).suffix
+                        file_extension = path_parts if path_parts else ".bin"
+                    elif max_media_type == "video":
+                        file_extension = ".mp4"
+                    elif max_media_type == "voice":
+                        file_extension = ".ogg"
+                    elif max_media_type == "audio":
+                        file_extension = ".mp3"
+                    
+                    unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}{file_extension}"
+                    download_path = f"media/temp/{unique_filename}"
+                    
+                    # Download file from MAX URL
+                    local_path = await messenger_adapter.download_file(
+                        file_url=file_id,
+                        destination=download_path
+                    )
+                    
+                    # Send file to client based on type
+                    if max_media_type == "image":
+                        await messenger_adapter.send_photo(
+                            chat_id=client_chat_id,
+                            photo_path=local_path,
+                            caption=message_with_signature,
+                            parse_mode="HTML"
+                        )
+                    else:
+                        # Send as document for all other types (file, video, voice, audio)
+                        await messenger_adapter.send_document(
+                            chat_id=client_chat_id,
+                            document_path=local_path,
+                            caption=message_with_signature,
+                            parse_mode="HTML"
+                        )
+                    
+                    # Clean up temporary file
+                    try:
+                        Path(local_path).unlink()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to delete temp file {local_path}: {cleanup_error}")
+                    
+                    logger.info(
+                        f"File sent to client via MAX: ticket_id={ticket_id}, "
+                        f"employee_id={employee_id}, file_type={file_type}, "
+                        f"max_media_type={max_media_type}"
+                    )
                 
-                logger.info(
-                    f"File sent to client via MAX: ticket_id={ticket_id}, "
-                    f"employee_id={employee_id}, file_type={file_type}, "
-                    f"max_media_type={max_media_type}"
-                )
+                except Exception as file_error:
+                    logger.error(
+                        f"Failed to send file to client: ticket_id={ticket_id}, "
+                        f"error={file_error}",
+                        exc_info=True
+                    )
+                    # Fallback: send text message with file URL
+                    fallback_text = (
+                        f"{message_with_signature}\n\n"
+                        f"📎 Файл (ссылка для скачивания):\n{file_id}"
+                    )
+                    await messenger_adapter.send_message(
+                        chat_id=client_chat_id,
+                        text=fallback_text,
+                        parse_mode="HTML"
+                    )
+                    logger.info(
+                        f"File URL sent to client as fallback: ticket_id={ticket_id}, "
+                        f"employee_id={employee_id}"
+                    )
             else:
                 # Send text message
                 await messenger_adapter.send_message(

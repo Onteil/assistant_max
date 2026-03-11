@@ -56,6 +56,7 @@ def get_admin_panel_keyboard() -> Keyboard:
     [👥 Сотрудники] [📋 Операции]
     [📅 График работы] [⚙️ Настройки]
     [📊 Статистика]
+    [🏠 В меню]
     """
     buttons = [
         # Row 1: Employees and Operations
@@ -85,6 +86,13 @@ def get_admin_panel_keyboard() -> Keyboard:
             KeyboardButton(
                 text="📊 Статистика",
                 payload=AdminMenuPayload(action="analytics").pack()
+            )
+        ],
+        # Row 4: Back to Manager Menu
+        [
+            KeyboardButton(
+                text="🏠 В меню",
+                payload=AdminMenuPayload(action="back_to_manager").pack()
             )
         ]
     ]
@@ -152,19 +160,11 @@ async def handle_admin_panel_action(
         keyboard = get_admin_panel_keyboard()
         
         # Send admin panel main menu
-        admin_panel_text = (
-            "🔐 <b>Административная панель</b>\n\n"
-            "Выберите раздел для управления:\n\n"
-            "👥 <b>Сотрудники</b> - управление персоналом\n"
-            "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-            "📅 <b>График работы</b> - настройка расписания\n"
-            "⚙️ <b>Настройки</b> - системные параметры\n"
-            "📊 <b>Статистика</b> - аналитика и отчеты"
-        )
+        from bots.max_bot.texts import ADMIN_PANEL_MENU
         
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=admin_panel_text,
+            text=ADMIN_PANEL_MENU,
             keyboard=keyboard,
             parse_mode="HTML"
         )
@@ -244,21 +244,13 @@ async def handle_admin_menu_action(
         
         elif action == "employees_back":
             # Return to admin panel from employees section
-            keyboard = get_admin_panel_keyboard()
+            from bots.max_bot.texts import ADMIN_PANEL_MENU
             
-            admin_panel_text = (
-                "🔐 <b>Административная панель</b>\n\n"
-                "Выберите раздел для управления:\n\n"
-                "👥 <b>Сотрудники</b> - управление персоналом\n"
-                "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-                "📅 <b>График работы</b> - настройка расписания\n"
-                "⚙️ <b>Настройки</b> - системные параметры\n"
-                "📊 <b>Статистика</b> - аналитика и отчеты"
-            )
+            keyboard = get_admin_panel_keyboard()
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=admin_panel_text,
+                text=ADMIN_PANEL_MENU,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -294,21 +286,13 @@ async def handle_admin_menu_action(
         
         elif action == "calendar_back":
             # Return to admin panel from calendar section
-            keyboard = get_admin_panel_keyboard()
+            from bots.max_bot.texts import ADMIN_PANEL_MENU
             
-            admin_panel_text = (
-                "🔐 <b>Административная панель</b>\n\n"
-                "Выберите раздел для управления:\n\n"
-                "👥 <b>Сотрудники</b> - управление персоналом\n"
-                "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-                "📅 <b>График работы</b> - настройка расписания\n"
-                "⚙️ <b>Настройки</b> - системные параметры\n"
-                "📊 <b>Статистика</b> - аналитика и отчеты"
-            )
+            keyboard = get_admin_panel_keyboard()
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=admin_panel_text,
+                text=ADMIN_PANEL_MENU,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -341,24 +325,46 @@ async def handle_admin_menu_action(
         
         elif action == "back":
             # Return to admin panel main menu
+            from bots.max_bot.texts import ADMIN_PANEL_MENU
+            
             keyboard = get_admin_panel_keyboard()
             
-            admin_panel_text = (
-                "🔐 <b>Административная панель</b>\n\n"
-                "Выберите раздел для управления:\n\n"
-                "👥 <b>Сотрудники</b> - управление персоналом\n"
-                "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-                "📅 <b>График работы</b> - настройка расписания\n"
-                "⚙️ <b>Настройки</b> - системные параметры\n"
-                "📊 <b>Статистика</b> - аналитика и отчеты"
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ADMIN_PANEL_MENU,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+        
+        elif action == "back_to_manager":
+            # Return to manager menu from admin panel
+            is_admin_role = admin.staff_role == StaffRole.ADMINISTRATOR
+            
+            # Import manager keyboard
+            from bots.max_bot.keyboards.staff.manager_kb import get_manager_menu_keyboard
+            from bots.max_bot.handlers.staff.manager import get_employee_menu_text
+            
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin_role)
+            
+            # Get current work mode
+            from services.calendar_service import get_current_work_mode
+            work_mode = await get_current_work_mode(session)
+            
+            menu_text = get_employee_menu_text(
+                role=admin.staff_role.value,
+                full_name=admin.full_name,
+                position=admin.position,
+                work_mode=work_mode.value if work_mode else None
             )
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=admin_panel_text,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
+            
+            logger.info(f"Administrator {max_user_id} returned to manager menu from admin panel")
         
         else:
             logger.warning(f"Unknown admin menu action: {action}")

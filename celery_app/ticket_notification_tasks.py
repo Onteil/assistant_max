@@ -115,33 +115,28 @@ async def process_pending_tickets_task(self) -> dict:
             
             logger.info(f"Found {len(pending_tickets)} pending tickets to process")
             
-            # Initialize bots
-            from aiogram import Bot as TGBot
+            # Initialize MAX bot only
             from maxapi import Bot as MAXBot
             from database.models import MAX_Messenger_Data
             
-            tg_bot = TGBot(token=TG_BOT_TOKEN) if TG_BOT_TOKEN else None
             max_bot = MAXBot(token=MAX_BOT_TOKEN) if MAX_BOT_TOKEN else None
             
             for ticket in pending_tickets:
                 try:
                     stats["total_processed"] += 1
                     
-                    # Determine which messenger to use and get appropriate ID
+                    # Determine which messenger to use and get appropriate ID (MAX only)
                     messenger_type = None
                     messenger_id = None
                     
-                    if ticket.user.tg_user_id and tg_bot:
-                        messenger_type = "telegram"
-                        messenger_id = ticket.user.tg_user_id
-                    elif ticket.user.max_user_id and max_bot:
+                    if ticket.user.max_user_id and max_bot:
                         messenger_type = "max"
                         messenger_id = ticket.user.max_user_id
                     
                     if not messenger_type:
                         logger.warning(
-                            f"No bot available for ticket {ticket.id} "
-                            f"(user has no messenger ID)"
+                            f"No MAX bot available for ticket {ticket.id} "
+                            f"(user has no MAX messenger ID)"
                         )
                         continue
                     
@@ -149,14 +144,14 @@ async def process_pending_tickets_task(self) -> dict:
                     if ticket.ticket_type == TicketType.INVOICE:
                         stats["invoice_tickets"] += 1
                         await _process_invoice_ticket(
-                            ticket, tg_bot, max_bot, messenger_type, 
+                            ticket, max_bot, messenger_type, 
                             messenger_id, session, stats
                         )
                     
                     elif ticket.ticket_type == TicketType.RENEWAL:
                         stats["renewal_tickets"] += 1
                         await _process_renewal_ticket(
-                            ticket, tg_bot, max_bot, messenger_type,
+                            ticket, max_bot, messenger_type,
                             messenger_id, session, stats
                         )
                 
@@ -167,9 +162,7 @@ async def process_pending_tickets_task(self) -> dict:
                         exc_info=True
                     )
             
-            # Close bot sessions
-            if tg_bot:
-                await tg_bot.session.close()
+            # Close bot session
             if max_bot:
                 await max_bot.close()
             
@@ -190,7 +183,6 @@ async def process_pending_tickets_task(self) -> dict:
 
 async def _process_invoice_ticket(
     ticket: Ticket,
-    tg_bot,
     max_bot,
     messenger_type: str,
     messenger_id: int,
@@ -199,14 +191,13 @@ async def _process_invoice_ticket(
 ) -> None:
     """
     Process INVOICE ticket - notify manager or admins.
-    Supports both Telegram and MAX messengers.
+    Supports MAX messenger only.
     
     Args:
         ticket: Ticket object
-        tg_bot: Telegram bot instance (or None)
         max_bot: MAX bot instance (or None)
-        messenger_type: "telegram" or "max"
-        messenger_id: tg_user_id or max_user_id
+        messenger_type: "max"
+        messenger_id: max_user_id
         session: Database session
         stats: Statistics dictionary to update
     """
@@ -215,7 +206,7 @@ async def _process_invoice_ticket(
     if ticket.assigned_staff_id:
         # Notify assigned manager
         notification_sent = await send_staff_notification(
-            bot=tg_bot if messenger_type == "telegram" else max_bot,
+            bot=max_bot,
             staff_id=ticket.assigned_staff_id,
             ticket=ticket,
             routing_info={
@@ -248,8 +239,6 @@ async def _process_invoice_ticket(
                 f"• Телефон: {ticket.user.phone_number or 'Не указан'}\n"
             )
             
-            if ticket.user.tg_user_id:
-                admin_message += f"• Telegram ID: {ticket.user.tg_user_id}\n"
             if ticket.user.max_user_id:
                 admin_message += f"• MAX ID: {ticket.user.max_user_id}\n"
             
@@ -269,21 +258,8 @@ async def _process_invoice_ticket(
             
             for admin in admins:
                 try:
-                    # Determine admin's messenger
-                    if admin.tg_user_id and tg_bot:
-                        # Send via Telegram
-                        await tg_bot.send_message(
-                            chat_id=admin.tg_user_id,
-                            text=admin_message,
-                            parse_mode="HTML"
-                        )
-                        stats["notifications_sent"] += 1
-                        logger.info(
-                            f"Admin notification sent via Telegram for ticket {ticket.id}, "
-                            f"admin_id={admin.id}"
-                        )
-                    
-                    elif admin.max_user_id and max_bot:
+                    # Send via MAX only
+                    if admin.max_user_id and max_bot:
                         # Get MAX chat_id from database
                         stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
                             MAX_Messenger_Data.max_user_id == admin.max_user_id
@@ -306,6 +282,9 @@ async def _process_invoice_ticket(
                         stats["notifications_sent"] += 1
                         logger.info(
                             f"Admin notification sent via MAX for ticket {ticket.id}, "
+                            f"admin_id={admin.id}"
+                        )
+                            f"Admin notification sent via MAX for ticket {ticket.id}, "
                             f"admin_id={admin.id}, chat_id={chat_id}"
                         )
                     
@@ -319,7 +298,6 @@ async def _process_invoice_ticket(
 
 async def _process_renewal_ticket(
     ticket: Ticket,
-    tg_bot,
     max_bot,
     messenger_type: str,
     messenger_id: int,
@@ -328,14 +306,13 @@ async def _process_renewal_ticket(
 ) -> None:
     """
     Process RENEWAL ticket - notify assigned manager.
-    Supports both Telegram and MAX messengers.
+    Supports MAX messenger only.
     
     Args:
         ticket: Ticket object
-        tg_bot: Telegram bot instance (or None)
         max_bot: MAX bot instance (or None)
-        messenger_type: "telegram" or "max"
-        messenger_id: tg_user_id or max_user_id
+        messenger_type: "max"
+        messenger_id: max_user_id
         session: Database session
         stats: Statistics dictionary to update
     """
@@ -346,7 +323,7 @@ async def _process_renewal_ticket(
         return
     
     notification_sent = await send_staff_notification(
-        bot=tg_bot if messenger_type == "telegram" else max_bot,
+        bot=max_bot,
         staff_id=ticket.assigned_staff_id,
         ticket=ticket,
         routing_info={

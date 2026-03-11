@@ -236,23 +236,24 @@ async def is_staff_member(session: AsyncSession, max_user_id: int) -> Staff_Memb
         return None
 
 
-def get_employee_menu_text(role: str, full_name: str, work_mode: str | None = None) -> str:
+def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: str | None = None) -> str:
     """
     Generate role-specific menu text.
     
     Args:
-        role: Staff role value
+        role: Staff role value (lowercase: "manager", "administrator", etc.)
         full_name: Employee full name
+        position: Employee position/title
         work_mode: Current work mode (optional)
     
     Returns:
         Formatted menu text
     """
     role_display = {
-        "MANAGER": "Менеджер",
-        "TECHNICAL_SUPPORT": "Техническая поддержка",
-        "DUTY_ENGINEER": "Дежурный инженер",
-        "ADMINISTRATOR": "Администратор"
+        "manager": "Менеджер",
+        "technical_support": "Техподдержка",
+        "duty_engineer": "Дежурный инженер",
+        "administrator": "Администратор"
     }
     
     work_mode_display = {
@@ -266,6 +267,7 @@ def get_employee_menu_text(role: str, full_name: str, work_mode: str | None = No
     text = (
         f"👨‍💼 <b>Рабочее место сотрудника</b>\n\n"
         f"<b>Сотрудник:</b> {full_name}\n"
+        f"<b>Должность:</b> {position}\n"
         f"<b>Роль:</b> {role_text}\n"
     )
     
@@ -280,7 +282,7 @@ def get_employee_menu_text(role: str, full_name: str, work_mode: str | None = No
         f"⚙️ <b>Настройки</b> — управление профилем и подписью\n"
     )
     
-    if role == "ADMINISTRATOR":
+    if role == "administrator":
         text += f"🔐 <b>Админ-панель</b> — управление сотрудниками и системой\n"
     
     text += f"\nВыберите действие 👇"
@@ -511,6 +513,7 @@ async def cmd_manager(
         menu_text = get_employee_menu_text(
             role=employee.staff_role.value,
             full_name=employee.full_name,
+            position=employee.position,
             work_mode=work_mode.value if work_mode else None
         )
         
@@ -635,19 +638,11 @@ async def handle_manager_menu_action(
             keyboard = get_admin_panel_keyboard()
             
             # Send admin panel main menu
-            admin_panel_text = (
-                "🔐 <b>Административная панель</b>\n\n"
-                "Выберите раздел для управления:\n\n"
-                "👥 <b>Сотрудники</b> - управление персоналом\n"
-                "📋 <b>Операции</b> - регистрации, рассылки, конфликты\n"
-                "📅 <b>График работы</b> - настройка расписания\n"
-                "⚙️ <b>Настройки</b> - системные параметры\n"
-                "📊 <b>Статистика</b> - аналитика и отчеты"
-            )
+            from bots.max_bot.texts import ADMIN_PANEL_MENU
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=admin_panel_text,
+                text=ADMIN_PANEL_MENU,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -1036,6 +1031,7 @@ async def handle_tickets_back(
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
                 full_name=employee.full_name,
+                position=employee.position,
                 work_mode=work_mode.value if work_mode else None
             )
             
@@ -1688,6 +1684,7 @@ async def handle_archive_back(
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
                 full_name=employee.full_name,
+                position=employee.position,
                 work_mode=work_mode.value if work_mode else None
             )
             

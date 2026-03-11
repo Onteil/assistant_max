@@ -42,3 +42,28 @@ def build_nps_keyboard(survey_type: SurveyType, trigger_event_id: int) -> Inline
     ]
     
     return InlineKeyboardMarkup(inline_keyboard=[row1, row2])
+
+
+def build_review_links_keyboard() -> InlineKeyboardMarkup:
+    """
+    Build inline keyboard with review platform links (2GIS, Yandex).
+    
+    Returns:
+        InlineKeyboardMarkup with 2 buttons:
+        - Row 1: [⭐ Оставить отзыв на 2ГИС]
+        - Row 2: [⭐ Оставить отзыв на Яндекс]
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="⭐ Оставить отзыв на 2ГИС",
+                url="https://2gis.ru/nabchelny/branches/4081924033218712/firm/70000001047304265/52.449828%2C55.738183/tab/reviews?m=52.448955%2C55.72034%2F12.71"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="⭐ Оставить отзыв на Яндекс",
+                url="https://yandex.com/maps/org/i_tat/1247186021/reviews/?ll=49.160695%2C55.789136&tab=reviews&z=13.88"
+            )
+        ]
+    ])

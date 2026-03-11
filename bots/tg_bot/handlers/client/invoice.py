@@ -1187,11 +1187,12 @@ async def create_invoice_ticket(
             await state.clear()
             return
         
-        # Determine assigned manager
+        # Determine assigned manager (with admin fallback if no manager)
         assigned_manager_id = await determine_assigned_manager(
             session,
             telegram_id,
-            organization_inn
+            organization_inn,
+            assign_admin_if_no_manager=True  # Auto-assign admin if no manager
         )
         
         # Create ticket
@@ -1265,8 +1266,9 @@ async def create_invoice_ticket(
         # Clear FSM state
         await state.clear()
         
-        # Get manager name from employee record
+        # Get manager name and position from employee record
         manager_name = "ваш менеджер"
+        manager_position = "Менеджер"
         if assigned_manager_id:
             from database.models import Staff_Member
             from sqlalchemy import select
@@ -1276,6 +1278,7 @@ async def create_invoice_ticket(
             manager = result.scalar_one_or_none()
             if manager:
                 manager_name = manager.full_name
+                manager_position = manager.position or "Менеджер"
         
         # Format response time message based on work mode
         if work_mode == WorkMode.NON_WORKING:
@@ -1288,6 +1291,7 @@ async def create_invoice_ticket(
             INVOICE_CREATED.format(
                 ticket_id=ticket.id,
                 manager_name=manager_name,
+                manager_position=manager_position,
                 response_time_message=response_time_msg
             ),
             reply_markup=ReplyKeyboardRemove()

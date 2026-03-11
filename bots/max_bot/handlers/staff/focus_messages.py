@@ -303,7 +303,7 @@ async def handle_focus_file_message(
             # Confirm to employee
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"✅ Файл '{file_name}' отправлен клиенту.",
+                text="✅ Файл успешно отправлен клиенту.",
                 parse_mode="HTML"
             )
             
