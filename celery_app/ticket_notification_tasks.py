@@ -284,9 +284,6 @@ async def _process_invoice_ticket(
                             f"Admin notification sent via MAX for ticket {ticket.id}, "
                             f"admin_id={admin.id}"
                         )
-                            f"Admin notification sent via MAX for ticket {ticket.id}, "
-                            f"admin_id={admin.id}, chat_id={chat_id}"
-                        )
                     
                 except Exception as e:
                     logger.error(

@@ -51,6 +51,16 @@ DEFAULT_SETTINGS = {
         "description": "Время ожидания взятия тикета в работу дежурной поддержкой (минуты)",
         "requires_test": False,
     },
+    "backup_escalation_timeout": {
+        "value": "10",
+        "category": SettingCategory.TIMEOUTS,
+        "data_type": SettingDataType.INTEGER,
+        "min_value": 1,
+        "max_value": 60,
+        "display_name": "Интервал эскалации backup менеджеров",
+        "description": "Время ожидания между уровнями эскалации backup менеджеров (минуты)",
+        "requires_test": False,
+    },
     # Escalation channels
     "escalation_manager_channel": {
         "value": None,

@@ -183,27 +183,26 @@ async def create_ticket(
 
 async def determine_assigned_manager(
     session: AsyncSession,
-    tg_user_id: int,
-    organization_inn: str | None = None,
+    user_id: int,
     assign_admin_if_no_manager: bool = False
-) -> int | None:
+) -> tuple[int | None, bool]:
     """
-    Determine assigned manager based on Manager_Assignment or default_manager_id.
+    Determine assigned manager based on user's default_manager_id.
     
     Logic:
-    1. If organization_inn provided, check Manager_Assignment for user-organization pair
-    2. If no organization-specific manager, use user's default_manager_id
-    3. If no manager found and assign_admin_if_no_manager=True, assign first active admin
-    4. If no manager found and assign_admin_if_no_manager=False, return None
+    1. Use user's default_manager_id
+    2. If no manager found and assign_admin_if_no_manager=True, assign first active admin
+    3. If no manager found and assign_admin_if_no_manager=False, return None
     
     Args:
         session: Database session
-        tg_user_id: Telegram user ID
-        organization_inn: Organization INN (optional)
+        user_id: Internal user ID (primary key)
         assign_admin_if_no_manager: If True, assign first active admin when no manager found
     
     Returns:
-        Staff member ID (internal ID) or None if no manager/admin assigned
+        Tuple of (Staff member ID or None, has_assigned_manager: bool)
+        - Staff member ID: Internal staff ID or None if no staff assigned
+        - has_assigned_manager: True if user had assigned manager, False if admin fallback used
     
     Raises:
         SQLAlchemyError: If database operation fails
@@ -211,37 +210,18 @@ async def determine_assigned_manager(
     Requirements: 10.2, 10.3
     """
     try:
-        # Check for organization-specific manager assignment
-        if organization_inn:
-            result = await session.execute(
-                select(Manager_Assignment.manager_id).where(
-                    and_(
-                        Manager_Assignment.user_id == tg_user_id,
-                        Manager_Assignment.organization_inn == organization_inn
-                    )
-                )
-            )
-            manager_id = result.scalar_one_or_none()
-            
-            if manager_id:
-                logger.debug(
-                    f"Organization-specific manager found: tg_user_id={tg_user_id}, "
-                    f"inn={organization_inn}, manager_id={manager_id}"
-                )
-                return manager_id
-        
-        # Fallback to user's default manager
+        # Get user's default manager
         result = await session.execute(
-            select(User.default_manager_id).where(User.tg_user_id == tg_user_id)
+            select(User.default_manager_id).where(User.id == user_id)
         )
         default_manager_id = result.scalar_one_or_none()
         
         if default_manager_id:
             logger.debug(
-                f"Default manager found: tg_user_id={tg_user_id}, "
+                f"Default manager found: user_id={user_id}, "
                 f"manager_id={default_manager_id}"
             )
-            return default_manager_id
+            return default_manager_id, True
         
         # No manager found - assign admin if requested
         if assign_admin_if_no_manager:
@@ -252,29 +232,66 @@ async def determine_assigned_manager(
                 # Assign first active admin
                 assigned_admin_id = admins[0].id
                 logger.info(
-                    f"No manager found for user, assigning admin: tg_user_id={tg_user_id}, "
+                    f"No manager found for user, assigning admin: user_id={user_id}, "
                     f"admin_id={assigned_admin_id}, admin_name={admins[0].full_name}"
                 )
-                return assigned_admin_id
+                return assigned_admin_id, False
             else:
                 logger.error(
-                    f"No manager and no active admins found for user: tg_user_id={tg_user_id}"
+                    f"No manager and no active admins found for user: user_id={user_id}"
                 )
-                return None
+                return None, False
         
         logger.warning(
-            f"No manager found for user: tg_user_id={tg_user_id}, "
-            f"organization_inn={organization_inn}"
+            f"No manager found for user: user_id={user_id}"
         )
-        return None
+        return None, False
     
     except SQLAlchemyError as e:
         logger.error(
-            f"Database error determining assigned manager: tg_user_id={tg_user_id}, "
-            f"organization_inn={organization_inn}, error={e}",
+            f"Database error determining assigned manager: user_id={user_id}, "
+            f"error={e}",
             exc_info=True
         )
         raise
+
+
+async def check_support_staff_availability(session: AsyncSession) -> bool:
+    """
+    Check if there are active support staff members available.
+    
+    Args:
+        session: Database session
+    
+    Returns:
+        True if support staff available, False otherwise
+    
+    Requirements: Support staff availability check
+    """
+    try:
+        from database.models import Staff_Member, StaffRole
+        
+        stmt = select(Staff_Member).where(
+            and_(
+                Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
+                Staff_Member.is_active == True
+            )
+        )
+        
+        result = await session.execute(stmt)
+        support_staff = result.scalars().first()
+        
+        has_support = support_staff is not None
+        logger.debug(f"Support staff availability check: {has_support}")
+        
+        return has_support
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error checking support staff availability: error={e}",
+            exc_info=True
+        )
+        return False
 
 
 

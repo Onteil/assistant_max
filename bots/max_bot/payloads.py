@@ -999,3 +999,22 @@ class RenewalPayload(CallbackPayload, prefix='renewal'):
         action: Action type ('renew', 'contact_manager', 'cancel')
     """
     action: str
+
+
+# ============================================================================
+# Backup Manager Escalation Payloads
+# ============================================================================
+
+class BackupEscalationPayload(CallbackPayload, prefix='backup_esc'):
+    """Payload for backup manager escalation actions.
+    
+    Used when backup managers receive escalation notifications and need to take action.
+    
+    Fields:
+        action: Action type - "take_over" (take ticket into work)
+        ticket_id: ID of the escalated ticket
+        escalation_level: Current escalation level (1 for backup1, 2 for backup2)
+    """
+    action: str
+    ticket_id: int
+    escalation_level: int

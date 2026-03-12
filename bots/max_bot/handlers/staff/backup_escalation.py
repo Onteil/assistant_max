@@ -1,0 +1,237 @@
+"""
+Backup Manager Escalation Handlers for MAX Bot
+
+Handles backup manager escalation actions:
+- Take over escalated tickets when notified as backup manager
+- Update ticket status and cancel further escalations
+- Log actions and notify relevant parties
+
+Requirements: Backup Manager Escalation Flow
+"""
+
+import logging
+from datetime import datetime, timezone
+
+from maxapi.types import MessageCallback
+from maxapi.context import MemoryContext
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.payloads import BackupEscalationPayload
+from database.models import (
+    Action_Log,
+    ActionType,
+    Staff_Member,
+    Ticket,
+    TicketStatus,
+)
+from services.ticket_service import take_ticket_into_work
+
+logger = logging.getLogger(__name__)
+
+
+async def handle_backup_escalation_take_over(
+    event: MessageCallback,
+    payload: BackupEscalationPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle backup manager taking over an escalated ticket.
+    
+    When a backup manager clicks "Take Over" button:
+    1. Verify they are the assigned backup manager
+    2. Change ticket status to IN_PROGRESS
+    3. Cancel scheduled escalation tasks
+    4. Delete the escalation notification message
+    5. Send confirmation message
+    6. Log the action
+    
+    Uses replace_message pattern (delete old + send new).
+    
+    Args:
+        event: MessageCallback event
+        payload: BackupEscalationPayload with ticket_id and escalation_level
+        context: FSM context
+        session: Database session
+        messenger_adapter: MAX messenger adapter
+    
+    Requirements: Backup Manager Escalation Flow
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    try:
+        ticket_id = payload.ticket_id
+        escalation_level = payload.escalation_level
+        
+        # Get staff member
+        stmt = select(Staff_Member).where(Staff_Member.max_user_id == max_user_id)
+        result = await session.execute(stmt)
+        staff = result.scalar_one_or_none()
+        
+        if not staff:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Ошибка: Ваш профиль не найден в системе.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Get ticket with relationships
+        stmt = (
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.assigned_staff),
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.organization)
+            )
+        )
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Verify ticket is still NEW
+        if ticket.ticket_status != TicketStatus.NEW:
+            # Delete old message
+            if message_id:
+                try:
+                    await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to delete old message: {e}")
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"ℹ️ Заявка #{ticket_id} уже взята в работу другим сотрудником.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Verify staff is assigned to this ticket
+        if ticket.assigned_staff_id != staff.id:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ Вы не назначены на эту заявку. Текущий исполнитель: {ticket.assigned_staff.full_name if ticket.assigned_staff else 'Не назначен'}",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Take ticket into work (changes status to IN_PROGRESS and cancels escalation)
+        try:
+            await take_ticket_into_work(
+                session=session,
+                ticket_id=ticket_id,
+                employee_id=staff.max_user_id,
+                messenger="max"
+            )
+            
+            logger.info(
+                f"Backup manager {staff.id} took over ticket {ticket_id} "
+                f"at escalation level {escalation_level}"
+            )
+        
+        except Exception as e:
+            logger.error(f"Failed to take ticket into work: {e}", exc_info=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ Ошибка при взятии заявки в работу: {str(e)}",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Delete old escalation notification message
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+        
+        # Send confirmation message
+        ticket_type_names = {
+            "invoice": "💰 Счёт",
+            "technical_support": "🛠 ТП",
+            "renewal": "🔄 Продление"
+        }
+        ticket_type = ticket_type_names.get(ticket.ticket_type.value, str(ticket.ticket_type))
+        
+        user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+        user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+        
+        confirmation_text = (
+            f"✅ <b>Заявка #{ticket_id} взята в работу</b>\n\n"
+            f"<b>Тип:</b> {ticket_type}\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Телефон:</b> {user_phone}\n"
+        )
+        
+        if ticket.organization:
+            org_text = ticket.organization.inn
+            if ticket.organization.organization_name:
+                org_text += f" ({ticket.organization.organization_name})"
+            confirmation_text += f"<b>Организация:</b> {org_text}\n"
+        
+        if ticket.gs_keys:
+            keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+            confirmation_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+        
+        if ticket.description:
+            desc_preview = ticket.description[:200]
+            if len(ticket.description) > 200:
+                desc_preview += "..."
+            confirmation_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+        
+        confirmation_text += (
+            f"\n<b>Статус:</b> В работе\n"
+            f"<b>Исполнитель:</b> {staff.full_name}\n\n"
+            f"Вы можете начать работу с клиентом."
+        )
+        
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=confirmation_text,
+            parse_mode="HTML"
+        )
+        
+        # Log action
+        action_log = Action_Log(
+            ticket_id=ticket_id,
+            staff_id=staff.id,
+            action_type=ActionType.TICKET_TAKEN,
+            action_details={
+                "escalation_level": escalation_level,
+                "backup_type": f"backup_manager_{escalation_level}",
+                "action": "taken_by_backup_manager"
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+        
+        logger.info(
+            f"Backup manager {staff.id} successfully took over ticket {ticket_id} "
+            f"at escalation level {escalation_level}"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error handling backup escalation take over: ticket_id={payload.ticket_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при обработке запроса.",
+            parse_mode="HTML"
+        )

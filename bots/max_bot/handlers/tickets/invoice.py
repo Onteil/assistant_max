@@ -1931,13 +1931,11 @@ async def create_invoice_ticket(
         # Determine assigned manager (with admin fallback if no manager)
         from services.ticket_service import determine_assigned_manager
         
-        assigned_staff_id = await determine_assigned_manager(
+        assigned_staff_id, has_manager = await determine_assigned_manager(
             session=session,
-            tg_user_id=user.tg_user_id or user.max_user_id,  # Use available ID
-            organization_inn=selected_inn,
+            user_id=user_id,
             assign_admin_if_no_manager=True  # Auto-assign admin if no manager
         )
-        has_manager = assigned_staff_id is not None
         
         # Create ticket
         ticket_data = {
@@ -2026,7 +2024,7 @@ async def create_invoice_ticket(
         from services.escalation_service import get_active_admins
         from loaders import max_bot
         
-        if has_manager:
+        if assigned_staff_id:
             # Send notification to assigned manager or admin
             notification_sent = await send_staff_notification(
                 bot=max_bot,
@@ -2045,10 +2043,20 @@ async def create_invoice_ticket(
                     f"Failed to send staff notification: ticket_id={ticket.id}, "
                     f"staff_id={assigned_staff_id}"
                 )
+            
+            # If user had no assigned manager, notify admin about this
+            if not has_manager:
+                await _notify_admin_about_unassigned_user(
+                    session=session,
+                    ticket=ticket,
+                    user=user,
+                    assigned_admin_id=assigned_staff_id
+                )
         else:
             # No manager or admin available - log error
             logger.error(
-                f"No staff member assigned to ticket: user_id={user_id}, ticket_id={ticket.id}"
+                f"No staff available for ticket assignment: ticket_id={ticket.id}, "
+                f"user_id={user_id}"
             )
     
     except Exception as e:
@@ -2165,3 +2173,105 @@ async def cancel_invoice_flow(
 
 
 
+
+
+async def _notify_admin_about_unassigned_user(
+    session: AsyncSession,
+    ticket: Ticket,
+    user: User,
+    assigned_admin_id: int
+) -> None:
+    """
+    Notify admin that user had no assigned manager and ticket was redirected.
+    
+    Args:
+        session: Database session
+        ticket: Created ticket
+        user: User who created the ticket
+        assigned_admin_id: ID of admin who was assigned the ticket
+    """
+    try:
+        from loaders import max_bot
+        from database.models import Staff_Member
+        from sqlalchemy import select
+        
+        # Get admin details
+        stmt = select(Staff_Member).where(Staff_Member.id == assigned_admin_id)
+        result = await session.execute(stmt)
+        admin = result.scalar_one_or_none()
+        
+        if not admin or not admin.max_chat_id:
+            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+            return
+        
+        # Build notification message
+        ticket_type_names = {
+            TicketType.INVOICE: "💰 Счёт",
+            TicketType.TECHNICAL_SUPPORT: "🛠 Техподдержка", 
+            TicketType.RENEWAL: "🔄 Продление"
+        }
+        
+        ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+        user_name = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Неизвестно"
+        user_phone = user.phone_number or "Не указано"
+        
+        notification_text = (
+            f"⚠️ <b>Заявка перенаправлена администратору</b>\n\n"
+            f"У пользователя не был назначен менеджер, поэтому заявка #{ticket.id} "
+            f"была автоматически перенаправлена вам.\n\n"
+            f"<b>Тип заявки:</b> {ticket_type}\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Телефон:</b> {user_phone}\n"
+        )
+        
+        if ticket.organization:
+            org_text = ticket.organization.inn
+            if ticket.organization.organization_name:
+                org_text += f" ({ticket.organization.organization_name})"
+            notification_text += f"<b>Организация:</b> {org_text}\n"
+        
+        if ticket.description:
+            desc_preview = ticket.description[:150]
+            if len(ticket.description) > 150:
+                desc_preview += "..."
+            notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+        
+        notification_text += (
+            f"\n💡 <b>Рекомендация:</b> Назначьте пользователю менеджера "
+            f"в админ-панели для автоматической маршрутизации будущих заявок."
+        )
+        
+        # Send notification
+        from maxapi import Bot as MAXBot
+        from maxapi.enums.parse_mode import ParseMode
+        from constants import MAX_BOT_TOKEN
+        
+        max_bot_instance = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        try:
+            await max_bot_instance.send_message(
+                chat_id=admin.max_chat_id,
+                text=notification_text
+            )
+            
+            logger.info(
+                f"Admin notified about unassigned user: ticket_id={ticket.id}, "
+                f"admin_id={assigned_admin_id}, user_id={user.id}"
+            )
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to notify admin about unassigned user: "
+                f"ticket_id={ticket.id}, admin_id={assigned_admin_id}, error={e}"
+            )
+        
+        finally:
+            if max_bot_instance.session:
+                await max_bot_instance.session.close()
+    
+    except Exception as e:
+        logger.error(
+            f"Error in _notify_admin_about_unassigned_user: "
+            f"ticket_id={ticket.id}, error={e}",
+            exc_info=True
+        )

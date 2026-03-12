@@ -86,6 +86,7 @@ from bots.max_bot.payloads import (
     RegistrationCancelPayload,
     RegistrationSkipPayload,
     AdminCreationCancelPayload,
+    BackupEscalationPayload,
 )
 from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates
 
@@ -252,6 +253,9 @@ from .staff.escalations import (
     handle_escalation_reassign_confirm,
     handle_escalation_take_over,
     handle_staff_contact,
+)
+from .staff.backup_escalation import (
+    handle_backup_escalation_take_over,
 )
 from .client import nps_handler
 from bots.max_bot.payloads import (
@@ -687,6 +691,9 @@ def create_user_router() -> Router:
             await handle_staff_contact(event, payload, context, session, messenger_adapter)
     
     user_router.message_callback(EscalationPayload.filter())(route_escalation)
+    
+    # Backup escalation handlers
+    user_router.message_callback(BackupEscalationPayload.filter())(handle_backup_escalation_take_over)
     
     # Key conflict handlers - route by action
     async def route_key_conflict(

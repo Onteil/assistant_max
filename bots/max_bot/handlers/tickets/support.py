@@ -306,8 +306,8 @@ async def create_renewal_ticket(
     Create RENEWAL ticket for subscription renewal.
     
     Creates ticket with RENEWAL type.
-    Routes ticket to assigned manager.
-    Sends notification to manager.
+    Routes ticket to assigned manager or admin if no manager assigned.
+    Sends notification to assigned staff.
     Displays success message to user.
     
     Args:
@@ -332,14 +332,20 @@ async def create_renewal_ticket(
             )
             return
         
-        # Determine assigned manager (use default_manager_id)
-        assigned_staff_id = user.default_manager_id
+        # Determine assigned manager (with admin fallback if no manager)
+        from services.ticket_service import determine_assigned_manager
+        
+        assigned_staff_id, has_manager = await determine_assigned_manager(
+            session=session,
+            user_id=user_id,
+            assign_admin_if_no_manager=True  # Auto-assign admin if no manager
+        )
         
         if not assigned_staff_id:
-            logger.error(f"No assigned manager for user: user_id={user_id}")
+            logger.error(f"No staff available for renewal ticket: user_id={user_id}")
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="❌ Не удалось определить ответственного менеджера. Обратитесь в поддержку.",
+                text="❌ В данный момент нет доступных сотрудников для обработки заявки. Попробуйте позже.",
                 parse_mode="HTML"
             )
             return
@@ -357,13 +363,32 @@ async def create_renewal_ticket(
         
         logger.info(
             f"Renewal ticket created: ticket_id={ticket.id}, user_id={user_id}, "
-            f"assigned_staff={assigned_staff_id}"
+            f"assigned_staff={assigned_staff_id}, has_manager={has_manager}"
         )
+        
+        # Get manager name and position for user message
+        manager_name = "Менеджер"
+        manager_position = "Менеджер"
+        if assigned_staff_id:
+            from database.models import Staff_Member
+            from sqlalchemy import select
+            
+            stmt = select(Staff_Member).where(Staff_Member.id == assigned_staff_id)
+            result = await session.execute(stmt)
+            staff_member = result.scalar_one_or_none()
+            
+            if staff_member:
+                manager_name = staff_member.full_name or "Менеджер"
+                manager_position = staff_member.position or "Менеджер"
         
         # Send success message to user
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=RENEWAL_TICKET_CREATED.format(ticket_id=ticket.id),
+            text=RENEWAL_TICKET_CREATED.format(
+                ticket_id=ticket.id,
+                manager_name=manager_name,
+                manager_position=manager_position
+            ),
             parse_mode="HTML"
         )
         
@@ -386,9 +411,38 @@ async def create_renewal_ticket(
             parse_mode="HTML"
         )
         
-        # TODO: Send notification to assigned manager
-        # This will be implemented when we have the staff notification system
-        logger.info(f"Manager notification pending: ticket_id={ticket.id}, staff_id={assigned_staff_id}")
+        # Send notifications
+        from services.ticket_service import send_staff_notification
+        from loaders import max_bot
+        
+        if assigned_staff_id:
+            # Send notification to assigned manager or admin
+            notification_sent = await send_staff_notification(
+                bot=max_bot,
+                staff_id=assigned_staff_id,
+                ticket=ticket,
+                session=session
+            )
+            
+            if notification_sent:
+                logger.info(
+                    f"Staff notification sent: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to send staff notification: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+            
+            # If user had no assigned manager, notify admin about this
+            if not has_manager:
+                await _notify_admin_about_unassigned_user_renewal(
+                    session=session,
+                    ticket=ticket,
+                    user=user,
+                    assigned_admin_id=assigned_staff_id
+                )
     
     except Exception as e:
         logger.error(
@@ -1145,24 +1199,71 @@ async def create_support_ticket(
         work_mode = await get_current_work_mode(session)
         logger.info(f"Current work mode: {work_mode.value}")
         
+        # Check if support staff is available
+        from services.ticket_service import check_support_staff_availability
+        has_support_staff = await check_support_staff_availability(session)
+        
         # Determine assigned staff based on work mode
         assigned_staff_id = None
         
         if work_mode == WorkMode.REGULAR:
-            # Route to any available support staff (no specific assignment)
-            # Support team will pick up the ticket
-            assigned_staff_id = None
-            logger.info(f"Routing to support team: work_mode={work_mode.value}")
+            if has_support_staff:
+                # Route to any available support staff (no specific assignment)
+                # Support team will pick up the ticket
+                assigned_staff_id = None
+                logger.info(f"Routing to support team: work_mode={work_mode.value}")
+            else:
+                # No support staff available - route to admin
+                from services.escalation_service import get_active_admins
+                admins = await get_active_admins(session)
+                if admins:
+                    assigned_staff_id = admins[0].id
+                    logger.warning(
+                        f"No support staff available, routing to admin: "
+                        f"admin_id={assigned_staff_id}"
+                    )
+                else:
+                    logger.error("No support staff and no admins available")
+                    await messenger_adapter.send_message(
+                        chat_id=chat_id,
+                        text="❌ В данный момент нет доступных сотрудников для обработки заявки техподдержки. Попробуйте позже.",
+                        parse_mode="HTML"
+                    )
+                    return
         
         elif work_mode == WorkMode.EXTENDED:
             # Route to duty engineer
             from services.ticket_service import _get_duty_engineer
             duty_engineer = await _get_duty_engineer(session)
-            assigned_staff_id = duty_engineer.id if duty_engineer else None
-            logger.info(
-                f"Routing to duty engineer: work_mode={work_mode.value}, "
-                f"engineer_id={assigned_staff_id}"
-            )
+            if duty_engineer:
+                assigned_staff_id = duty_engineer.id
+                logger.info(
+                    f"Routing to duty engineer: work_mode={work_mode.value}, "
+                    f"engineer_id={assigned_staff_id}"
+                )
+            else:
+                # No duty engineer - route to admin if no support staff
+                if not has_support_staff:
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    if admins:
+                        assigned_staff_id = admins[0].id
+                        logger.warning(
+                            f"No duty engineer and no support staff, routing to admin: "
+                            f"admin_id={assigned_staff_id}"
+                        )
+                    else:
+                        logger.error("No duty engineer, no support staff, and no admins available")
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text="❌ В данный момент нет доступных сотрудников для обработки заявки техподдержки. Попробуйте позже.",
+                            parse_mode="HTML"
+                        )
+                        return
+                else:
+                    # Has support staff but no duty engineer - route to support team
+                    assigned_staff_id = None
+                    logger.info(f"No duty engineer, routing to support team")
         
         else:  # NON_WORKING
             # Queue for next working period (no assignment)
@@ -1192,8 +1293,45 @@ async def create_support_ticket(
         
         logger.info(
             f"Support ticket created: ticket_id={ticket.id}, user_id={user_id}, "
-            f"work_mode={work_mode.value}, assigned_staff={assigned_staff_id}"
+            f"work_mode={work_mode.value}, assigned_staff={assigned_staff_id}, "
+            f"has_support_staff={has_support_staff}"
         )
+        
+        # Send notifications
+        from services.ticket_service import send_staff_notification
+        from loaders import max_bot
+        
+        if assigned_staff_id:
+            # Send notification to assigned staff
+            notification_sent = await send_staff_notification(
+                bot=max_bot,
+                staff_id=assigned_staff_id,
+                ticket=ticket,
+                session=session
+            )
+            
+            if notification_sent:
+                logger.info(
+                    f"Staff notification sent: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+            else:
+                logger.warning(
+                    f"Failed to send staff notification: ticket_id={ticket.id}, "
+                    f"staff_id={assigned_staff_id}"
+                )
+            
+            # If no support staff available and routed to admin, notify about this
+            if not has_support_staff and assigned_staff_id:
+                await _notify_admin_about_no_support_staff(
+                    session=session,
+                    ticket=ticket,
+                    user=user,
+                    assigned_admin_id=assigned_staff_id
+                )
+        else:
+            # No staff assigned - ticket will be handled by support team or queued
+            logger.info(f"No specific staff assigned: ticket_id={ticket.id}")
         
         # Clear FSM state
         await context.clear()
@@ -1348,3 +1486,168 @@ async def create_support_ticket(
 
 
 
+
+async def _notify_admin_about_unassigned_user_renewal(
+    session: AsyncSession,
+    ticket: Ticket,
+    user: User,
+    assigned_admin_id: int
+) -> None:
+    """
+    Notify admin that user had no assigned manager for renewal ticket.
+    
+    Args:
+        session: Database session
+        ticket: Created renewal ticket
+        user: User who created the ticket
+        assigned_admin_id: ID of admin who was assigned the ticket
+    """
+    try:
+        from loaders import max_bot
+        from database.models import Staff_Member
+        from sqlalchemy import select
+        
+        # Get admin details
+        stmt = select(Staff_Member).where(Staff_Member.id == assigned_admin_id)
+        result = await session.execute(stmt)
+        admin = result.scalar_one_or_none()
+        
+        if not admin or not admin.max_chat_id:
+            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+            return
+        
+        user_name = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Неизвестно"
+        user_phone = user.phone_number or "Не указано"
+        
+        notification_text = (
+            f"⚠️ <b>Заявка на продление перенаправлена администратору</b>\n\n"
+            f"У пользователя не был назначен менеджер, поэтому заявка на продление #{ticket.id} "
+            f"была автоматически перенаправлена вам.\n\n"
+            f"<b>Тип заявки:</b> 🔄 Продление\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Телефон:</b> {user_phone}\n"
+            f"\n💡 <b>Рекомендация:</b> Назначьте пользователю менеджера "
+            f"в админ-панели для автоматической маршрутизации будущих заявок."
+        )
+        
+        # Send notification
+        from maxapi import Bot as MAXBot
+        from maxapi.enums.parse_mode import ParseMode
+        from constants import MAX_BOT_TOKEN
+        
+        max_bot_instance = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        try:
+            await max_bot_instance.send_message(
+                chat_id=admin.max_chat_id,
+                text=notification_text
+            )
+            
+            logger.info(
+                f"Admin notified about unassigned user (renewal): ticket_id={ticket.id}, "
+                f"admin_id={assigned_admin_id}, user_id={user.id}"
+            )
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to notify admin about unassigned user (renewal): "
+                f"ticket_id={ticket.id}, admin_id={assigned_admin_id}, error={e}"
+            )
+        
+        finally:
+            if max_bot_instance.session:
+                await max_bot_instance.session.close()
+    
+    except Exception as e:
+        logger.error(
+            f"Error in _notify_admin_about_unassigned_user_renewal: "
+            f"ticket_id={ticket.id}, error={e}",
+            exc_info=True
+        )
+
+async def _notify_admin_about_no_support_staff(
+    session: AsyncSession,
+    ticket: Ticket,
+    user: User,
+    assigned_admin_id: int
+) -> None:
+    """
+    Notify admin that support ticket was redirected due to no support staff available.
+    
+    Args:
+        session: Database session
+        ticket: Created support ticket
+        user: User who created the ticket
+        assigned_admin_id: ID of admin who was assigned the ticket
+    """
+    try:
+        from loaders import max_bot
+        from database.models import Staff_Member
+        from sqlalchemy import select
+        
+        # Get admin details
+        stmt = select(Staff_Member).where(Staff_Member.id == assigned_admin_id)
+        result = await session.execute(stmt)
+        admin = result.scalar_one_or_none()
+        
+        if not admin or not admin.max_chat_id:
+            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+            return
+        
+        user_name = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Неизвестно"
+        user_phone = user.phone_number or "Не указано"
+        
+        notification_text = (
+            f"⚠️ <b>Заявка техподдержки перенаправлена администратору</b>\n\n"
+            f"В системе нет активных сотрудников техподдержки, поэтому заявка #{ticket.id} "
+            f"была автоматически перенаправлена вам.\n\n"
+            f"<b>Тип заявки:</b> 🛠 Техподдержка\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Телефон:</b> {user_phone}\n"
+        )
+        
+        if ticket.description:
+            desc_preview = ticket.description[:150]
+            if len(ticket.description) > 150:
+                desc_preview += "..."
+            notification_text += f"\n<b>Описание проблемы:</b>\n{desc_preview}\n"
+        
+        notification_text += (
+            f"\n💡 <b>Рекомендация:</b> Добавьте активных сотрудников с ролью "
+            f"'Техподдержка' для автоматической маршрутизации заявок техподдержки."
+        )
+        
+        # Send notification
+        from maxapi import Bot as MAXBot
+        from maxapi.enums.parse_mode import ParseMode
+        from constants import MAX_BOT_TOKEN
+        
+        max_bot_instance = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        try:
+            await max_bot_instance.send_message(
+                chat_id=admin.max_chat_id,
+                text=notification_text
+            )
+            
+            logger.info(
+                f"Admin notified about no support staff: ticket_id={ticket.id}, "
+                f"admin_id={assigned_admin_id}, user_id={user.id}"
+            )
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to notify admin about no support staff: "
+                f"ticket_id={ticket.id}, admin_id={assigned_admin_id}, error={e}"
+            )
+        
+        finally:
+            if max_bot_instance.session:
+                await max_bot_instance.session.close()
+    
+    except Exception as e:
+        logger.error(
+            f"Error in _notify_admin_about_no_support_staff: "
+            f"ticket_id={ticket.id}, error={e}",
+            exc_info=True
+        )
