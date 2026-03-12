@@ -121,6 +121,99 @@ async def cmd_my_id(
     )
 
 
+# ========== /me Command Handler ==========
+
+
+async def cmd_me(
+    event: MessageCreated,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle /me command - display bot information.
+
+    Shows:
+    - Bot name and description
+    - Bot version
+    - Available features
+    - Contact information
+
+    maxapi Pattern Notes:
+    - Uses event.message.sender.user_id for user identification
+    - Includes commands_info marker for automatic command registration
+
+    Args:
+        event: MessageCreated event from maxapi
+        messenger_adapter: MAXMessengerAdapter for sending messages
+
+    commands_info: Информация о боте
+
+    Requirements: Bot Information
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+
+    logger.info(f"User {max_user_id} requested bot information")
+
+    # Format bot information message
+    message_text = (
+        "🤖 <b>i-TAT Bot</b>\n\n"
+        "<b>Описание:</b>\n"
+        "Бот для автоматизации работы с системой i-TAT. "
+        "Позволяет получать счета, обращаться в техподдержку, "
+        "управлять профилем и продлевать подписку.\n\n"
+        "<b>Основные функции:</b>\n"
+        "💰 Получение счетов на оплату\n"
+        "🆘 Обращения в техподдержку\n"
+        "🔄 Продление подписки\n"
+        "👤 Управление профилем\n"
+        "📋 История обращений\n\n"
+        "<b>Доступные команды:</b>\n"
+        "/start - Начать работу с ботом\n"
+        "/help - Справка по командам\n"
+        "/me - Информация о боте\n"
+        "/my_id - Узнать свой MAX ID\n"
+        "/cancel - Отменить текущую операцию\n\n"
+        "<i>Для получения помощи используйте команду /help</i>"
+    )
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=message_text,
+        parse_mode="HTML"
+    )
+
+    # Format bot information message
+    message_text = (
+        "🤖 <b>i-TAT Bot</b>\n\n"
+        "<b>Описание:</b>\n"
+        "Бот для автоматизации работы с системой i-TAT. "
+        "Позволяет получать счета, обращаться в техподдержку, "
+        "управлять профилем и продлевать подписку.\n\n"
+        "<b>Основные функции:</b>\n"
+        "💰 Получение счетов на оплату\n"
+        "🆘 Обращения в техподдержку\n"
+        "🔄 Продление подписки\n"
+        "👤 Управление профилем\n"
+        "📋 История обращений\n\n"
+        "<b>Доступные команды:</b>\n"
+        "/start - Начать работу с ботом\n"
+        "/help - Справка по командам\n"
+        "/me - Информация о боте\n"
+        "/my_id - Узнать свой MAX ID\n"
+        "/cancel - Отменить текущую операцию\n\n"
+        "<i>Для получения помощи используйте команду /help</i>"
+    )
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=message_text,
+        parse_mode="HTML"
+    )
+
+
+
+
+
 # ========== /cancel Command Handler ==========
 
 

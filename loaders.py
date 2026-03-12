@@ -237,14 +237,29 @@ async def register_max_bot_commands():
             commands_to_register.append(bot_command)
         
         if commands_to_register:
-            # Регистрируем команды в MAX API
-            await max_bot.set_my_commands(*commands_to_register)
-            logging.info(f"MAX bot commands registered in order: {[cmd.name for cmd in commands_to_register]}")
+            # Пытаемся зарегистрировать команды в MAX API
+            # ПРИМЕЧАНИЕ: MAX API может не поддерживать программную регистрацию команд
+            # В этом случае команды нужно настраивать вручную через веб-интерфейс MAX
+            try:
+                await max_bot.set_my_commands(*commands_to_register)
+                logging.info(f"MAX bot commands registered in order: {[cmd.name for cmd in commands_to_register]}")
+            except Exception as cmd_error:
+                # Если API не поддерживает регистрацию команд (404 на /me endpoint),
+                # это не критическая ошибка - команды можно настроить вручную
+                if "404" in str(cmd_error) or "method.not.found" in str(cmd_error):
+                    logging.warning(
+                        "MAX API does not support programmatic command registration. "
+                        "Commands should be configured manually through MAX web interface. "
+                        f"Commands to register: {[cmd.name for cmd in commands_to_register]}"
+                    )
+                else:
+                    # Другие ошибки логируем как обычно
+                    logging.error(f"Failed to register MAX bot commands: {cmd_error}")
         else:
             logging.warning("No commands found to register for MAX bot")
     
     except Exception as e:
-        logging.error(f"Failed to register MAX bot commands: {e}", exc_info=True)
+        logging.error(f"Failed to prepare MAX bot commands: {e}", exc_info=True)
 
 
 async def delete_all_webhooks():

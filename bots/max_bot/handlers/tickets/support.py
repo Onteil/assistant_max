@@ -53,8 +53,10 @@ from bots.max_bot.texts import (
 from database.models import (
     KeyConflictStatus,
     SubscriptionStatus,
+    Ticket,
     TicketStatus,
     TicketType,
+    User,
     WorkMode,
 )
 from services.calendar_service import get_current_work_mode

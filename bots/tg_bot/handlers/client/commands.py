@@ -34,6 +34,36 @@ async def help_command(message: Message):
     logger.info(f"User {message.from_user.id} requested help")
 
 
+@router.message(Command("me"))
+async def me_command(message: Message):
+    """
+    Обработчик команды /me.
+    
+    Показывает информацию о боте.
+    """
+    message_text = (
+        "🤖 <b>i-TAT Bot</b>\n\n"
+        "<b>Описание:</b>\n"
+        "Бот для автоматизации работы с системой i-TAT. "
+        "Позволяет получать счета, обращаться в техподдержку, "
+        "управлять профилем и продлевать подписку.\n\n"
+        "<b>Основные функции:</b>\n"
+        "💰 Получение счетов на оплату\n"
+        "🆘 Обращения в техподдержку\n"
+        "🔄 Продление подписки\n"
+        "👤 Управление профилем\n"
+        "📋 История обращений\n\n"
+        "<b>Доступные команды:</b>\n"
+        "/start - Начать работу с ботом\n"
+        "/help - Справка по командам\n"
+        "/me - Информация о боте\n"
+        "/cancel - Отменить текущую операцию\n\n"
+        "<i>Для получения помощи используйте команду /help</i>"
+    )
+    await message.answer(message_text, parse_mode="HTML")
+    logger.info(f"User {message.from_user.id} requested bot information")
+
+
 # Main menu button handlers - delegate to specific handlers
 
 @router.message(F.text == MENU_INVOICE)

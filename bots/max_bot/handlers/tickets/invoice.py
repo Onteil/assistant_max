@@ -64,7 +64,7 @@ from bots.max_bot.texts import (
     INVOICE_SELECT_KEYS,
     INVOICE_SELECT_ORGANIZATION,
 )
-from database.models import DeliveryMethod, KeyConflictStatus, RegistrationStatus, TicketType
+from database.models import DeliveryMethod, KeyConflictStatus, RegistrationStatus, Ticket, TicketType, User
 from services.i_tat_service import get_itat_client
 from services.ticket_service import create_ticket
 from services.user_service import (

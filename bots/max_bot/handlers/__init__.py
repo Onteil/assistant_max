@@ -88,7 +88,7 @@ from bots.max_bot.payloads import (
     AdminCreationCancelPayload,
     BackupEscalationPayload,
 )
-from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates
+from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates
 
 from .common.callbacks import (
     process_back_navigation,
@@ -141,6 +141,7 @@ from .user.cancel import cmd_cancel, handle_cancel_button
 from .user.commands import (
     cmd_help,
     cmd_my_id,
+    cmd_me,
     handle_main_menu,
 )
 from .user.main_menu_callbacks import handle_main_menu_callback
@@ -431,6 +432,9 @@ def create_user_router() -> Router:
     
     logger.info(f"Registering /my_id handler: {cmd_my_id}")
     user_router.message_created(Command("my_id"))(cmd_my_id)
+    
+    logger.info(f"Registering /me handler: {cmd_me}")
+    user_router.message_created(Command("me"))(cmd_me)
     
     logger.info(f"Registering /cancel handler: {cmd_cancel}")
     user_router.message_created(Command("cancel"))(cmd_cancel)

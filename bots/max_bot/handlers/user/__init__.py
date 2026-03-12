@@ -11,6 +11,8 @@ Contains handlers for user-related functionality:
 from .cancel import cmd_cancel, handle_cancel_button
 from .commands import (
     cmd_help,
+    cmd_my_id,
+    cmd_me,
     cmd_cancel as cmd_cancel_command,
     handle_main_menu,
     handle_cancel_button as handle_cancel_button_command,
@@ -21,6 +23,8 @@ __all__ = [
     "cmd_cancel",
     "handle_cancel_button",
     "cmd_help",
+    "cmd_my_id",
+    "cmd_me",
     "cmd_cancel_command",
     "handle_main_menu",
     "handle_cancel_button_command",
