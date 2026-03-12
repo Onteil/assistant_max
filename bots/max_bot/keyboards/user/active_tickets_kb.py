@@ -157,4 +157,22 @@ async def format_ticket_card_for_client(ticket: Ticket) -> str:
     if ticket.assigned_staff:
         card += f"<b>Менеджер:</b> {ticket.assigned_staff.full_name}\n"
     
+    # Add delivery method information
+    if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+        delivery_method_names = {
+            "telegram": "💬 В чат",
+            "email": "📧 На Email",
+            "none": "❌ Не указан"
+        }
+        delivery_method_text = delivery_method_names.get(
+            ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+            str(ticket.delivery_method)
+        )
+        card += f"<b>Способ получения:</b> {delivery_method_text}\n"
+        
+        # Add delivery email if method is email
+        if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+            if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                card += f"<b>Email для доставки:</b> {ticket.delivery_email}\n"
+    
     return card

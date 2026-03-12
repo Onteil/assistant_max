@@ -245,6 +245,24 @@ async def _process_invoice_ticket(
             if ticket.organization_inn:
                 admin_message += f"\n<b>Организация:</b> {ticket.organization_inn}\n"
             
+            # Add delivery method information
+            if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+                delivery_method_names = {
+                    "telegram": "💬 В чат",
+                    "email": "📧 На Email",
+                    "none": "❌ Не указан"
+                }
+                delivery_method_text = delivery_method_names.get(
+                    ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+                    str(ticket.delivery_method)
+                )
+                admin_message += f"<b>Способ получения:</b> {delivery_method_text}\n"
+                
+                # Add delivery email if method is email
+                if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+                    if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                        admin_message += f"<b>Email для доставки:</b> {ticket.delivery_email}\n"
+            
             if ticket.description:
                 desc_preview = ticket.description[:150]
                 if len(ticket.description) > 150:

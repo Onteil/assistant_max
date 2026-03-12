@@ -28,7 +28,6 @@ from bots.tg_bot.keyboards.escalation_kb import (
     get_staff_selection_keyboard,
 )
 from bots.tg_bot.states import AdminStates
-from celery_app.escalation_tasks import cancel_escalation_monitoring
 from database.models import (
     Action_Log,
     ActionType,
@@ -619,6 +618,9 @@ async def handle_staff_selection(
         
         # Cancel escalation monitoring tasks
         try:
+            # Import here to avoid circular dependency
+            from celery_app.escalation_tasks import cancel_escalation_monitoring
+            
             await cancel_escalation_monitoring(ticket_id)
             logger.info(
                 f"Escalation monitoring cancelled for reassigned ticket: ticket_id={ticket_id}"
@@ -775,6 +777,9 @@ async def handle_escalation_take_over(
         
         # Cancel escalation monitoring tasks
         try:
+            # Import here to avoid circular dependency
+            from celery_app.escalation_tasks import cancel_escalation_monitoring
+            
             await cancel_escalation_monitoring(ticket_id)
             logger.info(
                 f"Escalation monitoring cancelled for admin-taken ticket: ticket_id={ticket_id}"

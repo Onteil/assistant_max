@@ -228,7 +228,7 @@ async def schedule_renewal_reminders(
     Schedule renewal reminder notifications for a user.
     
     Creates Notification_Event records for each configured reminder day
-    (default: 30 and 7 days before subscription expiration). Checks for
+    (read from renewal_reminder_days setting). Checks for
     existing reminders to avoid duplicates. Only schedules reminders for
     users with ACTIVE subscriptions and valid subscription_end_date.
     
@@ -241,7 +241,7 @@ async def schedule_renewal_reminders(
         session: Database session (transaction managed by caller)
         user: User object to schedule reminders for
         reminder_days: List of days before expiration to send reminders.
-                      Defaults to [30, 7] if not provided.
+                      If not provided, reads from renewal_reminder_days setting.
     
     Returns:
         List of created Notification_Event objects (empty if none created)
@@ -255,9 +255,21 @@ async def schedule_renewal_reminders(
     from sqlalchemy import select
     from database.models import Notification_Event, EventType, EventStatus
     
-    # Default reminder days if not provided
+    # Get reminder days from settings if not provided
     if reminder_days is None:
-        reminder_days = [30, 7]
+        try:
+            from services.settings_service import get_setting
+            
+            reminder_days = await get_setting(session, "renewal_reminder_days")
+            
+            if not isinstance(reminder_days, list):
+                logger.warning("renewal_reminder_days setting not found or invalid, using default [30, 7]")
+                reminder_days = [30, 7]
+            else:
+                logger.debug(f"Using renewal_reminder_days from settings: {reminder_days}")
+        except Exception as e:
+            logger.error(f"Error reading renewal_reminder_days setting: {e}", exc_info=True)
+            reminder_days = [30, 7]
     
     try:
         # Validate user has ACTIVE subscription with valid end_date

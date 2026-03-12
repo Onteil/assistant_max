@@ -46,12 +46,12 @@ async def _check_expirations_async(reminder_days: list[int] = None) -> dict:
     Async helper to check for upcoming subscription expirations.
     
     Queries users with subscriptions expiring in the configured number of days
-    (default: 30 and 7 days) and creates Notification_Event records for each.
+    and creates Notification_Event records for each.
     Only processes users with ACTIVE subscriptions and valid end dates.
     
     Args:
         reminder_days: List of days before expiration to check.
-                      Defaults to [30, 7] if not provided.
+                      If not provided, reads from system settings.
     
     Returns:
         Dict with execution statistics:
@@ -62,9 +62,22 @@ async def _check_expirations_async(reminder_days: list[int] = None) -> dict:
     
     Requirements: 8.1-8.5
     """
-    # Default reminder days if not provided
+    # Get reminder days from settings if not provided
     if reminder_days is None:
-        reminder_days = [30, 7]
+        try:
+            from services.settings_service import get_setting
+            
+            async with AsyncSessionLocal() as session:
+                reminder_days = await get_setting(session, "renewal_reminder_days")
+                
+                if not isinstance(reminder_days, list):
+                    logger.warning("renewal_reminder_days setting not found or invalid, using default [30, 7]")
+                    reminder_days = [30, 7]
+                else:
+                    logger.info(f"Using renewal_reminder_days from settings: {reminder_days}")
+        except Exception as e:
+            logger.error(f"Error reading renewal_reminder_days setting: {e}", exc_info=True)
+            reminder_days = [30, 7]
     
     stats = {
         "checked_users": 0,
@@ -173,18 +186,18 @@ def check_upcoming_expirations_task(reminder_days: list[int] = None) -> dict:
     
     Runs daily at 09:00 Moscow time (configured in celery_config.py).
     Scans all users with ACTIVE subscriptions and creates Notification_Event
-    records for subscriptions expiring in 30 or 7 days (configurable).
+    records for subscriptions expiring in configured days (read from settings).
     
     The task:
     1. Queries users with subscription_status=ACTIVE
-    2. Filters for subscription_end_date in configured days (default: 30, 7)
+    2. Filters for subscription_end_date in configured days (from renewal_reminder_days setting)
     3. Creates Notification_Event records for each reminder
     4. Checks for duplicates before creating (via schedule_renewal_reminders)
     5. Returns execution statistics
     
     Args:
         reminder_days: List of days before expiration to send reminders.
-                      Defaults to [30, 7] if not provided.
+                      If not provided, reads from renewal_reminder_days setting.
     
     Returns:
         Dict with execution statistics:
@@ -198,7 +211,7 @@ def check_upcoming_expirations_task(reminder_days: list[int] = None) -> dict:
     """
     logger.info(
         f"Starting check_upcoming_expirations_task: "
-        f"reminder_days={reminder_days or [30, 7]}"
+        f"reminder_days={reminder_days or 'from_settings'}"
     )
     
     try:

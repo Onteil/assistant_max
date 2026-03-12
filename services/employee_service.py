@@ -235,6 +235,26 @@ async def format_ticket_card(
         if ticket.organization_inn or ticket.gs_keys:
             lines.append("")
         
+        # Delivery method (if available)
+        if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+            delivery_method_names = {
+                "telegram": "💬 В чат",
+                "email": "📧 На Email", 
+                "none": "❌ Не указан"
+            }
+            delivery_method_text = delivery_method_names.get(
+                ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+                str(ticket.delivery_method)
+            )
+            lines.append(f"📦 Способ получения: {delivery_method_text}")
+            
+            # Add delivery email if method is email
+            if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+                if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                    lines.append(f"📧 Email для доставки: {ticket.delivery_email}")
+            
+            lines.append("")
+        
         # Description (if available)
         if ticket.description:
             lines.append(f"📝 Описание: {ticket.description}")
@@ -2419,6 +2439,27 @@ async def format_archived_ticket_details(
             lines.append("<b>🔑 КЛЮЧИ ГС</b>")
             for key in ticket.gs_keys:
                 lines.append(f"• {key.key_number}")
+            lines.append("")
+        
+        # Delivery method (if available)
+        if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+            lines.append("<b>📦 СПОСОБ ПОЛУЧЕНИЯ</b>")
+            delivery_method_names = {
+                "telegram": "💬 В чат",
+                "email": "📧 На Email",
+                "none": "❌ Не указан"
+            }
+            delivery_method_text = delivery_method_names.get(
+                ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+                str(ticket.delivery_method)
+            )
+            lines.append(delivery_method_text)
+            
+            # Add delivery email if method is email
+            if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+                if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                    lines.append(f"Email: {ticket.delivery_email}")
+            
             lines.append("")
         
         # Description

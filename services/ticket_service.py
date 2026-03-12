@@ -533,6 +533,24 @@ async def send_staff_notification(
         # Add created timestamp
         message_text += f"<b>Дата создания:</b> {created_at_str}\n"
         
+        # Add delivery method information
+        if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+            delivery_method_names = {
+                "telegram": "💬 В чат",
+                "email": "📧 На Email",
+                "none": "❌ Не указан"
+            }
+            delivery_method_text = delivery_method_names.get(
+                ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+                str(ticket.delivery_method)
+            )
+            message_text += f"<b>Способ получения:</b> {delivery_method_text}\n"
+            
+            # Add delivery email if method is email
+            if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+                if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                    message_text += f"<b>Email для доставки:</b> {ticket.delivery_email}\n"
+        
         if ticket.description:
             # Truncate long descriptions
             description = ticket.description[:200]

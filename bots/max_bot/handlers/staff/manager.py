@@ -118,6 +118,24 @@ def format_ticket_card_detailed(ticket: Ticket) -> str:
         key_numbers = [key.key_number for key in ticket.gs_keys]
         lines.append(f"<b>🔑 Ключи ГС:</b> {', '.join(key_numbers)}")
     
+    # Delivery method (if available)
+    if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+        delivery_method_names = {
+            "telegram": "💬 В чат",
+            "email": "📧 На Email",
+            "none": "❌ Не указан"
+        }
+        delivery_method_text = delivery_method_names.get(
+            ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+            str(ticket.delivery_method)
+        )
+        lines.append(f"<b>📦 Способ получения:</b> {delivery_method_text}")
+        
+        # Add delivery email if method is email
+        if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+            if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                lines.append(f"<b>📧 Email для доставки:</b> {ticket.delivery_email}")
+    
     lines.append("")
     
     # Description (if available)
