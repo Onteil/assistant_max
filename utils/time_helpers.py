@@ -1,6 +1,7 @@
 """Time formatting utilities for the bot application."""
 
 from datetime import datetime
+from utils.timezone_helpers import get_moscow_now_naive
 
 
 def format_relative_time(event_date: datetime) -> str:
@@ -23,7 +24,7 @@ def format_relative_time(event_date: datetime) -> str:
         >>> format_relative_time(datetime.now() - timedelta(days=5))
         '5 дней назад'
     """
-    now = datetime.utcnow()
+    now = get_moscow_now_naive()
     days_diff = (now - event_date).days
     
     if days_diff == 1:

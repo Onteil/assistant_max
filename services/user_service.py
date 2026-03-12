@@ -11,6 +11,8 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from utils.timezone_helpers import get_moscow_now_naive
+
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -210,7 +212,7 @@ async def upsert_max_messenger_data(
             if existing.max_chat_id != max_chat_id or existing.max_user_id != max_user_id:
                 existing.max_user_id = max_user_id
                 existing.max_chat_id = max_chat_id
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = get_moscow_now_naive()
                 await session.flush()
                 
                 logger.info(
@@ -552,7 +554,7 @@ async def add_user_organization(
             user_organizations.insert().values(
                 user_id=user_id,
                 organization_inn=inn,
-                added_at=datetime.utcnow()
+                added_at=get_moscow_now_naive()
             )
         )
         await session.flush()
@@ -659,7 +661,7 @@ async def add_user_key(
             key_number=key_number,
             user_id=user_id,
             conflict_status=conflict_status,
-            conflict_reported_at=datetime.utcnow() if conflict_status == KeyConflictStatus.PENDING_REVIEW else None
+            conflict_reported_at=get_moscow_now_naive() if conflict_status == KeyConflictStatus.PENDING_REVIEW else None
         )
         
         session.add(gs_key)
@@ -755,7 +757,7 @@ async def _log_action(
             ticket_id=ticket_id,
             staff_id=staff_id,
             action_details=action_details,
-            action_timestamp=datetime.utcnow()
+            action_timestamp=get_moscow_now_naive()
         )
         
         session.add(action_log)

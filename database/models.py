@@ -17,9 +17,11 @@ Base = declarative_base()
 
 
 class TimestampMixin:
-    """Mixin for created_at and updated_at timestamps"""
-    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, onupdate=datetime.datetime.utcnow, nullable=True)
+    """Mixin for created_at and updated_at timestamps in Moscow timezone"""
+    from utils.timezone_helpers import get_moscow_now_naive
+    
+    created_at = Column(DateTime, default=get_moscow_now_naive, nullable=False)
+    updated_at = Column(DateTime, onupdate=get_moscow_now_naive, nullable=True)
 
 
 # ========== Enum Definitions ==========

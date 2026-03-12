@@ -47,6 +47,13 @@ from database.models import (
 )
 from services.escalation_service import create_escalation, get_active_admins
 
+# Import escalation notification utilities
+from bots.tg_bot.utils.escalation_notifications import (
+    calculate_time_elapsed,
+    get_escalation_notification_keyboard,
+    get_escalation_notification_text,
+)
+
 # Use Celery-specific logger
 logger = get_task_logger(__name__)
 
@@ -443,8 +450,8 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
     # Calculate time elapsed
-    from datetime import datetime, timezone
-    elapsed = datetime.now(timezone.utc) - ticket.created_at.replace(tzinfo=timezone.utc)
+    from utils.timezone_helpers import get_moscow_now_naive
+    elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
     
     notification_text = (
@@ -683,8 +690,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
     # Calculate time elapsed
-    from datetime import datetime, timezone
-    elapsed = datetime.now(timezone.utc) - ticket.created_at.replace(tzinfo=timezone.utc)
+    from utils.timezone_helpers import get_moscow_now_naive
+    elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
     
     notification_text = (
@@ -948,13 +955,6 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
             }
         
         # Calculate time elapsed
-        # Import here to avoid circular dependency
-        from bots.tg_bot.utils.escalation_notifications import (
-            calculate_time_elapsed,
-            get_escalation_notification_keyboard,
-            get_escalation_notification_text,
-        )
-        
         time_elapsed = calculate_time_elapsed(ticket.created_at)
         
         # Generate notification text and keyboard using centralized templates

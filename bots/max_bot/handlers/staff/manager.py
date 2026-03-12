@@ -259,6 +259,7 @@ def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: 
     work_mode_display = {
         "regular": "🟢 Рабочее время",
         "reduced": "🟡 Сокращенный режим",
+        "extended": "🟡 Продленное время",
         "non_working": "🔴 Нерабочее время"
     }
     

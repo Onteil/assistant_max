@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Any
 from collections import defaultdict
 
+from utils.timezone_helpers import get_moscow_now_naive
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,7 +66,7 @@ async def verify_admin_access(
                 action_type="UNAUTHORIZED_ACCESS",
                 details={
                     "user_id": user_id,
-                    "timestamp": datetime.utcnow().isoformat()
+                    "timestamp": get_moscow_now_naive().isoformat()
                 }
             )
         
@@ -203,7 +205,7 @@ async def log_admin_action(
             user_id=user_id,
             action_type=action_type,
             details=details,
-            created_at=datetime.utcnow()
+            created_at=get_moscow_now_naive()
         )
         
         session.add(log_entry)
@@ -255,9 +257,9 @@ async def log_api_call(
                 "response": response_data,
                 "duration_ms": duration_ms,
                 "success": success,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": get_moscow_now_naive().isoformat()
             },
-            created_at=datetime.utcnow()
+            created_at=get_moscow_now_naive()
         )
         
         session.add(log_entry)
@@ -350,7 +352,7 @@ def log_rate_limit_violation(user_id: int, action: str) -> None:
     """
     logger.warning(
         f"Rate limit violation: user_id={user_id}, action={action}, "
-        f"timestamp={datetime.utcnow().isoformat()}"
+        f"timestamp={get_moscow_now_naive().isoformat()}"
     )
 
 
@@ -491,7 +493,7 @@ def validate_fsm_state_timeout(
             state_time = state_timestamp
         
         # Check if expired
-        elapsed = datetime.utcnow() - state_time
+        elapsed = get_moscow_now_naive() - state_time
         elapsed_minutes = elapsed.total_seconds() / 60
         
         if elapsed_minutes > timeout_minutes:

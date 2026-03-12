@@ -11,6 +11,8 @@ import logging
 from datetime import date, datetime, time
 from typing import Any
 
+from utils.timezone_helpers import get_moscow_now_naive, format_moscow_datetime
+
 from aiogram import Bot
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -103,7 +105,7 @@ async def create_ticket(
                     ticket_keys.insert().values(
                         ticket_id=ticket.id,
                         key_id=key_id,
-                        added_at=datetime.utcnow()
+                        added_at=get_moscow_now_naive()
                     )
                 )
         
@@ -500,11 +502,8 @@ async def send_staff_notification(
             TicketType.RENEWAL: "🔄 Продление подписки"
         }
         
-        # Format created_at to Moscow timezone
-        from datetime import timezone, timedelta
-        moscow_tz = timezone(timedelta(hours=3))
-        created_at_msk = ticket.created_at.replace(tzinfo=timezone.utc).astimezone(moscow_tz)
-        created_at_str = created_at_msk.strftime("%d.%m.%Y %H:%M МСК")
+        # Format created_at as Moscow time (already stored in Moscow timezone)
+        created_at_str = format_moscow_datetime(ticket.created_at)
         
         message_text = (
             f"🔔 <b>Новое обращение #{ticket.id}</b>\n\n"

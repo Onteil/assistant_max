@@ -4,15 +4,17 @@ After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
 [Service]
-Type=forking
-User=www-data
-Group=www-data
+Type=simple
+User=razrab
+Group=razrab
 WorkingDirectory=/home/razrab/i-tat-bot
 Environment="PATH=/home/razrab/i-tat-bot/venv/bin"
+Environment="PYTHONPATH=/home/razrab/i-tat-bot"
+Environment="TZ=Europe/Moscow"
 ExecStart=/home/razrab/i-tat-bot/venv/bin/celery \
     -A celery_app.celery_config \
     worker \
-    --loglevel=info \
+    --loglevel=debug \
     --pool=solo \
     --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications \
     --concurrency=4 \
@@ -32,7 +34,7 @@ StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+# ProtectHome=true
 ReadWritePaths=/home/razrab/i-tat-bot/media /home/razrab/i-tat-bot/logs /var/run/celery /var/log/celery
 
 # Resource limits

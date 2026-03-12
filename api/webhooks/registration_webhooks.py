@@ -251,8 +251,8 @@ async def registration_status_webhook(
             
             elif payload.support_expires_at:
                 # Backward compatibility: auto-detect status from expiration date
-                from datetime import timezone as tz
-                now_utc = datetime.now(tz.utc)
+                from utils.timezone_helpers import get_moscow_now_naive
+                now_moscow = get_moscow_now_naive()
                 
                 # Strip timezone info to match database column
                 expiration_date = payload.support_expires_at

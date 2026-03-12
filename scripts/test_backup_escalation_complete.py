@@ -14,7 +14,9 @@ Requirements: Backup Manager Escalation Flow
 import asyncio
 import sys
 import os
-from datetime import datetime, timezone
+from datetime import datetime
+
+from utils.timezone_helpers import get_moscow_now_naive
 
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -102,7 +104,7 @@ async def test_no_backup_managers_escalation():
             ticket_status=TicketStatus.NEW,
             escalation_level=0,
             description="Test ticket for no backup managers",
-            created_at=datetime.now(timezone.utc)
+            created_at=get_moscow_now_naive()
         )
         session.add(ticket)
         await session.flush()
@@ -192,7 +194,7 @@ async def test_backup_manager_chain():
             ticket_status=TicketStatus.NEW,
             escalation_level=0,
             description="Test ticket for backup manager chain",
-            created_at=datetime.now(timezone.utc)
+            created_at=get_moscow_now_naive()
         )
         session.add(ticket)
         await session.flush()

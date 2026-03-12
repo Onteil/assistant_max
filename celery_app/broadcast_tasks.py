@@ -12,7 +12,9 @@ import asyncio
 import logging
 import sys
 import os
-from datetime import datetime, timezone
+from datetime import datetime
+
+from utils.timezone_helpers import get_moscow_now_naive
 
 # Add project root to Python path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -330,7 +332,7 @@ async def _process_broadcast_delivery_async(
             
             # Update broadcast status to SENDING
             broadcast.broadcast_status = BroadcastStatus.SENDING
-            broadcast.sent_at = datetime.now(timezone.utc)
+            broadcast.sent_at = get_moscow_now_naive()
             await session.commit()
             
             logger.info(
@@ -410,7 +412,7 @@ async def _process_broadcast_delivery_async(
                     # Update delivery status
                     if result["status"] == "success":
                         delivery.delivery_status = DeliveryStatus.DELIVERED
-                        delivery.delivered_at = datetime.now(timezone.utc)
+                        delivery.delivered_at = get_moscow_now_naive()
                         sent_count += 1
                     else:
                         delivery.delivery_status = DeliveryStatus.FAILED
