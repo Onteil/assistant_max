@@ -996,14 +996,24 @@ async def create_support_ticket(
         from sqlalchemy.orm import selectinload
         await session.refresh(ticket, ["user"])
         
-        # Send notification to appropriate target
-        if routing_info["target_id"]:
+        # Send notification to appropriate target (only in working hours)
+        # In NON_WORKING mode, notifications will be sent by queue task at 9 AM
+        if routing_info["target_id"] and work_mode != WorkMode.NON_WORKING:
             await send_staff_notification(
                 bot,
                 routing_info["target_id"],
                 ticket,
                 routing_info,
                 session
+            )
+            logger.info(
+                f"Staff notification sent immediately: ticket_id={ticket.id}, "
+                f"target_id={routing_info['target_id']}, work_mode={work_mode.value}"
+            )
+        elif routing_info["target_id"]:
+            logger.info(
+                f"Support ticket queued for next working period: ticket_id={ticket.id}, "
+                f"target_id={routing_info['target_id']}, work_mode={work_mode.value}"
             )
         
         # Clear FSM state

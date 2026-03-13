@@ -27,8 +27,9 @@ app = Celery(
         "celery_app.nps_tasks",
         "celery_app.renewal_tasks",
         "celery_app.broadcast_tasks",
-        "celery_app.ticket_notification_tasks"
-    ],  # Автоматически импортирует escalation_tasks.py, nps_tasks.py, renewal_tasks.py, broadcast_tasks.py и ticket_notification_tasks.py
+        "celery_app.ticket_notification_tasks",
+        "celery_app.work_mode_monitor_tasks"
+    ],  # Автоматически импортирует escalation_tasks.py, nps_tasks.py, renewal_tasks.py, broadcast_tasks.py, ticket_notification_tasks.py и work_mode_monitor_tasks.py
 )
 
 # Конфигурация Celery
@@ -67,5 +68,10 @@ app.conf.beat_schedule = {
         "task": "celery_app.ticket_notification_tasks.process_pending_tickets",
         "schedule": crontab(minute=0, hour=9),  # Run daily at 9:00 AM Moscow time (start of work day)
         "options": {"queue": "ticket_notifications"},
+    },
+    "check-work-mode-transition": {
+        "task": "celery_app.work_mode_monitor_tasks.check_work_mode_transition",
+        "schedule": crontab(minute="*/5"),  # Run every 5 minutes to detect work mode changes
+        "options": {"queue": "work_mode_monitor"},
     },
 }

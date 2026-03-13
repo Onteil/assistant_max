@@ -159,49 +159,28 @@ async def handle_backup_escalation_take_over(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
-        # Send confirmation message
-        ticket_type_names = {
-            "invoice": "💰 Счёт",
-            "technical_support": "🛠 ТП",
-            "renewal": "🔄 Продление"
-        }
-        ticket_type = ticket_type_names.get(ticket.ticket_type.value, str(ticket.ticket_type))
-        
-        user_name = ticket.user.full_name if ticket.user else "Неизвестно"
-        user_phone = ticket.user.phone_number if ticket.user else "Не указано"
-        
-        confirmation_text = (
-            f"✅ <b>Заявка #{ticket_id} взята в работу</b>\n\n"
-            f"<b>Тип:</b> {ticket_type}\n"
-            f"<b>Клиент:</b> {user_name}\n"
-            f"<b>Телефон:</b> {user_phone}\n"
+        # Show detailed ticket card with action buttons (like in manager menu)
+        from bots.max_bot.handlers.staff.manager import (
+            format_ticket_card_detailed,
+            get_ticket_action_keyboard
         )
         
-        if ticket.organization:
-            org_text = ticket.organization.inn
-            if ticket.organization.organization_name:
-                org_text += f" ({ticket.organization.organization_name})"
-            confirmation_text += f"<b>Организация:</b> {org_text}\n"
+        # Check if focus mode is enabled
+        current_state = await context.get_state()
+        from bots.max_bot.states import EmployeeStates
+        is_focus_enabled = (current_state == EmployeeStates.in_focus)
         
-        if ticket.gs_keys:
-            keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
-            confirmation_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+        # Format detailed ticket card
+        ticket_card = format_ticket_card_detailed(ticket)
         
-        if ticket.description:
-            desc_preview = ticket.description[:200]
-            if len(ticket.description) > 200:
-                desc_preview += "..."
-            confirmation_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+        # Build action keyboard based on ticket status and focus state
+        keyboard = get_ticket_action_keyboard(ticket, is_focus_enabled)
         
-        confirmation_text += (
-            f"\n<b>Статус:</b> В работе\n"
-            f"<b>Исполнитель:</b> {staff.full_name}\n\n"
-            f"Вы можете начать работу с клиентом."
-        )
-        
+        # Send ticket details with action buttons
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=confirmation_text,
+            text=ticket_card,
+            keyboard=keyboard,
             parse_mode="HTML"
         )
         

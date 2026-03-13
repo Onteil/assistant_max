@@ -211,7 +211,8 @@ async def _process_invoice_ticket(
             ticket=ticket,
             routing_info={
                 "work_mode": "regular",
-                "expected_response_time": "в течение рабочего дня"
+                "expected_response_time": "в течение рабочего дня",
+                "from_queue": True  # Mark as from queue
             },
             session=session
         )
@@ -343,7 +344,8 @@ async def _process_renewal_ticket(
         ticket=ticket,
         routing_info={
             "work_mode": "regular",
-            "expected_response_time": "в течение рабочего дня"
+            "expected_response_time": "в течение рабочего дня",
+            "from_queue": True  # Mark as from queue
         },
         session=session
     )

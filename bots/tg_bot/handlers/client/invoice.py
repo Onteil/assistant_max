@@ -44,6 +44,7 @@ from bots.tg_bot.texts import (
     INVOICE_ADD_NEW_KEY,
     INVOICE_CONFIRMATION,
     INVOICE_CREATED,
+    INVOICE_CREATED_NO_MANAGER,
     INVOICE_ENTER_DESCRIPTION,
     INVOICE_ENTER_EMAIL,
     INVOICE_INN_ADDED,
@@ -1188,10 +1189,9 @@ async def create_invoice_ticket(
             return
         
         # Determine assigned manager (with admin fallback if no manager)
-        assigned_manager_id = await determine_assigned_manager(
+        assigned_manager_id, has_manager = await determine_assigned_manager(
             session,
-            telegram_id,
-            organization_inn,
+            user.id,  # Use internal user.id
             assign_admin_if_no_manager=True  # Auto-assign admin if no manager
         )
         
@@ -1253,14 +1253,24 @@ async def create_invoice_ticket(
                 exc_info=True
             )
         
-        # Send notification to manager if assigned
-        if assigned_manager_id:
+        # Send notification to manager if assigned (only in working hours)
+        # In NON_WORKING mode, notifications will be sent by queue task at 9 AM
+        if assigned_manager_id and work_mode != WorkMode.NON_WORKING:
             await send_staff_notification(
                 bot,
                 assigned_manager_id,
                 ticket,
                 routing_info,
                 session
+            )
+            logger.info(
+                f"Manager notification sent immediately: ticket_id={ticket.id}, "
+                f"manager_id={assigned_manager_id}, work_mode={work_mode.value}"
+            )
+        elif assigned_manager_id:
+            logger.info(
+                f"Invoice ticket queued for next working period: ticket_id={ticket.id}, "
+                f"manager_id={assigned_manager_id}, work_mode={work_mode.value}"
             )
         
         # Clear FSM state
@@ -1269,7 +1279,7 @@ async def create_invoice_ticket(
         # Get manager name and position from employee record
         manager_name = "ваш менеджер"
         manager_position = "Менеджер"
-        if assigned_manager_id:
+        if has_manager and assigned_manager_id:
             from database.models import Staff_Member
             from sqlalchemy import select
             
@@ -1287,13 +1297,22 @@ async def create_invoice_ticket(
             response_time_msg = INVOICE_RESPONSE_TIME_WORKING
         
         # Send success message
-        await message.answer(
-            INVOICE_CREATED.format(
+        # Use different message template based on whether user has assigned manager
+        if has_manager:
+            message_text = INVOICE_CREATED.format(
                 ticket_id=ticket.id,
                 manager_name=manager_name,
                 manager_position=manager_position,
                 response_time_message=response_time_msg
-            ),
+            )
+        else:
+            message_text = INVOICE_CREATED_NO_MANAGER.format(
+                ticket_id=ticket.id,
+                response_time_message=response_time_msg
+            )
+        
+        await message.answer(
+            message_text,
             reply_markup=ReplyKeyboardRemove()
         )
         

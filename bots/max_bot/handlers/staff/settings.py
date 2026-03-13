@@ -281,26 +281,16 @@ async def handle_timeout_settings(
         # Get current timeout values
         timeout_settings = await get_settings_by_category(session, SettingCategory.TIMEOUTS)
         
-        manager_timeout = timeout_settings.get('manager_response_timeout', 10)
-        duty_timeout = timeout_settings.get('duty_taken_timeout', 10)
+        escalation_timeout = timeout_settings.get('manager_response_timeout', 10)
         
         # Build keyboard
         buttons = [
             [
                 KeyboardButton(
-                    text=f"⏱ Таймаут ответа менеджера: {manager_timeout} мин",
+                    text=f"⏱ Таймаут эскалации: {escalation_timeout} мин",
                     payload=SettingsPayload(
                         action="edit_timeout",
                         setting_key="manager_response_timeout"
-                    ).pack()
-                )
-            ],
-            [
-                KeyboardButton(
-                    text=f"⏱ Таймаут взятия в работу: {duty_timeout} мин",
-                    payload=SettingsPayload(
-                        action="edit_timeout",
-                        setting_key="duty_taken_timeout"
                     ).pack()
                 )
             ],
@@ -322,12 +312,12 @@ async def handle_timeout_settings(
         
         timeout_text = (
             "⏱ <b>Настройка таймаутов</b>\n\n"
-            "Настройте время ожидания для обработки заявок.\n\n"
-            f"<b>Таймаут ответа менеджера:</b> {manager_timeout} мин\n"
-            "Время после которого начнется процесс переключения на резервного менеджера 1, "
-            "затем на резервного менеджера 2 (если установлены), и только потом эскалация.\n\n"
-            f"<b>Таймаут взятия в работу дежурной:</b> {duty_timeout} мин\n"
-            "Время ожидания взятия тикета в работу дежурной поддержкой.\n\n"
+            "Настройте время ожидания для эскалации заявок.\n\n"
+            f"<b>Таймаут эскалации:</b> {escalation_timeout} мин\n"
+            "Время ожидания перед эскалацией заявки. Применяется ко всем типам:\n"
+            "• Переключение на резервных менеджеров (если настроены)\n"
+            "• Уведомление администраторов о необработанных заявках\n"
+            "• Эскалация заявок технической поддержки\n\n"
             "Нажмите на параметр для изменения значения."
         )
         
@@ -396,8 +386,7 @@ async def handle_edit_timeout_start(
         
         # Map setting key to display name
         setting_names = {
-            "manager_response_timeout": "таймаута ответа менеджера",
-            "duty_taken_timeout": "таймаута взятия в работу дежурной"
+            "manager_response_timeout": "таймаута эскалации"
         }
         
         setting_name = setting_names.get(setting_key, "таймаута")
@@ -497,26 +486,16 @@ async def handle_timeout_value_input(
             # Get updated timeout settings
             timeout_settings = await get_settings_by_category(session, SettingCategory.TIMEOUTS)
             
-            manager_timeout = timeout_settings.get('manager_response_timeout', 10)
-            duty_timeout = timeout_settings.get('duty_taken_timeout', 10)
+            escalation_timeout = timeout_settings.get('manager_response_timeout', 10)
             
             # Build keyboard
             buttons = [
                 [
                     KeyboardButton(
-                        text=f"⏱ Таймаут ответа менеджера: {manager_timeout} мин",
+                        text=f"⏱ Таймаут эскалации: {escalation_timeout} мин",
                         payload=SettingsPayload(
                             action="edit_timeout",
                             setting_key="manager_response_timeout"
-                        ).pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text=f"⏱ Таймаут взятия в работу: {duty_timeout} мин",
-                        payload=SettingsPayload(
-                            action="edit_timeout",
-                            setting_key="duty_taken_timeout"
                         ).pack()
                     )
                 ],
@@ -539,10 +518,11 @@ async def handle_timeout_value_input(
             timeout_text = (
                 "✅ <b>Таймаут успешно обновлен</b>\n\n"
                 "⏱ <b>Настройка таймаутов</b>\n\n"
-                f"<b>Таймаут ответа менеджера:</b> {manager_timeout} мин\n"
-                "Время после которого начнется процесс переключения на резервных менеджеров, затем эскалация.\n\n"
-                f"<b>Таймаут взятия в работу дежурной:</b> {duty_timeout} мин\n"
-                "Время ожидания взятия тикета в работу дежурной поддержкой.\n\n"
+                f"<b>Таймаут эскалации:</b> {escalation_timeout} мин\n"
+                "Время ожидания перед эскалацией заявки. Применяется ко всем типам:\n"
+                "• Переключение на резервных менеджеров (если настроены)\n"
+                "• Уведомление администраторов о необработанных заявках\n"
+                "• Эскалация заявок технической поддержки\n\n"
                 "Нажмите на параметр для изменения значения."
             )
             
@@ -1585,9 +1565,8 @@ async def handle_reset_timeouts(
         if not admin:
             return
         
-        # Reset both timeout settings
-        for key in ["manager_response_timeout", "duty_taken_timeout"]:
-            await reset_setting(session=session, key=key, admin_id=admin.max_user_id)
+        # Reset timeout setting
+        await reset_setting(session=session, key="manager_response_timeout", admin_id=admin.max_user_id)
         
         # Show updated timeout settings
         await handle_timeout_settings(event, payload, context, session, messenger_adapter)

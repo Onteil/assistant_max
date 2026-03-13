@@ -125,27 +125,39 @@ async def create_ticket(
         )
         
         # Schedule escalation monitoring for NEW tickets
-        # Requirements: FR-1.1.1, FR-1.1.2, NFR-2.2.1
+        # Requirements: FR-1.1.1, FR-1.1.2, NFR-2.2.1, TECH_SPEC 14.2
+        # IMPORTANT: Do NOT schedule escalation in NON_WORKING mode
         if ticket.ticket_status == TicketStatus.NEW:
             try:
-                # Import here to avoid circular dependency
-                from celery_app.escalation_tasks import schedule_escalation_monitoring
+                # Check current work mode - escalation only in REGULAR/EXTENDED modes
+                work_mode = await get_current_work_mode(session)
                 
-                reminder_task_id, escalation_task_id = await schedule_escalation_monitoring(
-                    ticket_id=ticket.id
-                )
-                
-                # Save task IDs to ticket in the same transaction
-                # Note: schedule_escalation_monitoring also saves them, but we ensure
-                # they're saved in this transaction for consistency
-                ticket.escalation_task_reminder_id = reminder_task_id
-                ticket.escalation_task_escalation_id = escalation_task_id
-                
-                logger.info(
-                    f"Escalation monitoring scheduled: ticket_id={ticket.id}, "
-                    f"reminder_task_id={reminder_task_id}, "
-                    f"escalation_task_id={escalation_task_id}"
-                )
+                if work_mode != WorkMode.NON_WORKING:
+                    # Import here to avoid circular dependency
+                    from celery_app.escalation_tasks import schedule_escalation_monitoring
+                    
+                    reminder_task_id, escalation_task_id = await schedule_escalation_monitoring(
+                        ticket_id=ticket.id
+                    )
+                    
+                    # Save task IDs to ticket in the same transaction
+                    # Note: schedule_escalation_monitoring also saves them, but we ensure
+                    # they're saved in this transaction for consistency
+                    ticket.escalation_task_reminder_id = reminder_task_id
+                    ticket.escalation_task_escalation_id = escalation_task_id
+                    
+                    logger.info(
+                        f"Escalation monitoring scheduled: ticket_id={ticket.id}, "
+                        f"work_mode={work_mode.value}, "
+                        f"reminder_task_id={reminder_task_id}, "
+                        f"escalation_task_id={escalation_task_id}"
+                    )
+                else:
+                    # NON_WORKING mode - ticket queued, no escalation
+                    logger.info(
+                        f"Ticket {ticket.id} created in NON_WORKING mode - "
+                        f"escalation not scheduled (will be processed in next working period)"
+                    )
             
             except Exception as e:
                 # NFR-2.2.1: Celery unavailability should not block ticket creation
@@ -160,8 +172,8 @@ async def create_ticket(
                 # Continue - ticket is still created successfully
         
         # Refresh ticket with relationships for notification
-        # This ensures user and gs_keys are loaded before returning
-        await session.refresh(ticket, ["user", "gs_keys"])
+        # This ensures user, gs_keys, and organization are loaded before returning
+        await session.refresh(ticket, ["user", "gs_keys", "organization"])
         
         logger.info(
             f"Ticket created: id={ticket.id}, type={ticket.ticket_type.value}, "
@@ -505,35 +517,57 @@ async def send_staff_notification(
         # Format created_at as Moscow time (already stored in Moscow timezone)
         created_at_str = format_moscow_datetime(ticket.created_at)
         
-        message_text = (
-            f"🔔 <b>Новое обращение #{ticket.id}</b>\n\n"
-            f"<b>Тип:</b> {ticket_type_names.get(ticket.ticket_type, ticket.ticket_type.value)}\n"
-            f"<b>От пользователя:</b> {ticket.user.full_name or ticket.user.phone_number}\n"
-            f"<b>ID пользователя:</b> {ticket.user.tg_user_id or ticket.user.max_user_id}\n"
-        )
+        # Check if this is a queued ticket (sent from queue task)
+        from_queue = routing_info and routing_info.get("from_queue", False)
         
+        # Build formatted message with emoji and structured lists
+        if from_queue:
+            message_text = f"🔔 <b>Новое обращение #{ticket.id}</b>\n"
+            message_text += f"⚠️ <b>ЗАЯВКА ИЗ ОЧЕРЕДИ</b> (создана в нерабочее время)\n\n"
+        else:
+            message_text = f"🔔 <b>Новое обращение #{ticket.id}</b>\n\n"
+        
+        # Ticket type with emoji
+        message_text += f"📋 <b>Тип:</b> {ticket_type_names.get(ticket.ticket_type, ticket.ticket_type.value)}\n"
+        
+        # User information
+        message_text += f"👤 <b>От пользователя:</b> {ticket.user.full_name or ticket.user.phone_number}\n"
+        message_text += f"🆔 <b>ID пользователя:</b> <code>{ticket.user.tg_user_id or ticket.user.max_user_id}</code>\n"
+        
+        # Organization(s) - formatted as numbered list if multiple
         if ticket.organization_inn:
-            message_text += f"<b>Организация:</b> {ticket.organization_inn}\n"
+            # Check if there are multiple organizations (comma-separated)
+            orgs = [org.strip() for org in ticket.organization_inn.split(',') if org.strip()]
+            if len(orgs) > 1:
+                message_text += f"\n🏢 <b>Организации:</b>\n"
+                for idx, org in enumerate(orgs, 1):
+                    message_text += f"   {idx}. <code>{org}</code>\n"
+            else:
+                message_text += f"\n🏢 <b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
         
-        # Add keys if present (safely access relationship)
+        # GS Keys - formatted as numbered list
         try:
             if ticket.gs_keys and len(ticket.gs_keys) > 0:
-                keys_list = ", ".join([key.key_number for key in ticket.gs_keys])
-                message_text += f"<b>Ключи:</b> {keys_list}\n"
+                if len(ticket.gs_keys) > 1:
+                    message_text += f"🔑 <b>Ключи ГС:</b>\n"
+                    for idx, key in enumerate(ticket.gs_keys, 1):
+                        message_text += f"   {idx}. <code>{key.key_number}</code>\n"
+                else:
+                    message_text += f"🔑 <b>Ключ ГС:</b> <code>{ticket.gs_keys[0].key_number}</code>\n"
         except Exception as e:
             logger.warning(f"Failed to access gs_keys for ticket {ticket.id}: {e}")
         
-        # Add email if present (safely access attribute)
+        # Email if present
         try:
             if hasattr(ticket.user, 'email') and ticket.user.email:
-                message_text += f"<b>Email:</b> {ticket.user.email}\n"
+                message_text += f"📧 <b>Email:</b> {ticket.user.email}\n"
         except Exception as e:
             logger.warning(f"Failed to access user email for ticket {ticket.id}: {e}")
         
-        # Add created timestamp
-        message_text += f"<b>Дата создания:</b> {created_at_str}\n"
+        # Created timestamp
+        message_text += f"\n📅 <b>Дата создания:</b> {created_at_str}\n"
         
-        # Add delivery method information
+        # Delivery method
         if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
             delivery_method_names = {
                 "telegram": "💬 В чат",
@@ -544,24 +578,35 @@ async def send_staff_notification(
                 ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
                 str(ticket.delivery_method)
             )
-            message_text += f"<b>Способ получения:</b> {delivery_method_text}\n"
+            message_text += f"📦 <b>Способ получения:</b> {delivery_method_text}\n"
             
             # Add delivery email if method is email
             if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
                 if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
-                    message_text += f"<b>Email для доставки:</b> {ticket.delivery_email}\n"
+                    message_text += f"   └─ <b>Email для доставки:</b> {ticket.delivery_email}\n"
         
+        # Description
         if ticket.description:
             # Truncate long descriptions
             description = ticket.description[:200]
             if len(ticket.description) > 200:
                 description += "..."
-            message_text += f"\n<b>Описание:</b>\n{description}\n"
+            message_text += f"\n📝 <b>Описание:</b>\n{description}\n"
         else:
-            message_text += f"\n<b>Описание:</b> Без описания\n"
+            message_text += f"\n📝 <b>Описание:</b> <i>Без описания</i>\n"
+        
+        # Add user expectation context for queued tickets
+        if from_queue:
+            message_text += f"\n💬 <b>Клиенту сообщено:</b> "
+            if ticket.ticket_type == TicketType.INVOICE:
+                message_text += f"\"Ваш менеджер увидит запрос первым делом в начале рабочего дня\"\n"
+            elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+                message_text += f"\"Техподдержка ответит в начале рабочего дня\"\n"
+            elif ticket.ticket_type == TicketType.RENEWAL:
+                message_text += f"\"Менеджер свяжется с вами в начале рабочего дня\"\n"
         
         if routing_info and routing_info.get("expected_response_time"):
-            message_text += f"\n<b>Ожидаемое время ответа:</b> {routing_info['expected_response_time']}"
+            message_text += f"\n⏱ <b>Ожидаемое время ответа:</b> {routing_info['expected_response_time']}"
         
         # Send notification using the correct chat_id
         await bot.send_message(
@@ -2228,7 +2273,7 @@ async def send_message_to_client_max(
         signature = await get_employee_signature(session, employee_id)
         
         # Format message with signature at top
-        message_with_signature = f"📋 Заявка #{ticket_id}, 👤 {signature}\n\n{message_text}"
+        message_with_signature = f"📋 Заявка #{ticket_id}\n\n 👤 {signature}\n\n{message_text}"
         
         # Get client's MAX chat ID from MAX messenger data table
         client_chat_id = ticket.user.max_messenger_data.max_chat_id

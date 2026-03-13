@@ -72,22 +72,24 @@ def calculate_time_elapsed(created_at: datetime) -> int:
     Вычисляет время, прошедшее с момента создания заявки в минутах.
     
     Args:
-        created_at: Дата и время создания заявки (UTC)
+        created_at: Дата и время создания заявки (MSK, naive datetime)
     
     Returns:
         Количество минут, прошедших с момента создания (округленное вниз)
     
     Examples:
         >>> from datetime import timedelta
-        >>> created = datetime.utcnow() - timedelta(minutes=15, seconds=30)
+        >>> from utils.timezone_helpers import get_moscow_now_naive
+        >>> created = get_moscow_now_naive() - timedelta(minutes=15, seconds=30)
         >>> calculate_time_elapsed(created)
         15
     
     Note:
-        created_at должен быть в UTC (как хранится в БД).
-        Используем datetime.utcnow() для корректного сравнения.
+        created_at должен быть в MSK (как хранится в БД после миграции).
+        Используем get_moscow_now_naive() для корректного сравнения.
     """
-    return int((datetime.utcnow() - created_at).total_seconds() / 60)
+    from utils.timezone_helpers import get_moscow_now_naive
+    return int((get_moscow_now_naive() - created_at).total_seconds() / 60)
 
 
 def format_datetime(dt: datetime) -> str:
@@ -95,24 +97,22 @@ def format_datetime(dt: datetime) -> str:
     Форматирует дату и время для отображения пользователю в MSK.
     
     Args:
-        dt: Объект datetime в UTC (как хранится в БД)
+        dt: Объект datetime в MSK (как хранится в БД после миграции на MSK)
     
     Returns:
-        Строка в формате "ДД.ММ.ГГГГ ЧЧ:ММ" в часовом поясе MSK (UTC+3)
+        Строка в формате "ДД.ММ.ГГГГ ЧЧ:ММ" в часовом поясе MSK
     
     Examples:
-        >>> from datetime import timezone, timedelta
-        >>> dt_utc = datetime(2024, 1, 15, 11, 30)  # 11:30 UTC
-        >>> format_datetime(dt_utc)
-        '15.01.2024 14:30'  # 14:30 MSK (UTC+3)
+        >>> dt_msk = datetime(2024, 1, 15, 14, 30)  # 14:30 MSK
+        >>> format_datetime(dt_msk)
+        '15.01.2024 14:30'  # 14:30 MSK (без изменений)
     
     Note:
-        Конвертирует UTC время в MSK (UTC+3) для отображения пользователю.
+        После миграции на MSK время в БД уже хранится в MSK timezone,
+        поэтому не требуется конвертация.
     """
-    from datetime import timedelta
-    # Конвертируем UTC в MSK (UTC+3)
-    dt_msk = dt + timedelta(hours=3)
-    return dt_msk.strftime('%d.%m.%Y %H:%M')
+    # БД уже хранит время в MSK, просто форматируем
+    return dt.strftime('%d.%m.%Y %H:%M')
 
 
 # ========== Reminder Notification (10 min) ==========
@@ -156,16 +156,23 @@ def get_reminder_notification_text(ticket: Ticket, time_elapsed: int) -> str:
 # ========== Escalation Notification (20 min) ==========
 
 
-def get_escalation_notification_text(ticket: Ticket, time_elapsed: int) -> str:
+def get_escalation_notification_text(
+    ticket: Ticket, 
+    time_elapsed: int,
+    escalation_timeout: int | None = None,
+    has_backup_managers: bool = False
+) -> str:
     """
-    Генерирует текст уведомления администратору об эскалации заявки (20 минут).
+    Генерирует текст уведомления администратору об эскалации заявки.
     
-    Уведомление отправляется всем активным администраторам через 20 минут после
-    создания заявки, если она все еще имеет статус NEW.
+    Уведомление отправляется всем активным администраторам после истечения
+    таймаута эскалации, если заявка все еще имеет статус NEW.
     
     Args:
         ticket: Объект заявки с загруженными relationships (user, assigned_staff)
         time_elapsed: Количество минут, прошедших с создания заявки
+        escalation_timeout: Настроенный таймаут эскалации в минутах (из БД)
+        has_backup_managers: Были ли настроены резервные менеджеры
     
     Returns:
         HTML-форматированный текст уведомления об эскалации
@@ -177,7 +184,7 @@ def get_escalation_notification_text(ticket: Ticket, time_elapsed: int) -> str:
         >>> ticket.user = User(full_name="Петр Петров")
         >>> ticket.assigned_staff = Staff_Member(full_name="Сергей Сергеев")
         >>> ticket.created_at = datetime(2024, 1, 15, 14, 0)
-        >>> text = get_escalation_notification_text(ticket, 20)
+        >>> text = get_escalation_notification_text(ticket, 20, 10, False)
         >>> "ЭСКАЛАЦИЯ" in text
         True
     """
@@ -186,12 +193,32 @@ def get_escalation_notification_text(ticket: Ticket, time_elapsed: int) -> str:
     assigned_name = ticket.assigned_staff.full_name if ticket.assigned_staff else "Не назначен"
     created_time = format_datetime(ticket.created_at)
     
+    # Формируем причину эскалации в зависимости от наличия резервных менеджеров
+    if has_backup_managers:
+        reason = (
+            f"Заявка не была взята в работу в течение {escalation_timeout or 'установленного'} минут. "
+            f"Основной менеджер и резервные менеджеры не ответили."
+        )
+    else:
+        reason = (
+            f"Заявка не была взята в работу в течение {escalation_timeout or 'установленного'} минут. "
+            f"Назначенный менеджер не ответил. Резервные менеджеры не настроены."
+        )
+    
+    # Подсказка об изменении таймаута
+    timeout_hint = (
+        f"\n💡 <i>Таймаут эскалации ({escalation_timeout or '?'} мин) можно изменить в "
+        f"админ-панели → Настройки → Таймауты</i>"
+    ) if escalation_timeout else ""
+    
     return (
         f"🔥 <b>ЭСКАЛАЦИЯ!</b> Заявка <b>#{ticket.id}</b> висит {time_elapsed} мин!\n\n"
+        f"📋 <b>Причина:</b> {reason}\n\n"
         f"Тип: {ticket_type_text}\n"
         f"Клиент: {client_name}\n"
         f"Ответственный: {assigned_name}\n"
-        f"Создана: {created_time}\n\n"
+        f"Создана: {created_time}\n"
+        f"{timeout_hint}\n"
         f"⚠️ Требуется срочное вмешательство!"
     )
 

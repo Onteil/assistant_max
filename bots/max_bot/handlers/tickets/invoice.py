@@ -53,6 +53,7 @@ from bots.max_bot.texts import (
     INVOICE_CONFIRMATION,
     INVOICE_CONFIRM_EMAIL,
     INVOICE_CREATED,
+    INVOICE_CREATED_NO_MANAGER,
     INVOICE_ENTER_DESCRIPTION,
     INVOICE_ENTER_EMAIL,
     INVOICE_INN_ADDED,
@@ -1834,30 +1835,50 @@ async def show_invoice_confirmation(
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
         
-        # Build confirmation message
+        # Build confirmation message with emoji and formatting
         confirmation_text = "📋 <b>Подтверждение заявки на счет</b>\n\n"
         
+        # Organization(s) - formatted as numbered list if multiple
         if selected_inn:
-            confirmation_text += f"<b>Организация:</b> {selected_inn}\n"
+            # Check if there are multiple organizations (comma-separated)
+            orgs = [org.strip() for org in selected_inn.split(',') if org.strip()]
+            if len(orgs) > 1:
+                confirmation_text += "🏢 <b>Организации:</b>\n"
+                for idx, org in enumerate(orgs, 1):
+                    confirmation_text += f"   {idx}. {org}\n"
+            else:
+                confirmation_text += f"🏢 <b>Организация:</b> {selected_inn}\n"
         else:
-            confirmation_text += "<b>Организация:</b> Не указана\n"
+            confirmation_text += "🏢 <b>Организация:</b> Не указана\n"
         
+        # GS Keys - formatted as numbered list if multiple
         if selected_keys:
             # Get key details
             keys = await get_user_keys(session, user_id)
             key_numbers = [k.key_number for k in keys if k.id in selected_keys]
-            confirmation_text += f"<b>Ключи:</b> {', '.join(key_numbers)}\n"
+            if len(key_numbers) > 1:
+                confirmation_text += "🔑 <b>Ключи ГС:</b>\n"
+                for idx, key_num in enumerate(key_numbers, 1):
+                    confirmation_text += f"   {idx}. {key_num}\n"
+            else:
+                confirmation_text += f"🔑 <b>Ключ ГС:</b> {key_numbers[0]}\n"
         else:
-            confirmation_text += "<b>Ключи:</b> Не указаны\n"
+            confirmation_text += "🔑 <b>Ключи:</b> Не указаны\n"
         
-        confirmation_text += f"\n<b>Описание:</b>\n{description}\n"
+        # Description
+        if description and description.strip() and description.strip() != "Без описания":
+            confirmation_text += f"\n📝 <b>Описание:</b>\n{description}\n"
+        else:
+            confirmation_text += "\n📝 <b>Описание:</b> Без описания\n"
         
+        # Delivery method
         if delivery_method == DeliveryMethod.TELEGRAM:
-            confirmation_text += "\n<b>Способ доставки:</b> В чат\n"
+            confirmation_text += "\n📦 <b>Способ доставки:</b> 💬 В чат\n"
         elif delivery_method == DeliveryMethod.EMAIL:
-            confirmation_text += f"\n<b>Способ доставки:</b> На Email ({delivery_email})\n"
+            confirmation_text += f"\n📦 <b>Способ доставки:</b> 📧 На Email\n"
+            confirmation_text += f"   └─ <b>Email:</b> {delivery_email}\n"
         
-        confirmation_text += "\n✅ Подтвердите заявку или заполните заново."
+        confirmation_text += "\n✅ <b>Подтвердите заявку или заполните заново.</b>"
         
         # Send confirmation
         await messenger_adapter.send_message(
@@ -1989,14 +2010,23 @@ async def create_invoice_ticket(
             response_time_message = INVOICE_RESPONSE_TIME_NON_WORKING
         
         # Send success message to user
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=INVOICE_CREATED.format(
+        # Use different message template based on whether user has assigned manager
+        if has_manager:
+            message_text = INVOICE_CREATED.format(
                 ticket_id=ticket.id,
                 manager_name=manager_name,
                 manager_position=manager_position,
                 response_time_message=response_time_message
-            ),
+            )
+        else:
+            message_text = INVOICE_CREATED_NO_MANAGER.format(
+                ticket_id=ticket.id,
+                response_time_message=response_time_message
+            )
+        
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=message_text,
             parse_mode="HTML"
         )
         
@@ -2020,31 +2050,15 @@ async def create_invoice_ticket(
         )
         
         # Send notifications
-        from services.ticket_service import send_staff_notification
+        from services.ticket_service import send_staff_notification, route_ticket
         from services.escalation_service import get_active_admins
         from loaders import max_bot
         
+        # Get routing info for staff notification
+        routing_info = await route_ticket(session, ticket, work_mode)
+        
         if assigned_staff_id:
-            # Send notification to assigned manager or admin
-            notification_sent = await send_staff_notification(
-                bot=max_bot,
-                staff_id=assigned_staff_id,
-                ticket=ticket,
-                session=session
-            )
-            
-            if notification_sent:
-                logger.info(
-                    f"Staff notification sent: ticket_id={ticket.id}, "
-                    f"staff_id={assigned_staff_id}"
-                )
-            else:
-                logger.warning(
-                    f"Failed to send staff notification: ticket_id={ticket.id}, "
-                    f"staff_id={assigned_staff_id}"
-                )
-            
-            # If user had no assigned manager, notify admin about this
+            # If user had no assigned manager, send special notification to admin
             if not has_manager:
                 await _notify_admin_about_unassigned_user(
                     session=session,
@@ -2052,6 +2066,33 @@ async def create_invoice_ticket(
                     user=user,
                     assigned_admin_id=assigned_staff_id
                 )
+            else:
+                # Send standard notification to assigned manager (only in working hours)
+                # In NON_WORKING mode, notifications will be sent by queue task at 9 AM
+                if work_mode != WorkMode.NON_WORKING:
+                    notification_sent = await send_staff_notification(
+                        bot=max_bot,
+                        staff_id=assigned_staff_id,
+                        ticket=ticket,
+                        routing_info=routing_info,
+                        session=session
+                    )
+                    
+                    if notification_sent:
+                        logger.info(
+                            f"Manager notification sent immediately: ticket_id={ticket.id}, "
+                            f"staff_id={assigned_staff_id}, work_mode={work_mode.value}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Failed to send staff notification: ticket_id={ticket.id}, "
+                            f"staff_id={assigned_staff_id}"
+                        )
+                else:
+                    logger.info(
+                        f"Invoice ticket queued for next working period: ticket_id={ticket.id}, "
+                        f"manager_id={assigned_staff_id}, work_mode={work_mode.value}"
+                    )
         else:
             # No manager or admin available - log error
             logger.error(
@@ -2238,8 +2279,21 @@ async def _notify_admin_about_unassigned_user(
         
         notification_text += (
             f"\n💡 <b>Рекомендация:</b> Назначьте пользователю менеджера "
-            f"в админ-панели для автоматической маршрутизации будущих заявок."
+            f"в CRM для автоматической маршрутизации будущих заявок."
         )
+        
+        # Create keyboard with "К заявке" button
+        from bots.max_bot.payloads import ManagerTicketSelectPayload
+        from maxapi.types.attachments.buttons import CallbackButton
+        from maxapi.types.attachments.attachment import ButtonsPayload
+        
+        buttons = [[
+            CallbackButton(
+                text="📋 К заявке",
+                payload=ManagerTicketSelectPayload(ticket_id=ticket.id).pack()
+            )
+        ]]
+        keyboard_payload = ButtonsPayload(buttons=buttons).pack()
         
         # Send notification
         from maxapi import Bot as MAXBot
@@ -2251,7 +2305,8 @@ async def _notify_admin_about_unassigned_user(
         try:
             await max_bot_instance.send_message(
                 chat_id=admin.max_chat_id,
-                text=notification_text
+                text=notification_text,
+                attachments=[keyboard_payload]
             )
             
             logger.info(

@@ -33,7 +33,6 @@ from celery_app.celery_config import app as celery_app
 from constants import (
     TG_BOT_TOKEN,
     AsyncSessionLocal,
-    ESCALATION_REMINDER_TIMEOUT,
 )
 from database.models import (
     Action_Log,
@@ -44,6 +43,7 @@ from database.models import (
     StaffRole,
     Ticket,
     TicketStatus,
+    TicketType,
 )
 from services.escalation_service import create_escalation, get_active_admins
 
@@ -61,11 +61,11 @@ logger = get_task_logger(__name__)
 # ========== Helper Functions ==========
 
 
-async def get_backup_escalation_timeout() -> int:
+async def get_escalation_timeout() -> int:
     """
-    Get backup escalation timeout from system settings.
+    Get escalation timeout from system settings.
     
-    Returns the configured timeout in seconds for backup manager escalation.
+    Returns the configured timeout in seconds for all escalation types.
     Falls back to default 600 seconds (10 minutes) if setting not found.
     
     Returns:
@@ -75,24 +75,24 @@ async def get_backup_escalation_timeout() -> int:
         from services.settings_service import get_setting
         
         async with AsyncSessionLocal() as session:
-            timeout_minutes = await get_setting(session, "backup_escalation_timeout")
+            timeout_minutes = await get_setting(session, "manager_response_timeout")
             
             if timeout_minutes is None:
-                logger.warning("backup_escalation_timeout setting not found, using default 10 minutes")
+                logger.warning("manager_response_timeout setting not found, using default 10 minutes")
                 return 600  # 10 minutes default
             
             timeout_seconds = int(timeout_minutes) * 60
-            logger.debug(f"Using backup escalation timeout: {timeout_minutes} minutes ({timeout_seconds} seconds)")
+            logger.debug(f"Using escalation timeout: {timeout_minutes} minutes ({timeout_seconds} seconds)")
             return timeout_seconds
     
     except Exception as e:
-        logger.error(f"Error getting backup escalation timeout: {e}", exc_info=True)
+        logger.error(f"Error getting escalation timeout: {e}", exc_info=True)
         return 600  # 10 minutes fallback
 
 
-def get_backup_escalation_timeout_sync() -> int:
+def get_escalation_timeout_sync() -> int:
     """
-    Synchronous wrapper for get_backup_escalation_timeout.
+    Synchronous wrapper for get_escalation_timeout.
     
     Used in synchronous Celery task scheduling context.
     
@@ -104,7 +104,7 @@ def get_backup_escalation_timeout_sync() -> int:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            return loop.run_until_complete(get_backup_escalation_timeout())
+            return loop.run_until_complete(get_escalation_timeout())
         finally:
             loop.close()
     except Exception as e:
@@ -266,6 +266,90 @@ def check_ticket_escalation(self, ticket_id: int) -> dict[str, Any]:
         except self.MaxRetriesExceededError:
             logger.error(
                 f"Max retries exceeded for check_ticket_escalation: ticket_id={ticket_id}"
+            )
+            return {
+                "status": "error",
+                "message": "Max retries exceeded",
+                "ticket_id": ticket_id
+            }
+    
+    finally:
+        if loop is not None:
+            try:
+                # Dispose engine connections before closing loop (Windows asyncpg fix)
+                from constants import engine
+                loop.run_until_complete(engine.dispose())
+                loop.close()
+            except Exception as e:
+                logger.warning(f"Error closing event loop: {e}")
+
+
+@shared_task(
+    name="celery_app.escalation_tasks.check_technical_support_ticket",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    queue="escalations"
+)
+def check_technical_support_ticket(self, ticket_id: int) -> dict[str, Any]:
+    """
+    Check technical support ticket status after 10 minutes and notify admin if not taken.
+    
+    This task is scheduled when a TECHNICAL_SUPPORT ticket is created.
+    If the ticket is still NEW after 10 minutes (not taken by any support staff),
+    notifies all active administrators.
+    
+    Preconditions:
+    - ticket_id exists in database
+    - Ticket type is TECHNICAL_SUPPORT
+    - Task scheduled at ticket creation
+    - 10 minutes have passed since ticket creation
+    
+    Postconditions:
+    - If status=NEW: admins notified with reason
+    - If status!=NEW: task completes without action
+    - Returns dict with execution result
+    
+    Args:
+        ticket_id: ID of the ticket to check
+    
+    Returns:
+        Dict with status, message, and additional data:
+        - status: "success", "skipped", or "error"
+        - message: Description of what happened
+        - admins_notified: Number of admins successfully notified
+    
+    Requirements: Technical Support Escalation
+    """
+    logger.info(f"Starting check_technical_support_ticket for ticket_id={ticket_id}")
+    
+    loop = None
+    try:
+        # Create and set new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        result = loop.run_until_complete(_check_technical_support_ticket_async(ticket_id))
+        
+        logger.info(
+            f"check_technical_support_ticket completed: ticket_id={ticket_id}, "
+            f"status={result['status']}"
+        )
+        
+        return result
+    
+    except Exception as exc:
+        logger.error(
+            f"check_technical_support_ticket failed: ticket_id={ticket_id}, error={exc}",
+            exc_info=True
+        )
+        
+        # Retry with exponential backoff
+        try:
+            raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+        except self.MaxRetriesExceededError:
+            logger.error(
+                f"Max retries exceeded for check_technical_support_ticket: ticket_id={ticket_id}"
             )
             return {
                 "status": "error",
@@ -456,7 +540,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     
     notification_text = (
         f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"Заявка не была взята в работу основным менеджером в течение 10 минут.\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу основным менеджером в течение 10 минут\n\n"
         f"Вы назначены резервным менеджером (Резерв 1).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -553,7 +637,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     session.add(action_log)
     
     # Schedule next escalation check in configured timeout
-    timeout_seconds = get_backup_escalation_timeout_sync()
+    timeout_seconds = get_escalation_timeout_sync()
     reminder_task = check_ticket_reminder.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -614,7 +698,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         
         reminder_task = check_ticket_reminder.apply_async(
             args=[ticket.id],
-            countdown=get_backup_escalation_timeout_sync()
+            countdown=get_escalation_timeout_sync()
         )
         ticket.escalation_task_reminder_id = reminder_task.id
         await session.commit()
@@ -696,7 +780,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     
     notification_text = (
         f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"Заявка не была взята в работу основным и первым резервным менеджером.\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу основным и первым резервным менеджером в течение 20 минут\n\n"
         f"Вы назначены вторым резервным менеджером (Резерв 2).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -792,7 +876,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     session.add(action_log)
     
     # Schedule final escalation check in configured timeout
-    timeout_seconds = get_backup_escalation_timeout_sync()
+    timeout_seconds = get_escalation_timeout_sync()
     reminder_task = check_ticket_reminder.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -906,7 +990,8 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
             
             # Set escalation flag on ticket
             ticket.is_escalated = True
-            ticket.escalated_at = datetime.utcnow()
+            from utils.timezone_helpers import get_moscow_now_naive
+            ticket.escalated_at = get_moscow_now_naive()
             
             await session.flush()
             
@@ -957,8 +1042,25 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
         # Calculate time elapsed
         time_elapsed = calculate_time_elapsed(ticket.created_at)
         
+        # Get escalation timeout from settings
+        from services.settings_service import get_setting
+        escalation_timeout = await get_setting(session, "manager_response_timeout")
+        
+        # Check if backup managers were configured
+        has_backup_managers = False
+        if ticket.assigned_staff:
+            has_backup_managers = (
+                ticket.assigned_staff.backup_manager_1_id is not None or 
+                ticket.assigned_staff.backup_manager_2_id is not None
+            )
+        
         # Generate notification text and keyboard using centralized templates
-        notification_text = get_escalation_notification_text(ticket, time_elapsed)
+        notification_text = get_escalation_notification_text(
+            ticket, 
+            time_elapsed,
+            escalation_timeout=escalation_timeout,
+            has_backup_managers=has_backup_managers
+        )
         notification_keyboard = get_escalation_notification_keyboard(
             escalation_id=escalation.id,
             ticket_id=ticket.id
@@ -1208,9 +1310,9 @@ async def schedule_escalation_monitoring(ticket_id: int) -> tuple[str, str]:
     Schedule backup manager escalation monitoring for a new ticket.
     
     New backup manager escalation flow:
-    - 10 min: Escalate to backup_manager_1 (Level 0 → 1)
-    - 20 min: Escalate to backup_manager_2 (Level 1 → 2)  
-    - 30 min: Create escalation record and notify admins (Level 2 → Escalation)
+    - manager_response_timeout: Escalate to backup_manager_1 (Level 0 → 1)
+    - backup_escalation_timeout: Escalate to backup_manager_2 (Level 1 → 2)  
+    - backup_escalation_timeout: Create escalation record and notify admins (Level 2 → Escalation)
     
     Only schedules the first reminder task. Subsequent tasks are scheduled
     by each escalation step to create a chain.
@@ -1221,7 +1323,7 @@ async def schedule_escalation_monitoring(ticket_id: int) -> tuple[str, str]:
     - Celery worker is running and accessible
     
     Postconditions:
-    - First reminder task scheduled in Celery (10 minutes)
+    - First reminder task scheduled in Celery (manager_response_timeout minutes)
     - task_id saved to ticket record in database
     - Returns tuple (reminder_task_id, None) for compatibility
     
@@ -1238,8 +1340,20 @@ async def schedule_escalation_monitoring(ticket_id: int) -> tuple[str, str]:
     Requirements: 1.1, Backup Manager Escalation Flow
     """
     try:
-        # Schedule first reminder task (configured timeout) - will escalate to backup_manager_1
-        timeout_seconds = get_backup_escalation_timeout_sync()
+        # Get escalation timeout from system settings
+        from services.settings_service import get_setting
+        
+        async with AsyncSessionLocal() as session:
+            timeout_minutes = await get_setting(session, "manager_response_timeout")
+            
+            if timeout_minutes is None:
+                logger.warning("manager_response_timeout setting not found, using default 10 minutes")
+                timeout_seconds = 600  # 10 minutes default
+            else:
+                timeout_seconds = int(timeout_minutes) * 60
+                logger.debug(f"Using escalation timeout: {timeout_minutes} minutes ({timeout_seconds} seconds)")
+        
+        # Schedule first reminder task - will escalate to backup_manager_1
         reminder_task = check_ticket_reminder.apply_async(
             args=[ticket_id],
             countdown=timeout_seconds
@@ -1355,3 +1469,484 @@ async def cancel_escalation_monitoring(ticket_id: int) -> bool:
         )
         return False
 
+
+
+
+async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any]:
+    """
+    Async implementation of technical support ticket escalation check.
+    
+    Checks if TECHNICAL_SUPPORT ticket is still NEW after 10 minutes.
+    If yes, notifies all active administrators and sends notification to
+    escalation_duty_channel (group chat) as per TZ section 14.2.
+    
+    Args:
+        ticket_id: ID of the ticket to check
+    
+    Returns:
+        Dict with execution result including:
+        - status: "success", "partial", or "error"
+        - admins_notified: Number of successfully notified admins
+        - admins_failed: Number of failed admin notifications
+        - channels_notified: List of channels that received notification
+        - time_elapsed_minutes: Minutes since ticket creation
+    
+    Requirements: Technical Support Escalation, TZ section 7.1 and 14.2
+    """
+    from database.models import MAX_Messenger_Data
+    from maxapi import Bot as MAXBot
+    from maxapi.enums.parse_mode import ParseMode
+    from maxapi.exceptions import MaxApiError
+    from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+    from maxapi.types import CallbackButton
+    
+    async with AsyncSessionLocal() as session:
+        # Get ticket with relationships
+        stmt = (
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.assigned_staff),
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.organization)
+            )
+        )
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            logger.warning(f"Ticket not found: ticket_id={ticket_id}")
+            return {
+                "status": "error",
+                "message": "Ticket not found",
+                "ticket_id": ticket_id
+            }
+        
+        # Verify ticket type
+        if ticket.ticket_type != TicketType.TECHNICAL_SUPPORT:
+            logger.warning(
+                f"Ticket is not TECHNICAL_SUPPORT: ticket_id={ticket_id}, "
+                f"type={ticket.ticket_type.value}"
+            )
+            return {
+                "status": "skipped",
+                "message": "Not a technical support ticket",
+                "ticket_id": ticket_id
+            }
+        
+        # Check if ticket is still NEW
+        if ticket.ticket_status != TicketStatus.NEW:
+            logger.info(
+                f"Technical support ticket already taken: ticket_id={ticket_id}, "
+                f"status={ticket.ticket_status.value}"
+            )
+            return {
+                "status": "skipped",
+                "message": "Ticket already taken",
+                "ticket_id": ticket_id,
+                "ticket_status": ticket.ticket_status.value
+            }
+        
+        # Get active administrators
+        try:
+            admins = await get_active_admins(session)
+            
+            if not admins:
+                logger.error(
+                    f"No active admins found for technical support escalation: "
+                    f"ticket_id={ticket_id}"
+                )
+                return {
+                    "status": "error",
+                    "message": "No active admins found",
+                    "ticket_id": ticket_id
+                }
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to get active admins: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
+            return {
+                "status": "error",
+                "message": f"Failed to get admins: {str(e)}",
+                "ticket_id": ticket_id
+            }
+        
+        # Calculate time elapsed
+        from utils.timezone_helpers import get_moscow_now_naive
+        elapsed = get_moscow_now_naive() - ticket.created_at
+        minutes = int(elapsed.total_seconds() // 60)
+        
+        # Build notification message with REASON
+        ticket_type_names = {
+            TicketType.INVOICE: "💰 Счёт",
+            TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+            TicketType.RENEWAL: "🔄 Продление"
+        }
+        
+        ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+        user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+        user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+        
+        notification_text = (
+            f"⚠️ <b>Уведомление о заявке техподдержки #{ticket.id}</b>\n\n"
+            f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки в течение 10 минут\n\n"
+            f"<b>Тип:</b> {ticket_type}\n"
+            f"<b>Клиент:</b> {user_name}\n"
+            f"<b>Телефон:</b> {user_phone}\n"
+        )
+        
+        if ticket.organization:
+            org_text = ticket.organization.inn
+            if ticket.organization.organization_name:
+                org_text += f" ({ticket.organization.organization_name})"
+            notification_text += f"<b>Организация:</b> {org_text}\n"
+        
+        if ticket.gs_keys:
+            keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+            notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+        
+        if ticket.description:
+            desc_preview = ticket.description[:150]
+            if len(ticket.description) > 150:
+                desc_preview += "..."
+            notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+        
+        notification_text += (
+            f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
+            f"⚠️ <b>Требуется внимание администратора</b>"
+        )
+        
+        # Send notifications to all admins
+        notified_count = 0
+        failed_count = 0
+        failed_admins = []
+        
+        # Initialize MAX bot
+        max_bot = None
+        
+        try:
+            from constants import MAX_BOT_TOKEN
+            max_bot = MAXBot(
+                token=MAX_BOT_TOKEN,
+                parse_mode=ParseMode.HTML
+            )
+            
+            for admin in admins:
+                try:
+                    # Send via MAX only
+                    if admin.max_user_id:
+                        # Get MAX chat_id from staff member
+                        chat_id = admin.max_chat_id
+                        
+                        if chat_id is None:
+                            logger.error(
+                                f"No MAX chat_id found for admin: admin_id={admin.id}, "
+                                f"max_user_id={admin.max_user_id}"
+                            )
+                            failed_count += 1
+                            failed_admins.append(admin.id)
+                            continue
+                        
+                        # Send via MAX
+                        try:
+                            await max_bot.send_message(
+                                chat_id=chat_id,
+                                text=notification_text
+                            )
+                            
+                            notified_count += 1
+                            logger.info(
+                                f"Admin notified about technical support ticket: "
+                                f"admin_id={admin.id}, max_user_id={admin.max_user_id}, "
+                                f"chat_id={chat_id}, ticket_id={ticket_id}"
+                            )
+                        
+                        except MaxApiError as e:
+                            error_str = str(e).lower()
+                            if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                                logger.warning(
+                                    f"MAX bot blocked by admin: admin_id={admin.id}, "
+                                    f"max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                                )
+                            else:
+                                logger.error(
+                                    f"MAX API error notifying admin: admin_id={admin.id}, "
+                                    f"error={e}"
+                                )
+                            failed_count += 1
+                            failed_admins.append(admin.id)
+                    
+                    else:
+                        logger.warning(
+                            f"Admin has no MAX messenger ID: admin_id={admin.id}"
+                        )
+                        failed_count += 1
+                        failed_admins.append(admin.id)
+                
+                except Exception as e:
+                    failed_count += 1
+                    failed_admins.append(admin.id)
+                    logger.error(
+                        f"Failed to notify admin: admin_id={admin.id}, "
+                        f"ticket_id={ticket_id}, error={str(e)}"
+                    )
+        
+        finally:
+            # Close bot session
+            if max_bot and max_bot.session:
+                await max_bot.session.close()
+        
+        # Send to escalation duty channel (as per TZ section 14.2)
+        channels_notified = []
+        
+        # Helper function to determine messenger type
+        def is_max_chat_id(chat_id: str) -> bool:
+            """Determine if chat_id is for MAX messenger."""
+            try:
+                chat_id_int = int(chat_id)
+                # MAX chat IDs are typically very long negative numbers (> 10^13 in absolute value)
+                return abs(chat_id_int) > 10000000000000
+            except (ValueError, TypeError):
+                return False
+        
+        # Initialize MAX bot for channel notifications
+        max_bot = None
+        
+        try:
+            from constants import MAX_BOT_TOKEN
+            if MAX_BOT_TOKEN:
+                try:
+                    max_bot = MAXBot(
+                        token=MAX_BOT_TOKEN,
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to initialize MAX bot for duty channel: {e}")
+            
+            # Get escalation duty channel setting
+            from services.settings_service import get_setting
+            
+            duty_channel = await get_setting(session, "escalation_duty_channel")
+            if duty_channel:
+                is_max = is_max_chat_id(duty_channel)
+                
+                if is_max and max_bot:
+                    try:
+                        await max_bot.send_message(
+                            chat_id=int(duty_channel),
+                            text=notification_text
+                        )
+                        channels_notified.append("escalation_duty_channel (MAX)")
+                        logger.info(
+                            f"Technical support escalation sent to MAX duty channel: {duty_channel}, "
+                            f"ticket_id={ticket_id}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send technical support escalation to MAX duty channel {duty_channel}: {e}",
+                            exc_info=True
+                        )
+                else:
+                    logger.warning(
+                        f"Cannot send to duty channel {duty_channel}: "
+                        f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
+                    )
+            else:
+                logger.info(
+                    f"No escalation_duty_channel configured for technical support escalation: "
+                    f"ticket_id={ticket_id}"
+                )
+        
+        finally:
+            # Close bot session
+            if max_bot and max_bot.session:
+                await max_bot.session.close()
+        
+        # Determine overall status
+        if notified_count == 0 and not channels_notified:
+            status = "error"
+            message = "Failed to notify any admins or channels"
+        elif notified_count == 0:
+            status = "partial"
+            message = f"Notified {len(channels_notified)} channel(s) but no admins"
+        elif failed_count > 0:
+            status = "success"
+            message = f"{notified_count}/{len(admins)} admins and {len(channels_notified)} channel(s) notified"
+        else:
+            status = "success"
+            message = f"All {notified_count} admins and {len(channels_notified)} channel(s) notified"
+        
+        logger.info(
+            f"Technical support ticket notification completed: ticket_id={ticket_id}, "
+            f"notified={notified_count}, failed={failed_count}, channels={len(channels_notified)}"
+        )
+        
+        return {
+            "status": status,
+            "message": message,
+            "ticket_id": ticket_id,
+            "admins_notified": notified_count,
+            "admins_failed": failed_count,
+            "failed_admins": failed_admins if failed_admins else None,
+            "channels_notified": channels_notified,
+            "time_elapsed_minutes": minutes
+        }
+
+
+async def schedule_technical_support_monitoring(ticket_id: int) -> str:
+    """
+    Schedule technical support ticket monitoring (configurable timeout check).
+    
+    Schedules a task to check if the ticket has been taken by support staff
+    after the configured duty_taken_timeout. If not, notifies administrators.
+    
+    Preconditions:
+    - ticket_id exists in database
+    - Ticket type is TECHNICAL_SUPPORT
+    - Ticket has status NEW
+    - Celery worker is running and accessible
+    
+    Postconditions:
+    - Check task scheduled in Celery (duty_taken_timeout minutes)
+    - task_id saved to ticket record in database
+    - Returns task_id
+    
+    Args:
+        ticket_id: ID of the ticket to monitor
+    
+    Returns:
+        Task ID string
+    
+    Raises:
+        Exception: If Celery is unavailable or task scheduling fails
+    
+    Requirements: Technical Support Escalation
+    """
+    try:
+        # Get escalation timeout from system settings
+        from services.settings_service import get_setting
+        
+        async with AsyncSessionLocal() as session:
+            timeout_minutes = await get_setting(session, "manager_response_timeout")
+            
+            if timeout_minutes is None:
+                logger.warning("manager_response_timeout setting not found, using default 10 minutes")
+                timeout_seconds = 600  # 10 minutes default
+            else:
+                timeout_seconds = int(timeout_minutes) * 60
+                logger.debug(f"Using escalation timeout: {timeout_minutes} minutes ({timeout_seconds} seconds)")
+        
+        # Schedule check task
+        check_task = check_technical_support_ticket.apply_async(
+            args=[ticket_id],
+            countdown=timeout_seconds
+        )
+        
+        logger.info(
+            f"Technical support monitoring scheduled: ticket_id={ticket_id}, "
+            f"task_id={check_task.id}, timeout={timeout_seconds}s"
+        )
+        
+        # Save task ID to ticket
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                select(Ticket).where(Ticket.id == ticket_id)
+            )
+            ticket = result.scalar_one_or_none()
+            
+            if ticket:
+                ticket.escalation_task_reminder_id = check_task.id
+                await session.commit()
+                
+                logger.info(
+                    f"Task ID saved to ticket: ticket_id={ticket_id}, "
+                    f"task_id={check_task.id}"
+                )
+        
+        return check_task.id
+    
+    except Exception as e:
+        logger.error(
+            f"Failed to schedule technical support monitoring: ticket_id={ticket_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def cancel_technical_support_monitoring(ticket_id: int) -> bool:
+    """
+    Cancel scheduled technical support monitoring for a ticket.
+    
+    Cancels the check task if it is still pending.
+    This function is idempotent - calling it multiple times has no adverse effects.
+    
+    Preconditions:
+    - ticket_id exists in database
+    - Ticket has task_id saved (or None if already cancelled)
+    - Task has not yet executed
+    
+    Postconditions:
+    - Task revoked in Celery (if still pending)
+    - task_id cleared in ticket record
+    - Returns True if successful, False if ticket not found
+    
+    Args:
+        ticket_id: ID of the ticket to cancel monitoring for
+    
+    Returns:
+        True if cancellation successful, False if ticket not found
+    
+    Requirements: Technical Support Escalation
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            # Get ticket with task ID
+            result = await session.execute(
+                select(Ticket).where(Ticket.id == ticket_id)
+            )
+            ticket = result.scalar_one_or_none()
+            
+            if not ticket:
+                logger.warning(
+                    f"Cannot cancel monitoring - ticket not found: ticket_id={ticket_id}"
+                )
+                return False
+            
+            # Revoke task if exists
+            if ticket.escalation_task_reminder_id:
+                try:
+                    celery_app.control.revoke(
+                        ticket.escalation_task_reminder_id,
+                        terminate=True
+                    )
+                    logger.info(
+                        f"Technical support monitoring task revoked: "
+                        f"task_id={ticket.escalation_task_reminder_id}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to revoke technical support monitoring task: "
+                        f"task_id={ticket.escalation_task_reminder_id}, error={e}"
+                    )
+            
+            # Clear task ID in database
+            ticket.escalation_task_reminder_id = None
+            await session.commit()
+            
+            logger.info(
+                f"Technical support monitoring cancelled: ticket_id={ticket_id}"
+            )
+            
+            return True
+    
+    except Exception as e:
+        logger.error(
+            f"Failed to cancel technical support monitoring: ticket_id={ticket_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+        return False
