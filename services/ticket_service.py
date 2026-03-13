@@ -828,7 +828,8 @@ async def take_ticket_into_work(
     Take ticket into work.
     
     Changes ticket status from NEW to IN_PROGRESS, stops escalation timer,
-    and logs the action.
+    and logs the action. For TECHNICAL_SUPPORT tickets without assigned staff,
+    assigns the ticket to the staff member taking it.
     
     Args:
         session: Database session
@@ -872,9 +873,16 @@ async def take_ticket_into_work(
             logger.error(error_msg)
             raise ValueError(error_msg)
         
-        # Update ticket status and stop escalation timer
+        # Update ticket status, assign staff (for TECHNICAL_SUPPORT only), and stop escalation timer
         old_status = ticket.ticket_status
+        old_assigned_staff_id = ticket.assigned_staff_id
         ticket.ticket_status = TicketStatus.IN_PROGRESS
+        
+        # For TECHNICAL_SUPPORT tickets, assign to staff member when they take it
+        # For other ticket types (INVOICE, RENEWAL), assigned_staff_id is already set at creation
+        if ticket.ticket_type == TicketType.TECHNICAL_SUPPORT and not ticket.assigned_staff_id:
+            ticket.assigned_staff_id = staff_member.id
+        
         ticket.escalated_at = None
         ticket.updated_at = datetime.utcnow()
         
@@ -892,24 +900,36 @@ async def take_ticket_into_work(
             # Don't fail the operation if cancellation fails
         
         # Log action using internal staff ID
+        action_details = {
+            "old_status": old_status.value,
+            "new_status": TicketStatus.IN_PROGRESS.value,
+            "action": "take_into_work",
+            "messenger": messenger,
+            "messenger_user_id": employee_id
+        }
+        
+        # Include assignment info if ticket was assigned
+        if old_assigned_staff_id != ticket.assigned_staff_id:
+            action_details["old_assigned_staff_id"] = old_assigned_staff_id
+            action_details["new_assigned_staff_id"] = ticket.assigned_staff_id
+        
         await _log_action(
             session=session,
             action_type=ActionType.TICKET_ASSIGNED,
             ticket_id=ticket_id,
             staff_id=staff_member.id,  # Use internal staff ID, not messenger user ID
-            action_details={
-                "old_status": old_status.value,
-                "new_status": TicketStatus.IN_PROGRESS.value,
-                "action": "take_into_work",
-                "messenger": messenger,
-                "messenger_user_id": employee_id
-            }
+            action_details=action_details
         )
         
-        logger.info(
+        # Log with assignment info if changed
+        log_msg = (
             f"Ticket taken into work: ticket_id={ticket_id}, staff_id={staff_member.id}, "
             f"messenger={messenger}, messenger_user_id={employee_id}, old_status={old_status.value}"
         )
+        if old_assigned_staff_id != ticket.assigned_staff_id:
+            log_msg += f", assigned_staff_id={ticket.assigned_staff_id} (was {old_assigned_staff_id})"
+        
+        logger.info(log_msg)
         
         return ticket
     

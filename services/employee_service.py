@@ -90,46 +90,65 @@ async def get_employee_active_tickets(
     ticket_type_filter: str | None = None
 ) -> list[Ticket]:
     """
-    Get all active tickets assigned to employee with optional type filter.
-    
+    Get all active tickets for employee with optional type filter.
+
     Returns tickets with status NEW, IN_PROGRESS, or WAITING_CLIENT,
     ordered by created_at ascending (oldest first).
-    
+
+    Filtering logic:
+    - ADMINISTRATOR role: sees ALL active tickets
+    - TECHNICAL_SUPPORT role with 'technical_support' filter: sees ALL TECHNICAL_SUPPORT tickets
+    - Other roles: sees only tickets assigned to them
+
     Args:
         session: Database session
-        employee_id: Telegram user ID of the employee
+        employee_id: MAX user ID of the employee
         ticket_type_filter: Optional filter ('invoice', 'technical_support', 'renewal', or None for all)
-    
+
     Returns:
         List of active Ticket objects ordered by created_at
-    
+
     Requirements: 1.2
     """
     try:
-        # First, get the staff member record to get their internal ID
+        # First, get the staff member record to get their internal ID and role
         staff_stmt = select(Staff_Member).where(
             Staff_Member.max_user_id == employee_id,
             Staff_Member.is_active == True
         )
         staff_result = await session.execute(staff_stmt)
         staff_member = staff_result.scalar_one_or_none()
-        
+
         if not staff_member:
-            logger.warning(f"No active staff member found for tg_user_id {employee_id}")
+            logger.warning(f"No active staff member found for max_user_id {employee_id}")
             return []
-        
-        # Build query conditions
+
+        # Build query conditions based on role
         conditions = [
-            Ticket.assigned_staff_id == staff_member.id,
             Ticket.ticket_status.in_([
                 TicketStatus.NEW,
                 TicketStatus.IN_PROGRESS,
                 TicketStatus.WAITING_CLIENT
             ])
         ]
-        
-        # Add type filter if specified
-        if ticket_type_filter:
+
+        # ADMINISTRATOR sees all tickets
+        if staff_member.staff_role == StaffRole.ADMINISTRATOR:
+            logger.info(f"Administrator {employee_id} viewing all active tickets")
+        # TECHNICAL_SUPPORT with technical_support filter sees all TECHNICAL_SUPPORT tickets
+        elif (staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT and
+              ticket_type_filter == "technical_support"):
+            logger.info(f"Technical support {employee_id} viewing all TECHNICAL_SUPPORT tickets")
+            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+        # Other roles see only assigned tickets
+        else:
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
+
+        # Add type filter if specified (and not already added above)
+        if ticket_type_filter and not (
+            staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT and
+            ticket_type_filter == "technical_support"
+        ):
             type_map = {
                 "invoice": TicketType.INVOICE,
                 "technical_support": TicketType.TECHNICAL_SUPPORT,
@@ -137,8 +156,8 @@ async def get_employee_active_tickets(
             }
             if ticket_type_filter in type_map:
                 conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        
-        # Now query tickets using the staff member's internal ID
+
+        # Query tickets
         stmt = (
             select(Ticket)
             .where(and_(*conditions))
@@ -149,19 +168,20 @@ async def get_employee_active_tickets(
                 selectinload(Ticket.gs_keys)
             )
         )
-        
+
         result = await session.execute(stmt)
         tickets = result.scalars().all()
-        
+
         logger.info(
             f"Retrieved {len(tickets)} active tickets for employee {employee_id} "
-            f"(staff_id={staff_member.id}, filter={ticket_type_filter})"
+            f"(staff_id={staff_member.id}, role={staff_member.staff_role.value}, filter={ticket_type_filter})"
         )
         return list(tickets)
-        
+
     except Exception as e:
         logger.error(f"Error retrieving active tickets for employee {employee_id}: {e}", exc_info=True)
         raise
+
 
 
 # ========== Ticket Card Formatting ==========
