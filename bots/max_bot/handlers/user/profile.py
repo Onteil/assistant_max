@@ -1340,7 +1340,7 @@ async def process_add_key(
             # Send success message
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADD_KEY_SUCCESS,
+                text=ADD_KEY_SUCCESS.format(key_number=normalized_key),
                 parse_mode="HTML"
             )
         
