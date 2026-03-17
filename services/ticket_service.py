@@ -1214,6 +1214,196 @@ async def close_ticket(
         raise
 
 
+async def close_ticket_with_notification(
+    session: AsyncSession,
+    ticket_id: int,
+    employee_id: int,
+    final_comment: str,
+    messenger_adapter,
+    file_id: str | None = None,
+    file_type: Any | None = None,
+    max_media_type: str | None = None,
+    messenger: str = "max"
+) -> Ticket:
+    """
+    Close ticket with final comment and send notification to client.
+    
+    This function combines ticket closure with client notification.
+    It sends the final comment to the client first, then closes the ticket.
+    
+    Args:
+        session: Database session
+        ticket_id: Ticket ID
+        employee_id: Employee's messenger user ID
+        final_comment: Final comment text
+        messenger_adapter: Messenger adapter for sending notifications
+        file_id: Optional file URL/ID for attachments
+        file_type: Optional file type enum
+        max_media_type: Optional MAX media type (image, file, voice, video, audio)
+        messenger: Messenger type ("telegram" or "max")
+    
+    Returns:
+        Updated Ticket object
+    
+    Raises:
+        ValueError: If ticket not found or staff not found
+        SQLAlchemyError: If database operation fails
+    
+    Requirements: 3.5, 7.3, 14.2
+    """
+    try:
+        # Get ticket with user data for notification
+        from sqlalchemy.orm import selectinload
+        result = await session.execute(
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .options(
+                selectinload(Ticket.user).selectinload(User.max_messenger_data)
+            )
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            error_msg = f"Ticket not found: ticket_id={ticket_id}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Get internal staff ID
+        staff_id = await _get_staff_internal_id(session, employee_id, messenger)
+        
+        # Send final comment to client with closure notification
+        if ticket.user.max_messenger_data:
+            try:
+                # Format closure notification message
+                closure_message = f"✅ <b>Заявка #{ticket_id} закрыта</b>\n\n{final_comment}"
+                
+                # Send final comment to client via MAX
+                await send_message_to_client_max(
+                    messenger_adapter=messenger_adapter,
+                    session=session,
+                    ticket_id=ticket_id,
+                    employee_id=staff_id,  # Use internal staff ID
+                    message_text=closure_message,
+                    file_id=file_id,
+                    file_type=file_type,
+                    max_media_type=max_media_type,
+                    messenger=messenger
+                )
+                
+                logger.info(
+                    f"Final comment sent to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}, has_file={bool(file_id)}"
+                )
+            
+            except Exception as e:
+                logger.error(
+                    f"Failed to send final comment to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}, error={e}",
+                    exc_info=True
+                )
+                # Continue with ticket closure even if notification fails
+        else:
+            logger.warning(
+                f"Client has no MAX messenger data, skipping notification: "
+                f"ticket_id={ticket_id}, user_id={ticket.user.id}"
+            )
+        
+        # Store final comment as message in database
+        await add_ticket_message(
+            session=session,
+            ticket_id=ticket_id,
+            sender_type=SenderType.STAFF,
+            sender_id=employee_id,
+            message_text=final_comment,
+            message_type=MessageType.DOCUMENT if file_id else MessageType.TEXT
+        )
+        
+        # Update ticket status and set closed_at
+        old_status = ticket.ticket_status
+        ticket.ticket_status = TicketStatus.CLOSED
+        ticket.closed_at = datetime.utcnow()
+        ticket.updated_at = datetime.utcnow()
+        
+        # Log action
+        await _log_action(
+            session=session,
+            action_type=ActionType.TICKET_CLOSED,
+            ticket_id=ticket_id,
+            staff_id=staff_id,
+            action_details={
+                "old_status": old_status.value,
+                "final_comment_length": len(final_comment),
+                "has_attachment": bool(file_id),
+                "notification_sent": bool(ticket.user.max_messenger_data)
+            }
+        )
+        
+        logger.info(
+            f"Ticket closed with notification: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, old_status={old_status.value}"
+        )
+        
+        # Trigger NPS survey for TECH_SUPPORT tickets
+        if ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+            try:
+                # Check if survey already scheduled for this ticket (duplicate prevention)
+                from database.models import NPS_Response
+                existing_survey = await session.execute(
+                    select(NPS_Response).where(
+                        and_(
+                            NPS_Response.trigger_event_id == ticket_id,
+                            NPS_Response.survey_type == SurveyType.SERVICE_QUALITY
+                        )
+                    )
+                )
+                if existing_survey.scalar_one_or_none() is None:
+                    # No existing survey, schedule new one
+                    scheduled, reason = await schedule_survey(
+                        session=session,
+                        user_id=ticket.user_id,
+                        survey_type=SurveyType.SERVICE_QUALITY,
+                        trigger_event_id=ticket_id,
+                        event_date=ticket.closed_at
+                    )
+                    
+                    if scheduled:
+                        logger.info(
+                            f"NPS survey scheduled for closed ticket: ticket_id={ticket_id}, "
+                            f"user_id={ticket.user_id}"
+                        )
+                    else:
+                        logger.info(
+                            f"NPS survey suppressed for closed ticket: ticket_id={ticket_id}, "
+                            f"user_id={ticket.user_id}, reason={reason}"
+                        )
+                else:
+                    logger.info(
+                        f"NPS survey already exists for ticket: ticket_id={ticket_id}, "
+                        f"skipping duplicate"
+                    )
+            except Exception as e:
+                # Log error but don't fail ticket closure
+                logger.error(
+                    f"Error scheduling NPS survey for ticket: ticket_id={ticket_id}, "
+                    f"user_id={ticket.user_id}, error={e}",
+                    exc_info=True
+                )
+        
+        return ticket
+    
+    except ValueError as e:
+        logger.error(f"Validation error closing ticket with notification: {e}")
+        raise
+    
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error closing ticket with notification: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, error={e}",
+            exc_info=True
+        )
+        raise
+
+
 async def transfer_ticket(
     session: AsyncSession,
     ticket_id: int,
@@ -2278,6 +2468,19 @@ async def send_message_to_client_max(
         # Get client's MAX chat ID from MAX messenger data table
         client_chat_id = ticket.user.max_messenger_data.max_chat_id
         
+        # Build "Reply to manager" inline keyboard
+        from bots.max_bot.payloads import ReplyToManagerPayload
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        reply_keyboard = Keyboard(
+            buttons=[[
+                KeyboardButton(
+                    text="💬 Ответить менеджеру",
+                    payload=ReplyToManagerPayload(ticket_id=ticket_id).pack()
+                )
+            ]],
+            inline=True
+        )
+        
         # Send message to client via MAX
         try:
             if file_id:
@@ -2322,6 +2525,7 @@ async def send_message_to_client_max(
                             chat_id=client_chat_id,
                             photo_path=local_path,
                             caption=message_with_signature,
+                            keyboard=reply_keyboard,
                             parse_mode="HTML"
                         )
                     else:
@@ -2330,6 +2534,7 @@ async def send_message_to_client_max(
                             chat_id=client_chat_id,
                             document_path=local_path,
                             caption=message_with_signature,
+                            keyboard=reply_keyboard,
                             parse_mode="HTML"
                         )
                     
@@ -2359,6 +2564,7 @@ async def send_message_to_client_max(
                     await messenger_adapter.send_message(
                         chat_id=client_chat_id,
                         text=fallback_text,
+                        keyboard=reply_keyboard,
                         parse_mode="HTML"
                     )
                     logger.info(
@@ -2370,6 +2576,7 @@ async def send_message_to_client_max(
                 await messenger_adapter.send_message(
                     chat_id=client_chat_id,
                     text=message_with_signature,
+                    keyboard=reply_keyboard,
                     parse_mode="HTML"
                 )
                 

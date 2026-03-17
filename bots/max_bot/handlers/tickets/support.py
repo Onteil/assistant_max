@@ -1064,7 +1064,7 @@ async def process_new_key_for_support(
         logger.warning(f"Invalid GS_Key: key={key_number}, error={result}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_KEY}\n\n{result}",
+            text=ERROR_VALIDATION_KEY.format(error_details=result),
             keyboard=get_add_key_keyboard(),
             parse_mode="HTML"
         )

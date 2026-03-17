@@ -446,6 +446,7 @@ async def delete_key(
         if key:
             key_number = key.key_number
             await session.delete(key)
+            await session.flush()
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
@@ -1144,7 +1145,7 @@ async def process_add_inn(
         keyboard = get_cancel_keyboard()
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_INN}\n\n{error_msg}",
+            text=ERROR_VALIDATION_INN.format(error_details=error_msg),
             keyboard=keyboard,
             parse_mode="HTML"
         )
@@ -1174,7 +1175,7 @@ async def process_add_inn(
         # Send success message
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=PROFILE_INN_ADDED,
+            text=PROFILE_INN_ADDED.format(inn=inn),
             parse_mode="HTML"
         )
         
@@ -1255,7 +1256,7 @@ async def process_add_key(
         keyboard = get_cancel_keyboard()
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_KEY}\n\n{result}",
+            text=ERROR_VALIDATION_KEY.format(error_details=result),
             keyboard=keyboard,
             parse_mode="HTML"
         )
@@ -1520,7 +1521,7 @@ async def process_change_email(
             keyboard = get_cancel_keyboard()
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"{ERROR_VALIDATION_EMAIL}\n\n{result}",
+                text=ERROR_VALIDATION_EMAIL.format(error_details=result),
                 keyboard=keyboard,
                 parse_mode="HTML"
             )

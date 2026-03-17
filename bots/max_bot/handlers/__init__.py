@@ -33,6 +33,7 @@ from bots.max_bot.callback_datas import (
 )
 from bots.max_bot.filters import PrivateChatFilter
 from bots.max_bot.payloads import (
+    ReplyToManagerPayload,
     TicketSelectPayload,
     TicketsPaginationPayload,
     ActiveTicketsClosePayload,
@@ -135,6 +136,7 @@ from .user.active_tickets import (
     handle_close_active_tickets,
     handle_ticket_history,
     handle_ticket_history_back,
+    handle_reply_to_manager_callback,
 )
 from .user.messages import route_client_message_to_ticket
 from .user.cancel import cmd_cancel, handle_cancel_button
@@ -878,6 +880,7 @@ def create_user_router() -> Router:
     
     # ========== Active Tickets Callback Handlers ==========
     
+    user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)
     user_router.message_callback(TicketSelectPayload.filter())(handle_select_ticket_callback)
     user_router.message_callback(TicketsPaginationPayload.filter())(handle_tickets_pagination_callback)
     user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
@@ -1046,12 +1049,71 @@ def create_user_router() -> Router:
         )
         
         if not was_routed:
-            # No active ticket - ignore message (or show help)
-            # Don't send any response to avoid spam
-            logger.debug(
-                f"Message from user {event.message.sender.user_id} not routed "
-                f"(no active ticket)"
+            # Check if this is an employee without focus mode
+            await handle_message_without_focus(
+                event=event,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
             )
+            
+            # handle_message_without_focus returns early if user is not staff
+            # If we reach here, it's a client without active ticket
+            
+            # No active ticket - show helpful message
+            chat_id = event.message.recipient.chat_id
+            max_user_id = event.message.sender.user_id
+            
+            logger.info(
+                f"Message from user {max_user_id} not routed (no active ticket) - showing help"
+            )
+            
+            # Check if user is registered
+            from services.user_service import get_user_by_max_id
+            user = await get_user_by_max_id(session, max_user_id)
+            
+            if not user:
+                # Unregistered user
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "👋 Добро пожаловать!\n\n"
+                        "Для начала работы с ботом воспользуйтесь командой /start"
+                    ),
+                    parse_mode="HTML"
+                )
+            else:
+                # Registered user but no active ticket
+                from services.ticket_service import get_user_active_tickets_count
+                active_tickets_count = await get_user_active_tickets_count(session, user.id)
+                
+                if active_tickets_count > 0:
+                    # User has active tickets but didn't select one
+                    await messenger_adapter.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "💬 <b>Чтобы написать сообщение менеджеру:</b>\n\n"
+                            "1️⃣ Воспользуйтесь командой /start для вызова главного меню\n"
+                            "2️⃣ Выберите <b>\"📥 Активные обращения\"</b>\n"
+                            "3️⃣ Выберите нужную заявку\n"
+                            "4️⃣ Отправьте сообщение — оно будет доставлено менеджеру\n\n"
+                            f"У вас {active_tickets_count} активных обращений."
+                        ),
+                        parse_mode="HTML"
+                    )
+                else:
+                    # User has no active tickets
+                    await messenger_adapter.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "📋 <b>У вас нет активных обращений.</b>\n\n"
+                            "Воспользуйтесь командой /start для вызова главного меню и создания новой заявки:\n\n"
+                            "• 💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
+                            "• 🆘 <b>Техподдержка</b> — получить помощь по программе\n"
+                            "• 🔄 <b>Продление</b> — продлить подписку"
+                        ),
+                        parse_mode="HTML"
+                    )
     
     # Register catch-all message handler
     # This will only trigger if no other handler matched
@@ -1131,13 +1193,13 @@ def create_tickets_router() -> Router:
     
     # Cancel handler for adding new INN state
     tickets_router.message_callback(
-        F.callback.payload == '{"action": "cancel"}',
+        RegistrationCancelPayload.filter(),
         InvoiceStates.adding_new_inn
     )(cancel_add_new_inn)
     
     # Cancel handler for adding new key state
     tickets_router.message_callback(
-        F.callback.payload == '{"action": "cancel"}',
+        RegistrationCancelPayload.filter(),
         InvoiceStates.adding_new_key
     )(cancel_add_new_key)
     

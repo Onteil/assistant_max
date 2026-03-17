@@ -2584,7 +2584,7 @@ async def format_ticket_message_history(
         lines = [
             f"💬 ИСТОРИЯ ПЕРЕПИСКИ - Заявка #{ticket.id}",
             f"Всего сообщений: {len(messages)}",
-            "=" * 50,
+            "─" * 29,
             ""
         ]
         
@@ -2631,7 +2631,7 @@ async def format_ticket_message_history(
             
             lines.append("")  # Empty line between messages
         
-        lines.append("=" * 50)
+        lines.append("─" * 29)
         lines.append(f"Конец истории переписки")
         
         return "\n".join(lines)

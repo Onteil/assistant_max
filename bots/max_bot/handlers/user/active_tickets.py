@@ -19,6 +19,7 @@ from bots.max_bot.keyboards.user.active_tickets_kb import (
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
 from bots.max_bot.payloads import (
+    ReplyToManagerPayload,
     TicketSelectPayload,
     TicketsPaginationPayload,
     TicketHistoryPayload,
@@ -484,7 +485,7 @@ async def handle_ticket_history(
         lines = [
             f"📜 <b>История переписки - Заявка #{ticket_id}</b>",
             f"Страница {page + 1} из {total_pages} (сообщений {start_idx + 1}-{end_idx} из {total_messages})",
-            "─" * 30,
+            "─" * 29,
             ""
         ]
         
@@ -531,7 +532,7 @@ async def handle_ticket_history(
             
             lines.append("")  # Empty line between messages
         
-        lines.append("─" * 30)
+        lines.append("─" * 29)
         
         history_text = "\n".join(lines)
         
@@ -715,5 +716,124 @@ async def handle_ticket_history_back(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_reply_to_manager_callback(
+    event: MessageCallback,
+    payload,  # ReplyToManagerPayload
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Reply to manager" button click from manager's message.
+
+    Sets active_ticket_id in FSM so subsequent client messages are routed
+    directly to the manager without needing to open "Active tickets" menu.
+
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification in callbacks
+    - Uses replace_message pattern (delete old + send new)
+    - Does NOT delete the manager's message — only sends a confirmation
+
+    Args:
+        event: MessageCallback event from maxapi
+        payload: ReplyToManagerPayload with ticket_id field (auto-parsed)
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    ticket_id = payload.ticket_id
+
+    logger.info(
+        f"Client clicked 'Reply to manager': max_user_id={max_user_id}, ticket_id={ticket_id}"
+    )
+
+    try:
+        # Verify user exists
+        user = await get_user_by_max_id(session, max_user_id)
+        if not user:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден",
+                parse_mode="HTML"
+            )
+            return
+
+        # Verify ticket exists and belongs to this user
+        ticket = await get_ticket_by_id(session, ticket_id)
+        if not ticket:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена",
+                parse_mode="HTML"
+            )
+            return
+
+        if ticket.user_id != user.id:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к этой заявке",
+                parse_mode="HTML"
+            )
+            return
+
+        # Verify ticket is still active
+        if ticket.ticket_status not in [
+            TicketStatus.NEW,
+            TicketStatus.IN_PROGRESS,
+            TicketStatus.WAITING_CLIENT
+        ]:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ Заявка #{ticket_id} уже закрыта.",
+                parse_mode="HTML"
+            )
+            return
+
+        # Set active_ticket_id in FSM — now all messages will be routed to manager
+        await context.update_data(active_ticket_id=ticket_id)
+
+        # Build "stop reply" keyboard so client can exit reply mode
+        from bots.max_bot.payloads import ActiveTicketsClosePayload
+        stop_keyboard = Keyboard(
+            buttons=[[
+                KeyboardButton(
+                    text="🔙 Выйти из режима ответа",
+                    payload=ActiveTicketsClosePayload().pack()
+                )
+            ]],
+            inline=True
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ <b>Режим ответа активирован</b>\n\n"
+                f"Заявка #{ticket_id}\n\n"
+                f"Теперь все ваши сообщения будут доставляться менеджеру напрямую.\n"
+                f"Отправьте текст, фото, документ или голосовое сообщение."
+            ),
+            keyboard=stop_keyboard,
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"Reply mode activated: max_user_id={max_user_id}, ticket_id={ticket_id}"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error handling reply_to_manager callback: max_user_id={max_user_id}, "
+            f"ticket_id={ticket_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка. Попробуйте позже.",
             parse_mode="HTML"
         )

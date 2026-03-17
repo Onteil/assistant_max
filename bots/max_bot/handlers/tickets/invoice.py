@@ -607,7 +607,7 @@ async def process_new_inn(
         logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_INN}\n\n{error_msg}",
+            text=ERROR_VALIDATION_INN.format(error_details=error_msg),
             parse_mode="HTML"
         )
         return
@@ -1277,7 +1277,7 @@ async def process_new_key(
         logger.warning(f"Invalid GS_Key: key={key_number}, error={result}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_KEY}\n\n{result}",
+            text=ERROR_VALIDATION_KEY.format(error_details=result),
             parse_mode="HTML"
         )
         return
@@ -1743,7 +1743,7 @@ async def process_email(
         logger.warning(f"Invalid email: email={email}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=f"{ERROR_VALIDATION_EMAIL}\n\n{error_msg}",
+            text=ERROR_VALIDATION_EMAIL.format(error_details=error_msg),
             keyboard=get_email_input_keyboard(),
             parse_mode="HTML"
         )

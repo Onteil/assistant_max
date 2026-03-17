@@ -1930,7 +1930,7 @@ async def handle_ticket_action(
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="✅ <b>Закрытие заявки</b>\n\nПожалуйста, введите финальный комментарий для закрытия заявки.",
+                text="✅ <b>Закрытие заявки</b>\n\nПожалуйста, введите финальный комментарий для закрытия заявки.\n\n💡 Вы можете отправить текст, изображение или файл.",
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -2134,17 +2134,21 @@ async def handle_closing_comment_input(
     """
     Handle final comment input for closing ticket.
     
+    Supports text messages and file attachments (images, documents, voice, video, audio).
+    Sends final comment to client and closes the ticket.
+    
     Args:
         event: MessageCreated event
         context: FSM context
         session: Database session
         messenger_adapter: Messenger adapter
     """
-    from services.ticket_service import close_ticket as close_ticket_service
+    from services.ticket_service import close_ticket_with_notification
+    from services.validation_service import classify_file_type
+    from database.models import FileType
     
     chat_id = event.message.recipient.chat_id
     max_user_id = event.message.sender.user_id
-    final_comment = event.message.body.text.strip()
     
     logger.info(f"Closing comment input: max_user_id={max_user_id}")
     
@@ -2171,18 +2175,94 @@ async def handle_closing_comment_input(
             )
             return
         
-        # Get employee's Telegram ID
+        # Get employee's MAX ID
         if not employee.max_user_id:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="❌ Не удалось закрыть заявку. Telegram ID не найден.",
+                text="❌ Не удалось закрыть заявку. MAX ID не найден.",
                 parse_mode="HTML"
             )
             return
         
-        # Close ticket
-        ticket = await close_ticket_service(
-            session, ticket_id, employee.max_user_id, final_comment, messenger="max"
+        # Get final comment text
+        final_comment = event.message.body.text.strip() if event.message.body.text else ""
+        
+        # Check if message has attachments
+        has_attachments = (
+            event.message.body.attachments and 
+            len(event.message.body.attachments) > 0
+        )
+        
+        # Prepare file data if attachments exist
+        file_id = None
+        file_type = None
+        max_media_type = None
+        
+        if has_attachments:
+            # Process first attachment (for simplicity, handle one file per closing comment)
+            attachment = event.message.body.attachments[0]
+            max_media_type = attachment.type
+            
+            # Determine file type based on attachment type
+            if attachment.type == "image":
+                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                file_type = FileType.IMAGE
+                if not final_comment:
+                    final_comment = "📷 Изображение"
+            
+            elif attachment.type == "file":
+                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "document"
+                file_type = classify_file_type(file_name)
+                if not final_comment:
+                    final_comment = f"📎 {file_name}"
+            
+            elif attachment.type == "voice":
+                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                file_type = FileType.OTHER
+                if not final_comment:
+                    final_comment = "🎤 Голосовое сообщение"
+            
+            elif attachment.type == "video":
+                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                file_type = FileType.OTHER
+                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "video.mp4"
+                if not final_comment:
+                    final_comment = f"🎥 {file_name}"
+            
+            elif attachment.type == "audio":
+                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                file_type = FileType.OTHER
+                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "audio.mp3"
+                if not final_comment:
+                    final_comment = f"🎵 {file_name}"
+            
+            else:
+                logger.warning(f"Unknown attachment type: {attachment.type}")
+                file_id = None
+                file_type = None
+                max_media_type = None
+        
+        # Ensure we have some content
+        if not final_comment and not file_id:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Финальный комментарий не может быть пустым.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Close ticket with notification to client
+        ticket = await close_ticket_with_notification(
+            session=session,
+            ticket_id=ticket_id,
+            employee_id=employee.max_user_id,
+            final_comment=final_comment,
+            messenger_adapter=messenger_adapter,
+            file_id=file_id,
+            file_type=file_type,
+            max_media_type=max_media_type,
+            messenger="max"
         )
         
         # Clear FSM state
@@ -2198,7 +2278,7 @@ async def handle_closing_comment_input(
         # Return to active tickets list
         await show_active_tickets(chat_id, max_user_id, session, messenger_adapter, context)
         
-        logger.info(f"Employee {max_user_id} closed ticket {ticket_id}")
+        logger.info(f"Employee {max_user_id} closed ticket {ticket_id} with final comment")
     
     except Exception as e:
         logger.error(
@@ -2631,7 +2711,7 @@ async def handle_manager_ticket_history(
         lines = [
             f"📁 <b>История переписки - Заявка #{ticket_id}</b>",
             f"Страница {page + 1} из {total_pages} (сообщений {start_idx + 1}-{end_idx} из {total_messages})",
-            "─" * 30,
+            "─" * 29,
             ""
         ]
         
@@ -2679,7 +2759,7 @@ async def handle_manager_ticket_history(
             
             lines.append("")  # Empty line between messages
         
-        lines.append("─" * 30)
+        lines.append("─" * 29)
         
         history_text = "\n".join(lines)
         

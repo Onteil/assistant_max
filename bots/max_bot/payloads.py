@@ -40,6 +40,18 @@ from pydantic import field_validator
 # Active Tickets Payloads
 # ============================================================================
 
+class ReplyToManagerPayload(CallbackPayload, prefix='reply_manager'):
+    """Payload for quick reply to manager button in manager messages.
+    
+    Sent alongside every message from manager to client.
+    Clicking it sets active_ticket_id in FSM so client can reply directly.
+    
+    Fields:
+        ticket_id: ID of the ticket to reply to
+    """
+    ticket_id: int
+
+
 class TicketSelectPayload(CallbackPayload, prefix='select_ticket'):
     """Payload for ticket selection in active tickets view.
     
