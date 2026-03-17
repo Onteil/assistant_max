@@ -840,7 +840,6 @@ def create_user_router() -> Router:
     from bots.max_bot.states import EmployeeStates
     
     user_router.message_created(
-        F.message.body.text,
         EmployeeStates.manager_closing_ticket
     )(handle_closing_comment_input)
     

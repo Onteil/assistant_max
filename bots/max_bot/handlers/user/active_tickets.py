@@ -722,7 +722,7 @@ async def handle_ticket_history_back(
 
 async def handle_reply_to_manager_callback(
     event: MessageCallback,
-    payload,
+    payload: ReplyToManagerPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
