@@ -722,7 +722,7 @@ async def handle_ticket_history_back(
 
 async def handle_reply_to_manager_callback(
     event: MessageCallback,
-    payload,  # ReplyToManagerPayload
+    payload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
@@ -750,7 +750,8 @@ async def handle_reply_to_manager_callback(
     ticket_id = payload.ticket_id
 
     logger.info(
-        f"Client clicked 'Reply to manager': max_user_id={max_user_id}, ticket_id={ticket_id}"
+        f"handle_reply_to_manager_callback called: max_user_id={max_user_id}, "
+        f"ticket_id={ticket_id}, payload_type={type(payload)}"
     )
 
     try:
@@ -796,6 +797,7 @@ async def handle_reply_to_manager_callback(
             return
 
         # Set active_ticket_id in FSM — now all messages will be routed to manager
+        await context.clear()
         await context.update_data(active_ticket_id=ticket_id)
 
         # Build "stop reply" keyboard so client can exit reply mode

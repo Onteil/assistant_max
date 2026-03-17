@@ -1287,7 +1287,8 @@ async def close_ticket_with_notification(
                     file_id=file_id,
                     file_type=file_type,
                     max_media_type=max_media_type,
-                    messenger=messenger
+                    messenger=messenger,
+                    include_reply_button=False  # No reply button for final comments
                 )
                 
                 logger.info(
@@ -2401,7 +2402,8 @@ async def send_message_to_client_max(
     file_id: str | None = None,
     file_type: Any | None = None,
     max_media_type: str | None = None,
-    messenger: str = "max"
+    messenger: str = "max",
+    include_reply_button: bool = True
 ) -> Any:
     """
     Send message from employee to client via MAX messenger.
@@ -2425,6 +2427,7 @@ async def send_message_to_client_max(
         file_type: FileType enum value (optional, required if file_id provided)
         max_media_type: MAX media type (image, file, voice, video, audio)
         messenger: Messenger type ("max")
+        include_reply_button: Whether to include "Reply to manager" button (default: True)
     
     Returns:
         Created Message object
@@ -2468,18 +2471,20 @@ async def send_message_to_client_max(
         # Get client's MAX chat ID from MAX messenger data table
         client_chat_id = ticket.user.max_messenger_data.max_chat_id
         
-        # Build "Reply to manager" inline keyboard
-        from bots.max_bot.payloads import ReplyToManagerPayload
-        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-        reply_keyboard = Keyboard(
-            buttons=[[
-                KeyboardButton(
-                    text="💬 Ответить менеджеру",
-                    payload=ReplyToManagerPayload(ticket_id=ticket_id).pack()
-                )
-            ]],
-            inline=True
-        )
+        # Build "Reply to manager" inline keyboard (only if requested)
+        reply_keyboard = None
+        if include_reply_button:
+            from bots.max_bot.payloads import ReplyToManagerPayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            reply_keyboard = Keyboard(
+                buttons=[[
+                    KeyboardButton(
+                        text="💬 Ответить менеджеру",
+                        payload=ReplyToManagerPayload(ticket_id=ticket_id).pack()
+                    )
+                ]],
+                inline=True
+            )
         
         # Send message to client via MAX
         try:

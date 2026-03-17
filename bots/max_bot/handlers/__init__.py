@@ -880,12 +880,12 @@ def create_user_router() -> Router:
     
     # ========== Active Tickets Callback Handlers ==========
     
-    user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)
     user_router.message_callback(TicketSelectPayload.filter())(handle_select_ticket_callback)
     user_router.message_callback(TicketsPaginationPayload.filter())(handle_tickets_pagination_callback)
     user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
     user_router.message_callback(TicketHistoryPayload.filter())(handle_ticket_history)
     user_router.message_callback(TicketHistoryBackPayload.filter())(handle_ticket_history_back)
+    user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)
 
     # ========== Profile Management Handlers ==========
     
