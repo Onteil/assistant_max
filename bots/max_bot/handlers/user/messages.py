@@ -374,7 +374,10 @@ async def handle_client_message_to_ticket_max(
                         
                         # Send message to manager using max_chat_id
                         # If there's a file attachment, download and forward it
-                        if file_id and message_type in [MessageType.PHOTO, MessageType.DOCUMENT, MessageType.VIDEO]:
+                        if file_id and message_type in [
+                            MessageType.PHOTO, MessageType.DOCUMENT,
+                            MessageType.VIDEO, MessageType.VOICE
+                        ]:
                             try:
                                 # Ensure temp directory exists
                                 temp_dir = Path("media/temp")
@@ -399,7 +402,8 @@ async def handle_client_message_to_ticket_max(
                                         caption=context_text,
                                         parse_mode="HTML"
                                     )
-                                elif message_type in [MessageType.DOCUMENT, MessageType.VIDEO]:
+                                else:
+                                    # Document, video, voice — all as document
                                     await messenger_adapter.send_document(
                                         chat_id=max_data.max_chat_id,
                                         document_path=local_path,
@@ -427,7 +431,7 @@ async def handle_client_message_to_ticket_max(
                                 fallback_text = (
                                     f"{context_text}\n\n"
                                     f"⚠️ Не удалось переслать файл автоматически.\n"
-                                    f"📎 Ссылка для скачивания файла:\n{file_id}"
+                                    f"📎 Ссылка для скачивания:\n{file_id}"
                                 )
                                 await messenger_adapter.send_message(
                                     chat_id=max_data.max_chat_id,
@@ -435,11 +439,7 @@ async def handle_client_message_to_ticket_max(
                                     parse_mode="HTML"
                                 )
                         else:
-                            # Text message or voice - send as text
-                            # For voice messages, include the URL in the message
-                            if message_type == MessageType.VOICE and file_id:
-                                context_text += f"\n\n🔗 Ссылка для скачивания голосового сообщения:\n{file_id}"
-                            
+                            # Text message — send as text
                             await messenger_adapter.send_message(
                                 chat_id=max_data.max_chat_id,
                                 text=context_text,

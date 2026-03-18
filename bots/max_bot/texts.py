@@ -44,6 +44,8 @@ from bots.tg_bot.texts import (
     ADD_KEY_CONFLICT,
     PROFILE_CHANGE_PHONE_PROMPT,
     PROFILE_CHANGE_PHONE_SUBMITTED,
+    PROFILE_PHONE_CHANGE_PROMPT,
+    PROFILE_PHONE_CHANGE_SUBMITTED,
     PROFILE_NOTIFICATIONS_TOGGLED,
     PROFILE_NOTIFICATIONS_ENABLED_DESC,
     PROFILE_NOTIFICATIONS_DISABLED_DESC,
@@ -341,7 +343,7 @@ INVOICE_NON_WORKING_HOURS_MESSAGE = """
 
 📅 <b>График работы специалистов:</b> Пн-Пт: 08:00-17:00
 
-Ваш менеджер увидит заявку первым делом утром и пришлет счет. Спасибо за понимание! 😊
+Ваш менеджер увидит заявку первым делом утром и свяжется с вами. Спасибо за понимание! 😊
 """
 
 SUPPORT_NON_WORKING_HOURS_MESSAGE = """

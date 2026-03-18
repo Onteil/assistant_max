@@ -1826,8 +1826,8 @@ async def handle_confirm_deactivate(
         
         # Count tickets to reassign
         tickets_stmt = select(Ticket).where(
-            Ticket.assigned_to == payload.employee_id,
-            Ticket.status.in_([TicketStatus.IN_PROGRESS, TicketStatus.PENDING])
+            Ticket.assigned_staff_id == payload.employee_id,
+            Ticket.ticket_status.in_([TicketStatus.IN_PROGRESS, TicketStatus.NEW])
         )
         tickets_result = await session.execute(tickets_stmt)
         tickets = tickets_result.scalars().all()
@@ -1835,8 +1835,8 @@ async def handle_confirm_deactivate(
         
         # Reassign tickets to NEW status and remove assignment
         for ticket in tickets:
-            ticket.status = TicketStatus.NEW
-            ticket.assigned_to = None
+            ticket.ticket_status = TicketStatus.NEW
+            ticket.assigned_staff_id = None
         
         # Deactivate employee
         employee.is_active = False
@@ -3186,8 +3186,8 @@ async def handle_transfer_ticket_start(
         available_stmt = select(Staff_Member).where(
             Staff_Member.is_active == True
         )
-        if ticket.assigned_to:
-            available_stmt = available_stmt.where(Staff_Member.id != ticket.assigned_to)
+        if ticket.assigned_staff_id:
+            available_stmt = available_stmt.where(Staff_Member.id != ticket.assigned_staff_id)
         
         available_stmt = available_stmt.order_by(Staff_Member.full_name)
         available_result = await session.execute(available_stmt)
@@ -3343,9 +3343,9 @@ async def handle_transfer_ticket_confirm(
             return
         
         # Transfer ticket
-        old_assignee_id = ticket.assigned_to
-        ticket.assigned_to = payload.target_employee_id
-        ticket.status = TicketStatus.IN_PROGRESS
+        old_assignee_id = ticket.assigned_staff_id
+        ticket.assigned_staff_id = payload.target_employee_id
+        ticket.ticket_status = TicketStatus.IN_PROGRESS
         await session.commit()
         
         # Log action

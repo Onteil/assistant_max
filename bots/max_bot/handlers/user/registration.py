@@ -1197,6 +1197,17 @@ async def process_key_conflict_choice(
             
             logger.info(f"GS_Key added with PENDING_REVIEW: user_id={user_id}, key={key_number}")
             
+            # Notify administrators about key conflict
+            try:
+                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+                await notify_admins_key_conflict(session, user_id, key_number)
+                logger.info(f"Key conflict notification sent for user_id={user_id}, key={key_number}")
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",
+                    exc_info=True
+                )
+            
             # Submit registration
             await submit_registration(context, session, messenger_adapter, chat_id, user_id)
     

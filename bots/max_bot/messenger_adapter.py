@@ -491,9 +491,8 @@ class MAXMessengerAdapter(IMessengerAdapter):
             # Ensure destination is within media directory
             dest_path = Path(destination)
             if not dest_path.is_absolute():
-                # If relative path, make it relative to media directory
-                media_dir = Path("media")
-                dest_path = media_dir / dest_path
+                # Use path as-is (callers already include media/ prefix if needed)
+                pass
 
             # Ensure destination directory exists
             dest_path.parent.mkdir(parents=True, exist_ok=True)

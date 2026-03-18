@@ -574,15 +574,15 @@ async def process_problem_description(
             logger.info(f"Problem description stored: user_id={user_id}, length={len(text)}")
         
         # Handle photo attachment
-        if hasattr(event.message, 'attachments') and event.message.attachments:
-            for attachment in event.message.attachments:
-                if attachment.type == "photo":
+        if event.message.body and event.message.body.attachments:
+            for attachment in event.message.body.attachments:
+                if attachment.type == "image":
                     # Upload photo to MAX API
                     photo_url = attachment.payload.url
                     caption = event.message.body.text if event.message.body else None
                     
                     attachments.append({
-                        "type": "photo",
+                        "type": "image",
                         "url": photo_url,
                         "caption": caption
                     })
@@ -625,7 +625,9 @@ async def process_problem_description(
             await context.update_data(attachments=attachments)
         
         # Check if we have description or attachments
-        problem_description = data.get("problem_description")
+        # Re-read from context to get updated values
+        updated_data = await context.get_data()
+        problem_description = updated_data.get("problem_description")
         if not problem_description and not attachments:
             # Still waiting for description
             return
@@ -1184,6 +1186,18 @@ async def process_new_key_for_support(
         
         logger.info(f"GS_Key added: user_id={user_id}, key={normalized_key}, conflict={conflict_status.value}")
         
+        # Notify administrators if key conflict detected
+        if conflict_status == KeyConflictStatus.PENDING_REVIEW:
+            try:
+                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+                await notify_admins_key_conflict(session, user_id, normalized_key)
+                logger.info(f"Key conflict notification sent for user_id={user_id}, key={normalized_key}")
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",
+                    exc_info=True
+                )
+        
         # Return to key context selection state
         await context.set_state(SupportStates.selecting_key_context)
         
@@ -1226,6 +1240,89 @@ async def process_new_key_for_support(
 
 
 # ========== Support Ticket Creation ==========
+
+
+async def _forward_attachments_to_staff(
+    messenger_adapter: MAXMessengerAdapter,
+    session: AsyncSession,
+    ticket_id: int,
+    staff_chat_id: int,
+    attachments: list,
+    user_name: str
+) -> None:
+    """
+    Forward FSM attachments (photo/voice/document) to a staff member's chat.
+
+    Called after send_staff_notification to deliver files that were attached
+    by the client during the support flow description step.
+    """
+    import uuid
+    from pathlib import Path
+
+    if not attachments:
+        return
+
+    for attachment in attachments:
+        att_type = attachment.get("type")
+        file_url = attachment.get("url")
+
+        if not file_url:
+            continue
+
+        caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
+
+        try:
+            temp_dir = Path("media/temp")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            if att_type == "image":
+                ext = ".jpg"
+                unique_name = f"support_{ticket_id}_{uuid.uuid4()}{ext}"
+                local_path = await messenger_adapter.download_file(
+                    file_url=file_url,
+                    destination=f"media/temp/{unique_name}"
+                )
+                await messenger_adapter.send_photo(
+                    chat_id=staff_chat_id,
+                    photo_path=local_path,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            elif att_type in ("voice", "file", "document", "video"):
+                file_name = attachment.get("file_name", "file")
+                ext = Path(file_name).suffix or ".bin"
+                unique_name = f"support_{ticket_id}_{uuid.uuid4()}{ext}"
+                local_path = await messenger_adapter.download_file(
+                    file_url=file_url,
+                    destination=f"media/temp/{unique_name}"
+                )
+                await messenger_adapter.send_document(
+                    chat_id=staff_chat_id,
+                    document_path=local_path,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            else:
+                logger.warning(f"Unknown attachment type for forwarding: {att_type}")
+                continue
+
+            # Clean up temp file
+            try:
+                Path(local_path).unlink()
+            except Exception:
+                pass
+
+            logger.info(
+                f"Attachment forwarded to staff: ticket_id={ticket_id}, "
+                f"staff_chat_id={staff_chat_id}, type={att_type}"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Failed to forward attachment to staff: ticket_id={ticket_id}, "
+                f"type={att_type}, error={e}",
+                exc_info=True
+            )
 
 
 async def create_support_ticket(
@@ -1659,6 +1756,65 @@ async def create_support_ticket(
                 f"Ticket queued for next working period: ticket_id={ticket.id}, "
                 f"work_mode={work_mode.value}"
             )
+        
+        # Forward attachments to all notified staff (if any)
+        if attachments and work_mode != WorkMode.NON_WORKING:
+            from database.models import MAX_Messenger_Data, Staff_Member, StaffRole
+            from sqlalchemy import select as sa_select, and_ as sa_and_
+            
+            # Collect staff IDs that were notified
+            notified_staff_ids: list[int] = []
+            
+            if work_mode == WorkMode.REGULAR:
+                if has_support_staff:
+                    stmt = sa_select(Staff_Member).where(
+                        sa_and_(
+                            Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
+                            Staff_Member.is_active == True,
+                            Staff_Member.max_user_id.isnot(None)
+                        )
+                    )
+                    result = await session.execute(stmt)
+                    notified_staff_ids = [s.id for s in result.scalars().all()]
+                elif assigned_staff_id:
+                    notified_staff_ids = [assigned_staff_id]
+            elif work_mode == WorkMode.EXTENDED:
+                if assigned_staff_id:
+                    notified_staff_ids = [assigned_staff_id]
+            
+            user_name = user.full_name or user.phone_number or "Клиент"
+            
+            for sid in notified_staff_ids:
+                try:
+                    stmt_staff = sa_select(Staff_Member).where(Staff_Member.id == sid)
+                    res_staff = await session.execute(stmt_staff)
+                    staff_member = res_staff.scalar_one_or_none()
+                    
+                    if not staff_member or not staff_member.max_user_id:
+                        continue
+                    
+                    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == staff_member.max_user_id
+                    )
+                    res_chat = await session.execute(stmt_chat)
+                    staff_chat_id = res_chat.scalar_one_or_none()
+                    
+                    if not staff_chat_id:
+                        continue
+                    
+                    await _forward_attachments_to_staff(
+                        messenger_adapter=messenger_adapter,
+                        session=session,
+                        ticket_id=ticket.id,
+                        staff_chat_id=staff_chat_id,
+                        attachments=attachments,
+                        user_name=user_name
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to forward attachments to staff {sid}: {e}",
+                        exc_info=True
+                    )
     
     except Exception as e:
         logger.error(
@@ -1896,11 +2052,6 @@ async def notify_manager_about_duplicate_renewal(
         from database.models import Staff_Member
         from sqlalchemy import select
         
-        # Get assigned staff member
-        if not existing_ticket.assigned_staff_id:
-            logger.warning(f"No assigned staff for renewal ticket {existing_ticket.id}")
-            return
-        
         # Load ticket relationships for proper formatting
         from sqlalchemy.orm import selectinload
         stmt = select(Ticket).where(Ticket.id == existing_ticket.id).options(
@@ -1915,14 +2066,34 @@ async def notify_manager_about_duplicate_renewal(
             logger.warning(f"Ticket not found: {existing_ticket.id}")
             return
         
-        stmt = select(Staff_Member).where(Staff_Member.id == existing_ticket.assigned_staff_id)
-        result = await session.execute(stmt)
-        staff_member = result.scalar_one_or_none()
+        # Try assigned staff first, fallback to any admin with max_chat_id
+        staff_member = None
+        if existing_ticket.assigned_staff_id:
+            stmt = select(Staff_Member).where(Staff_Member.id == existing_ticket.assigned_staff_id)
+            result = await session.execute(stmt)
+            candidate = result.scalar_one_or_none()
+            if candidate and candidate.max_chat_id:
+                staff_member = candidate
+            else:
+                logger.warning(
+                    f"Assigned staff not found or no MAX chat ID: "
+                    f"staff_id={existing_ticket.assigned_staff_id}, falling back to admin"
+                )
         
-        if not staff_member or not staff_member.max_chat_id:
-            logger.warning(
-                f"Staff member not found or no MAX chat ID: "
-                f"staff_id={existing_ticket.assigned_staff_id}"
+        if not staff_member:
+            # Fallback: find any admin with max_chat_id
+            from database.models import StaffRole
+            stmt = select(Staff_Member).where(
+                Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+                Staff_Member.max_chat_id.isnot(None)
+            ).limit(1)
+            result = await session.execute(stmt)
+            staff_member = result.scalar_one_or_none()
+        
+        if not staff_member:
+            logger.error(
+                f"No staff available to notify about duplicate renewal: "
+                f"ticket_id={existing_ticket.id}"
             )
             return
         

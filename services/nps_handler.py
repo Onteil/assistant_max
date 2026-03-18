@@ -296,7 +296,7 @@ def format_thank_you_message() -> str:
     
     Requirements: 4.5, 11.5
     """
-    return "🙏 Спасибо за ваш отзыв! Ваше мнение помогает нам становиться лучше."
+    return "Ваше мнение помогает нам становиться лучше."
 
 
 async def notify_staff_about_low_rating(

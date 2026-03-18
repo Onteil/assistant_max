@@ -55,7 +55,7 @@ async def count_phone_changes(session: AsyncSession) -> int:
         stmt = select(func.count(Ticket.id)).where(
             and_(
                 Ticket.ticket_type == TicketType.PHONE_CHANGE,
-                Ticket.status == TicketStatus.OPEN
+                Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS])
             )
         )
         result = await session.execute(stmt)

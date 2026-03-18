@@ -308,7 +308,7 @@ async def approve_phone_change(
         
         # Update ticket status
         from database.models import TicketStatus
-        ticket.status = TicketStatus.CLOSED
+        ticket.ticket_status = TicketStatus.CLOSED
         ticket.resolution_comment = f"Номер телефона изменен с {old_phone} на {new_phone}"
         
         await session.commit()
@@ -390,7 +390,7 @@ async def reject_phone_change(
         new_phone = ticket.new_phone
         
         # Update ticket status
-        ticket.status = TicketStatus.CLOSED
+        ticket.ticket_status = TicketStatus.CLOSED
         ticket.resolution_comment = f"Запрос на смену номера отклонен. Причина: {reason}"
         
         await session.commit()

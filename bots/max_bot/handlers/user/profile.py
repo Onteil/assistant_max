@@ -1423,6 +1423,17 @@ async def process_add_key(
                 f"KEY_CONFLICT ticket created: ticket_id={ticket.id}, key={normalized_key}"
             )
             
+            # Notify administrators about key conflict
+            try:
+                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+                await notify_admins_key_conflict(session, user.id, normalized_key)
+                logger.info(f"Key conflict notification sent for user_id={user.id}, key={normalized_key}")
+            except Exception as notify_error:
+                logger.error(
+                    f"Failed to send key conflict notification for user_id={user.id}: {notify_error}",
+                    exc_info=True
+                )
+            
             # Log ticket creation to I-TAT API
             try:
                 from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat

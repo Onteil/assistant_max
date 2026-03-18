@@ -334,10 +334,53 @@ async def _process_renewal_ticket(
     """
     if not ticket.assigned_staff_id:
         logger.warning(
-            f"Renewal ticket {ticket.id} has no assigned manager"
+            f"Renewal ticket {ticket.id} has no assigned manager, notifying admins"
         )
+        # Fallback: notify all admins
+        from services.escalation_service import get_active_admins
+        from database.models import MAX_Messenger_Data
+        from sqlalchemy import select as sa_select
+
+        admins = await get_active_admins(session)
+        if not admins:
+            logger.error(f"No admins available to notify for renewal ticket {ticket.id}")
+            return
+
+        admin_message = (
+            f"⚠️ <b>Заявка на продление без назначенного менеджера</b>\n\n"
+            f"<b>Заявка:</b> #{ticket.id}\n"
+            f"<b>Создана:</b> {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"<b>Тип:</b> Продление подписки\n\n"
+            f"<b>Клиент:</b>\n"
+            f"• ФИО: {ticket.user.full_name or 'Не указано'}\n"
+            f"• Телефон: {ticket.user.phone_number or 'Не указан'}\n\n"
+            f"❗️ <b>У клиента не назначен менеджер!</b>\n"
+            f"Необходимо назначить менеджера для обработки заявки."
+        )
+
+        for admin in admins:
+            try:
+                if admin.max_user_id and max_bot:
+                    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == admin.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    chat_id = result_chat.scalar_one_or_none()
+                    if chat_id:
+                        await max_bot.send_message(chat_id=chat_id, text=admin_message)
+                        stats["notifications_sent"] += 1
+                        logger.info(
+                            f"Admin notified for unassigned renewal ticket {ticket.id}, "
+                            f"admin_id={admin.id}"
+                        )
+            except Exception as e:
+                logger.error(
+                    f"Failed to notify admin for renewal ticket {ticket.id}, "
+                    f"admin_id={admin.id}: {e}",
+                    exc_info=True
+                )
         return
-    
+
     notification_sent = await send_staff_notification(
         bot=max_bot,
         staff_id=ticket.assigned_staff_id,
