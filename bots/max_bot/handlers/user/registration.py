@@ -267,7 +267,8 @@ async def cmd_start(
 async def start_registration(
     event: MessageCreated,
     context: MemoryContext,
-    messenger_adapter: MAXMessengerAdapter
+    messenger_adapter: MAXMessengerAdapter,
+    session: AsyncSession
 ) -> None:
     """
     Initiate registration flow by requesting phone number.
@@ -281,12 +282,21 @@ async def start_registration(
         event: MessageCreated event from maxapi
         context: MemoryContext for FSM state management
         messenger_adapter: MAXMessengerAdapter for sending messages
+        session: AsyncSession for database operations
     
     Requirements: 1.5
     """
     chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
     
     logger.info(f"Starting registration flow: chat_id={chat_id}")
+    
+    # Get or create user
+    user = await get_user_by_max_id(session, max_user_id)
+    if user:
+        # Log registration started
+        from bots.max_bot.utils.audit_logger import log_user_registration_started
+        await log_user_registration_started(user.id, max_user_id)
     
     # Set FSM state
     await context.set_state(RegistrationStates.waiting_for_phone)
@@ -812,7 +822,7 @@ async def process_inn(
     is_valid, error_msg = validate_inn(inn)
     
     if not is_valid:
-        logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
+        logger.warning(f"Invalid INN format: inn={inn}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_VALIDATION_INN.format(error_details=error_msg),
@@ -820,6 +830,37 @@ async def process_inn(
             parse_mode="HTML"
         )
         return
+    
+    # Check INN with i-TAT API
+    from services.i_tat_service import get_itat_client
+    try:
+        # Get max_user_id from event
+        max_user_id = event.message.sender.user_id
+        
+        itat_client = get_itat_client()
+        api_response = await itat_client.check_inn(
+            messenger="max",
+            user_id=max_user_id,
+            inn=inn
+        )
+        logger.info(f"i-TAT API INN check successful: {api_response}")
+        
+        # Check if INN is valid according to i-TAT
+        if not api_response.get("is_valid", True):
+            error_details = api_response.get("error_message", "INN не найден в базе данных")
+            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+                keyboard=get_cancel_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+            
+    except Exception as api_error:
+        logger.error(f"i-TAT API INN check error: {api_error}")
+        # Continue with local validation if API fails
+        logger.info(f"Continuing with local INN validation due to API error")
     
     try:
         # Get user_id from context
@@ -950,10 +991,11 @@ async def process_gs_key(
             return
         
         # Check for key conflicts via i-TAT API
+        max_user_id = event.message.sender.user_id  # Use MAX user ID for API calls
         itat_client = get_itat_client()
         conflict_response = await itat_client.check_key_conflict(
             grand_key=normalized_key,
-            user_id=user_id
+            user_id=max_user_id
         )
         
         logger.info(f"Key conflict check result: {conflict_response}")
@@ -1221,11 +1263,14 @@ async def submit_registration(
         # Submit to i-TAT API
         itat_client = get_itat_client()
         response = await itat_client.register_user(
+            messenger="max",
             user_id=user.max_user_id,
             phone=user.phone_number,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            grand_key=key_number
+            name=user.first_name or "",
+            surname=user.last_name or "",
+            inn=user.inn or "",
+            grand_key=key_number or "",
+            email=user.email
         )
         
         logger.info(f"i-TAT registration response: {response}")
@@ -1233,6 +1278,10 @@ async def submit_registration(
         # Set user status to PENDING
         await update_user_status(session, user_id, RegistrationStatus.PENDING)
         await session.commit()
+        
+        # Log registration completion to audit
+        from bots.max_bot.utils.audit_logger import log_user_registration_completed
+        await log_user_registration_completed(user_id, user.max_user_id)
         
         logger.info(f"Registration submitted successfully: user_id={user_id}")
         

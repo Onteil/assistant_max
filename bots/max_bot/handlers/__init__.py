@@ -88,6 +88,7 @@ from bots.max_bot.payloads import (
     RegistrationSkipPayload,
     AdminCreationCancelPayload,
     BackupEscalationPayload,
+    PhoneChangePayload,
 )
 from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates
 
@@ -284,6 +285,7 @@ from .user.profile import (
     process_change_email,
     cancel_profile_action,
 )
+from .user.phone_change import process_phone_change
 from .user.registration import (
     cmd_start,
     process_phone_contact,
@@ -665,6 +667,10 @@ def create_user_router() -> Router:
             await handle_key_conflict_list(event, payload, context, session, messenger_adapter)
         elif payload.action == "escalations":
             await handle_escalations_list(event, payload, context, session, messenger_adapter)
+        elif payload.action == "phone_changes":
+            # Route to phone change management
+            from bots.max_bot.handlers.staff.phone_management import handle_phone_change_list
+            await handle_phone_change_list(event, context, session, messenger_adapter)
         else:
             await messenger_adapter.send_message(
                 chat_id=event.message.recipient.chat_id,
@@ -749,6 +755,47 @@ def create_user_router() -> Router:
         F.message.body.text,
         OperationsStates.creating_broadcast_content
     )(handle_broadcast_content_input)
+    
+    # ========== Phone Change Management Handlers ==========
+    
+    # Phone change management handlers - route by action
+    async def route_phone_change(
+        event: MessageCallback,
+        payload: PhoneChangePayload,
+        context: MemoryContext,
+        session: AsyncSession,
+        messenger_adapter: MAXMessengerAdapter
+    ):
+        """Route phone change management actions to appropriate handlers."""
+        from bots.max_bot.handlers.staff.phone_management import (
+            handle_phone_change_list,
+            handle_phone_change_view,
+            handle_phone_change_approve,
+            handle_phone_change_reject
+        )
+        
+        if payload.action == "list":
+            await handle_phone_change_list(event, context, session, messenger_adapter)
+        elif payload.action == "view":
+            await handle_phone_change_view(event, payload, context, session, messenger_adapter)
+        elif payload.action == "approve":
+            await handle_phone_change_approve(event, payload, context, session, messenger_adapter)
+        elif payload.action == "reject":
+            await handle_phone_change_reject(event, payload, context, session, messenger_adapter)
+        elif payload.action == "back":
+            # Navigate back to admin panel or operations menu
+            from bots.max_bot.handlers.staff.admin_panel import handle_admin_menu_action
+            await handle_admin_menu_action(
+                event, 
+                AdminMenuPayload(action="operations"), 
+                context, 
+                session, 
+                messenger_adapter
+            )
+        else:
+            logger.warning(f"Unknown phone change action: {payload.action}")
+    
+    user_router.message_callback(PhoneChangePayload.filter())(route_phone_change)
     
     # ========== Settings Handlers ==========
     
@@ -913,6 +960,11 @@ def create_user_router() -> Router:
         ProfileStates.changing_email
     )(process_change_email)
     
+    user_router.message_created(
+        F.message.body.text,
+        ProfileStates.changing_phone
+    )(process_phone_change)
+    
     # Profile cancellation handler - registered for multiple states
     user_router.message_created(
         F.message.body.text == "❌ Отмена",
@@ -925,6 +977,10 @@ def create_user_router() -> Router:
     user_router.message_created(
         F.message.body.text == "❌ Отмена",
         ProfileStates.changing_email
+    )(cancel_profile_action)
+    user_router.message_created(
+        F.message.body.text == "❌ Отмена",
+        ProfileStates.changing_phone
     )(cancel_profile_action)
 
     # ========== Registration Flow Handlers ==========

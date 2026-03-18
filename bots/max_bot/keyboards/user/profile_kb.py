@@ -45,11 +45,15 @@ def get_profile_keyboard() -> Keyboard:
                 payload=ProfileViewPayload(section="keys", page=0).pack()
             )
         ],
-        # Row 2: Change Email
+        # Row 2: Change Email and Phone
         [
             KeyboardButton(
                 text="📧 Изменить Email",
                 payload=ProfileActionPayload(action="change_email").pack()
+            ),
+            KeyboardButton(
+                text="📱 Изменить телефон",
+                payload=ProfileActionPayload(action="change_phone").pack()
             )
         ],
         # Row 3: Notifications & Broadcasts (combined)

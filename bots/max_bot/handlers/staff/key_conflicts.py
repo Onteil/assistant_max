@@ -508,27 +508,31 @@ async def handle_key_transfer(
             )
             return
         
-        # Call i-TAT API POST /assets/transfer_key
+        # Call i-TAT API POST /assets/resolve_conflict
         api_client = get_itat_client()
         api_success = False
         api_error_message = None
         
         try:
             logger.info(
-                f"Calling i-TAT API to transfer key {key_number} "
-                f"from user {old_user_id} to user {new_user_id}"
+                f"Calling i-TAT API to resolve key conflict {key_number} "
+                f"from user {old_user.phone_number} to user {new_user.phone_number}"
             )
-            api_response = await api_client.transfer_gs_key(
-                old_user_id=old_user_id,
-                new_user_id=new_user_id,
-                key_number=key_number
+            api_response = await api_client.resolve_conflict(
+                key_number=key_number,
+                action="transfer",
+                new_user_phone=new_user.phone_number,
+                old_user_phone=old_user.phone_number,
+                user_id=max_user_id,
+                messenger="max",
+                reason=f"Одобрено администратором {admin.full_name}"
             )
             api_success = True
-            logger.info(f"i-TAT API key transfer successful: {api_response}")
+            logger.info(f"i-TAT API key conflict resolution successful: {api_response}")
             
         except httpx.TimeoutException as e:
             api_error_message = "Превышено время ожидания ответа от CRM"
-            logger.error(f"i-TAT API timeout for key transfer: {e}", exc_info=True)
+            logger.error(f"i-TAT API timeout for key conflict resolution: {e}", exc_info=True)
             
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code
@@ -542,17 +546,17 @@ async def handle_key_transfer(
                 api_error_message = f"Ошибка API (код {status_code})"
             
             logger.error(
-                f"i-TAT API HTTP error for key transfer: {status_code} - {e.response.text}",
+                f"i-TAT API HTTP error for key conflict resolution: {status_code} - {e.response.text}",
                 exc_info=True
             )
             
         except httpx.ConnectError as e:
             api_error_message = "Не удалось подключиться к CRM"
-            logger.error(f"i-TAT API connection error for key transfer: {e}", exc_info=True)
+            logger.error(f"i-TAT API connection error for key conflict resolution: {e}", exc_info=True)
             
         except Exception as e:
             api_error_message = "Неизвестная ошибка при обращении к CRM"
-            logger.error(f"Unexpected error calling i-TAT API for key transfer: {e}", exc_info=True)
+            logger.error(f"Unexpected error calling i-TAT API for key conflict resolution: {e}", exc_info=True)
         
         # If API call failed, show error and log
         if not api_success:
@@ -780,18 +784,45 @@ async def handle_key_rejection(
         
         key_number = gs_key.key_number
         
-        # Query new user
+        # Query new user and old user (current owner)
         stmt = select(User).where(User.id == new_user_id)
         result = await session.execute(stmt)
         new_user = result.scalar_one_or_none()
         
-        if not new_user:
+        # Get current owner
+        stmt = select(User).where(User.id == gs_key.user_id)
+        result = await session.execute(stmt)
+        old_user = result.scalar_one_or_none()
+        
+        if not new_user or not old_user:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="❌ Пользователь не найден.",
+                text="❌ Пользователи не найдены.",
                 parse_mode="HTML"
             )
             return
+        
+        # Call i-TAT API POST /assets/resolve_conflict with reject action
+        api_client = get_itat_client()
+        try:
+            logger.info(
+                f"Calling i-TAT API to reject key conflict {key_number} "
+                f"from user {old_user.phone_number} to user {new_user.phone_number}"
+            )
+            api_response = await api_client.resolve_conflict(
+                key_number=key_number,
+                action="reject",
+                new_user_phone=new_user.phone_number,
+                old_user_phone=old_user.phone_number,
+                user_id=max_user_id,
+                messenger="max",
+                reason=f"Отклонено администратором {admin.full_name}"
+            )
+            logger.info(f"i-TAT API key conflict rejection successful: {api_response}")
+            
+        except Exception as api_error:
+            logger.error(f"i-TAT API error for key conflict rejection: {api_error}")
+            # Continue with local processing even if API fails
         
         # Find all GS_Key records for this key_number from new user
         keys_to_delete_stmt = select(GS_Key).where(

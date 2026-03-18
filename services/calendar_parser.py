@@ -1,8 +1,9 @@
 """
-Calendar Command Parser
+Calendar Command Parser (Improved Version)
 
 Parses Russian natural language commands for calendar management.
 Supports single dates, date ranges, and various work modes.
+Enhanced with HH:MM time format support.
 """
 
 import re
@@ -27,6 +28,7 @@ class ParsedRule:
 class CalendarCommandParser:
     """
     Parses Russian natural language commands for calendar management.
+    Enhanced version with HH:MM time format support.
     """
 
     # Russian month names mapping (genitive case)
@@ -51,6 +53,7 @@ class CalendarCommandParser:
 
         Supported formats:
         - "31 января рабочее время с 9 до 15"
+        - "31 января рабочее время с 8:30 до 17:00"
         - "с 1 по 5 февраля нерабочее время"
         - "31 января продленное рабочее время с 17 до 20"
 
@@ -75,22 +78,25 @@ class CalendarCommandParser:
         Parse single date command.
         
         Patterns:
-        - "[day] [month] рабочее время с [hour] до [hour]"
-        - "[day] [month] продленное рабочее время с [hour] до [hour]"
+        - "[day] [month] рабочее время с [time] до [time]"
+        - "[day] [month] продленное рабочее время с [time] до [time]"
         - "[day] [month] нерабочее время"
+        
+        Time formats: "9", "09", "8:30", "17:00"
         """
         # Build month pattern
         month_pattern = "|".join(self.MONTHS.keys())
         
         # Pattern for single date with work mode and optional time
-        # Group 1: day, Group 2: month, Group 3: work mode type, Group 4: start hour, Group 5: end hour
-        pattern = rf"(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+(\d{{1,2}})\s+до\s+(\d{{1,2}}))?"
+        # Time pattern supports both "HH" and "HH:MM" formats
+        time_pattern = r"(\d{1,2}(?::\d{2})?)"
+        pattern = rf"(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+{time_pattern}\s+до\s+{time_pattern})?"
         
         match = re.match(pattern, normalized_text)
         if not match:
             return None
         
-        day_str, month_name, mode_str, start_hour_str, end_hour_str = match.groups()
+        day_str, month_name, mode_str, start_time_str, end_time_str = match.groups()
         
         # Parse date
         try:
@@ -110,26 +116,26 @@ class CalendarCommandParser:
         elif mode_str == "продленное рабочее":
             work_mode = WorkMode.EXTENDED
             # Time is required for EXTENDED mode
-            if not start_hour_str or not end_hour_str:
+            if not start_time_str or not end_time_str:
                 return None
-            work_start_time = self._parse_time(start_hour_str)
-            work_end_time = self._parse_time(end_hour_str)
+            work_start_time = self._parse_time(start_time_str)
+            work_end_time = self._parse_time(end_time_str)
             if work_start_time is None or work_end_time is None:
                 return None
-            # Validate time range
-            if work_start_time >= work_end_time:
+            # Validate time range (allow overnight shifts)
+            if not self._is_valid_time_range(work_start_time, work_end_time):
                 return None
         else:  # "рабочее"
             work_mode = WorkMode.REGULAR
             # Time is required for REGULAR mode
-            if not start_hour_str or not end_hour_str:
+            if not start_time_str or not end_time_str:
                 return None
-            work_start_time = self._parse_time(start_hour_str)
-            work_end_time = self._parse_time(end_hour_str)
+            work_start_time = self._parse_time(start_time_str)
+            work_end_time = self._parse_time(end_time_str)
             if work_start_time is None or work_end_time is None:
                 return None
-            # Validate time range
-            if work_start_time >= work_end_time:
+            # Validate time range (allow overnight shifts)
+            if not self._is_valid_time_range(work_start_time, work_end_time):
                 return None
         
         return ParsedRule(
@@ -168,24 +174,29 @@ class CalendarCommandParser:
         Parse date range command.
         
         Patterns:
-        - "с [day] [month] по [day] [month] рабочее время с [hour] до [hour]"
-        - "с [day] по [day] [month] рабочее время с [hour] до [hour]"
+        - "с [day] [month] по [day] [month] рабочее время с [time] до [time]"
+        - "с [day] по [day] [month] рабочее время с [time] до [time]"
         - "с [day] [month] по [day] [month] нерабочее время"
+        
+        Time formats: "9", "09", "8:30", "17:00"
         """
         # Build month pattern
         month_pattern = "|".join(self.MONTHS.keys())
         
+        # Time pattern supports both "HH" and "HH:MM" formats
+        time_pattern = r"(\d{1,2}(?::\d{2})?)"
+        
         # Pattern 1: "с [day] [month] по [day] [month] [mode] время [optional time]"
-        pattern1 = rf"с\s+(\d{{1,2}})\s+({month_pattern})\s+по\s+(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+(\d{{1,2}})\s+до\s+(\d{{1,2}}))?"
+        pattern1 = rf"с\s+(\d{{1,2}})\s+({month_pattern})\s+по\s+(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+{time_pattern}\s+до\s+{time_pattern})?"
         
         # Pattern 2: "с [day] по [day] [month] [mode] время [optional time]"
-        pattern2 = rf"с\s+(\d{{1,2}})\s+по\s+(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+(\d{{1,2}})\s+до\s+(\d{{1,2}}))?"
+        pattern2 = rf"с\s+(\d{{1,2}})\s+по\s+(\d{{1,2}})\s+({month_pattern})\s+(рабочее|продленное рабочее|нерабочее)\s+время(?:\s+с\s+{time_pattern}\s+до\s+{time_pattern})?"
         
         match1 = re.match(pattern1, normalized_text)
         match2 = re.match(pattern2, normalized_text)
         
         if match1:
-            start_day_str, start_month_name, end_day_str, end_month_name, mode_str, start_hour_str, end_hour_str = match1.groups()
+            start_day_str, start_month_name, end_day_str, end_month_name, mode_str, start_time_str, end_time_str = match1.groups()
             
             # Parse dates
             try:
@@ -201,7 +212,7 @@ class CalendarCommandParser:
                 return None
             
         elif match2:
-            start_day_str, end_day_str, month_name, mode_str, start_hour_str, end_hour_str = match2.groups()
+            start_day_str, end_day_str, month_name, mode_str, start_time_str, end_time_str = match2.groups()
             
             # Parse dates (both use same month)
             try:
@@ -230,26 +241,26 @@ class CalendarCommandParser:
         elif mode_str == "продленное рабочее":
             work_mode = WorkMode.EXTENDED
             # Time is required for EXTENDED mode
-            if not start_hour_str or not end_hour_str:
+            if not start_time_str or not end_time_str:
                 return None
-            work_start_time = self._parse_time(start_hour_str)
-            work_end_time = self._parse_time(end_hour_str)
+            work_start_time = self._parse_time(start_time_str)
+            work_end_time = self._parse_time(end_time_str)
             if work_start_time is None or work_end_time is None:
                 return None
-            # Validate time range
-            if work_start_time >= work_end_time:
+            # Validate time range (allow overnight shifts)
+            if not self._is_valid_time_range(work_start_time, work_end_time):
                 return None
         else:  # "рабочее"
             work_mode = WorkMode.REGULAR
             # Time is required for REGULAR mode
-            if not start_hour_str or not end_hour_str:
+            if not start_time_str or not end_time_str:
                 return None
-            work_start_time = self._parse_time(start_hour_str)
-            work_end_time = self._parse_time(end_hour_str)
+            work_start_time = self._parse_time(start_time_str)
+            work_end_time = self._parse_time(end_time_str)
             if work_start_time is None or work_end_time is None:
                 return None
-            # Validate time range
-            if work_start_time >= work_end_time:
+            # Validate time range (allow overnight shifts)
+            if not self._is_valid_time_range(work_start_time, work_end_time):
                 return None
         
         return ParsedRule(
@@ -368,24 +379,62 @@ class CalendarCommandParser:
         
         return parsed_date
 
-    def _parse_time(self, hour_str: str) -> Optional[time]:
+    def _parse_time(self, time_str: str) -> Optional[time]:
         """
-        Parse time from hour string (supports with/without leading zeros).
+        Parse time from string (supports multiple formats).
         
         Accepts:
         - "9" -> 09:00
         - "09" -> 09:00
         - "17" -> 17:00
+        - "8:30" -> 08:30
+        - "17:00" -> 17:00
+        - "00:30" -> 00:30
         
-        Returns None if hour is invalid (>23 or <0).
+        Returns None if time is invalid.
         """
         try:
-            hour = int(hour_str)
-            if hour < 0 or hour > 23:
-                return None
-            return time(hour, 0)
+            # Check if it contains colon (HH:MM format)
+            if ':' in time_str:
+                parts = time_str.split(':')
+                if len(parts) != 2:
+                    return None
+                
+                hour_str, minute_str = parts
+                hour = int(hour_str)
+                minute = int(minute_str)
+                
+                if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+                    return None
+                
+                return time(hour, minute)
+            else:
+                # Hour only format
+                hour = int(time_str)
+                if hour < 0 or hour > 23:
+                    return None
+                return time(hour, 0)
+                
         except ValueError:
             return None
+
+    def _is_valid_time_range(self, start_time: time, end_time: time) -> bool:
+        """
+        Validate time range.
+        
+        Rules:
+        - Start time cannot equal end time
+        - Allow overnight shifts (e.g., 23:00 to 01:00)
+        - For overnight shifts, end_time < start_time is valid
+        
+        Returns True if valid, False otherwise.
+        """
+        # Same time is invalid
+        if start_time == end_time:
+            return False
+        
+        # All other combinations are valid (including overnight shifts)
+        return True
 
     def _normalize_text(self, text: str) -> str:
         """Normalize text: lowercase, strip extra spaces."""

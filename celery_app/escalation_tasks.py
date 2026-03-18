@@ -1085,8 +1085,12 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                 try:
                     # Send via MAX only
                     if admin.max_user_id:
-                        # Get MAX chat_id from staff member
-                        chat_id = admin.max_chat_id
+                        # Get MAX chat_id from max_messenger_data table
+                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                            MAX_Messenger_Data.max_user_id == admin.max_user_id
+                        )
+                        result_chat = await session.execute(stmt_chat)
+                        chat_id = result_chat.scalar_one_or_none()
                         
                         if chat_id is None:
                             logger.error(
@@ -1638,8 +1642,12 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 try:
                     # Send via MAX only
                     if admin.max_user_id:
-                        # Get MAX chat_id from staff member
-                        chat_id = admin.max_chat_id
+                        # Get MAX chat_id from max_messenger_data table
+                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                            MAX_Messenger_Data.max_user_id == admin.max_user_id
+                        )
+                        result_chat = await session.execute(stmt_chat)
+                        chat_id = result_chat.scalar_one_or_none()
                         
                         if chat_id is None:
                             logger.error(

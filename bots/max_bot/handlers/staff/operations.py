@@ -114,12 +114,32 @@ async def handle_operations_menu(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
+        # Get operation counts for display
+        from bots.max_bot.utils.operations_counter import count_all_operations, format_operation_counter
+        
+        try:
+            operations_counts = await count_all_operations(session)
+            key_conflicts_counter = format_operation_counter(operations_counts['key_conflicts'])
+            phone_changes_counter = format_operation_counter(operations_counts['phone_changes'])
+            escalations_counter = format_operation_counter(operations_counts['escalations'])
+        except Exception as e:
+            logger.error(f"Error getting operation counts for operations menu: {e}")
+            key_conflicts_counter = ""
+            phone_changes_counter = ""
+            escalations_counter = ""
+        
         # Build operations menu keyboard
         buttons = [
             [
                 KeyboardButton(
-                    text="🔑 Конфликты ключей",
+                    text=f"🔑 Конфликты ключей{key_conflicts_counter}",
                     payload=OperationsMenuPayload(action="key_conflicts").pack()
+                )
+            ],
+            [
+                KeyboardButton(
+                    text=f"📱 Смена номеров{phone_changes_counter}",
+                    payload=OperationsMenuPayload(action="phone_changes").pack()
                 )
             ],
             [
@@ -130,7 +150,7 @@ async def handle_operations_menu(
             ],
             [
                 KeyboardButton(
-                    text="⚠️ Эскалации",
+                    text=f"⚠️ Эскалации{escalations_counter}",
                     payload=OperationsMenuPayload(action="escalations").pack()
                 )
             ],
@@ -144,20 +164,41 @@ async def handle_operations_menu(
         
         keyboard = Keyboard(buttons=buttons, inline=True)
         
+        # Build operations menu text with counts
         operations_text = (
             "📋 <b>Операции</b>\n\n"
             "Раздел для управления операционными процессами и мониторинга системы.\n\n"
             "<b>Доступные функции:</b>\n\n"
-            "🔑 <b>Конфликты ключей</b>\n"
-            "Разрешение конфликтов при дублировании ключей GS_Key между пользователями. "
-            "Передача ключа новому владельцу или отклонение претензии.\n\n"
-            "📢 <b>Рассылка</b>\n"
-            "Создание и отправка массовых уведомлений пользователям. "
-            "Выбор целевой аудитории, предпросмотр и отправка сообщений.\n\n"
-            "⚠️ <b>Эскалации</b>\n"
-            "Мониторинг и управление эскалированными заявками. "
-            "Просмотр заявок, требующих внимания администратора, переназначение и контроль."
         )
+        
+        # Add key conflicts section
+        if operations_counts['key_conflicts'] > 0:
+            operations_text += f"🔑 <b>Конфликты ключей</b> ({operations_counts['key_conflicts']})\n"
+        else:
+            operations_text += "🔑 <b>Конфликты ключей</b>\n"
+        operations_text += ("Разрешение конфликтов при дублировании ключей GS_Key между пользователями. "
+                           "Передача ключа новому владельцу или отклонение претензии.\n\n")
+        
+        # Add phone changes section
+        if operations_counts['phone_changes'] > 0:
+            operations_text += f"📱 <b>Смена номеров</b> ({operations_counts['phone_changes']})\n"
+        else:
+            operations_text += "📱 <b>Смена номеров</b>\n"
+        operations_text += ("Обработка запросов на смену номера телефона. "
+                           "Проверка и подтверждение изменений контактных данных.\n\n")
+        
+        # Add broadcast section (no counter needed)
+        operations_text += ("📢 <b>Рассылка</b>\n"
+                           "Создание и отправка массовых уведомлений пользователям. "
+                           "Выбор целевой аудитории, предпросмотр и отправка сообщений.\n\n")
+        
+        # Add escalations section
+        if operations_counts['escalations'] > 0:
+            operations_text += f"⚠️ <b>Эскалации</b> ({operations_counts['escalations']})\n"
+        else:
+            operations_text += "⚠️ <b>Эскалации</b>\n"
+        operations_text += ("Мониторинг и управление эскалированными заявками. "
+                           "Просмотр заявок, требующих внимания администратора, переназначение и контроль.")
         
         await messenger_adapter.send_message(
             chat_id=chat_id,

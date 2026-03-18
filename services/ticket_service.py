@@ -124,6 +124,25 @@ async def create_ticket(
             }
         )
         
+        # Log ticket creation to i-TAT audit API
+        try:
+            # Get user to extract max_user_id
+            user_stmt = select(User).where(User.id == ticket.user_id)
+            user_result = await session.execute(user_stmt)
+            user = user_result.scalar_one_or_none()
+            
+            if user and user.max_messenger_data:
+                from bots.max_bot.utils.audit_logger import log_ticket_created
+                await log_ticket_created(
+                    ticket_id=f"TKT_{ticket.id}",
+                    user_id=ticket.user_id,
+                    ticket_type=ticket.ticket_type.value,
+                    max_user_id=user.max_messenger_data.max_user_id
+                )
+        except Exception as audit_error:
+            logger.error(f"Failed to log ticket creation to audit: {audit_error}")
+            # Continue - don't fail ticket creation due to audit logging issues
+        
         # Schedule escalation monitoring for NEW tickets
         # Requirements: FR-1.1.1, FR-1.1.2, NFR-2.2.1, TECH_SPEC 14.2
         # IMPORTANT: Do NOT schedule escalation in NON_WORKING mode
@@ -966,6 +985,22 @@ async def take_ticket_into_work(
             action_details=action_details
         )
         
+        # Log status change to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_assignment_to_itat
+            await log_ticket_assignment_to_itat(
+                session=session,
+                ticket=ticket,
+                staff_id=staff_member.id,
+                action="taken"
+            )
+        except Exception as e:
+            # Log error but don't fail the operation
+            logger.error(
+                f"Failed to log ticket assignment to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
+        
         # Log with assignment info if changed
         log_msg = (
             f"Ticket taken into work: ticket_id={ticket_id}, staff_id={staff_member.id}, "
@@ -1055,6 +1090,24 @@ async def set_ticket_waiting_client(
                 "new_status": TicketStatus.WAITING_CLIENT.value
             }
         )
+        
+        # Log status change to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.WAITING_CLIENT,
+                staff_id=staff_id,
+                comment="Заявка переведена в статус 'Ожидание клиента'"
+            )
+        except Exception as e:
+            # Log error but don't fail the operation
+            logger.error(
+                f"Failed to log status change to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
         
         logger.info(
             f"Ticket status changed to WAITING_CLIENT: ticket_id={ticket_id}, "
@@ -1147,6 +1200,24 @@ async def close_ticket(
                 "final_comment_length": len(final_comment)
             }
         )
+        
+        # Log status change to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.CLOSED,
+                staff_id=staff_id,
+                comment=f"Заявка закрыта. Финальный комментарий: {final_comment[:100]}{'...' if len(final_comment) > 100 else ''}"
+            )
+        except Exception as e:
+            # Log error but don't fail the operation
+            logger.error(
+                f"Failed to log ticket closure to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
         
         logger.info(
             f"Ticket closed: ticket_id={ticket_id}, employee_id={employee_id}, "
@@ -1339,6 +1410,24 @@ async def close_ticket_with_notification(
             }
         )
         
+        # Log status change to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.CLOSED,
+                staff_id=staff_id,
+                comment=f"Заявка закрыта с уведомлением клиента. Финальный комментарий: {final_comment[:100]}{'...' if len(final_comment) > 100 else ''}"
+            )
+        except Exception as e:
+            # Log error but don't fail the operation
+            logger.error(
+                f"Failed to log ticket closure to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
+        
         logger.info(
             f"Ticket closed with notification: ticket_id={ticket_id}, "
             f"employee_id={employee_id}, old_status={old_status.value}"
@@ -1487,6 +1576,22 @@ async def transfer_ticket(
                 "old_assigned_staff_id": old_assigned_staff_id
             }
         )
+        
+        # Log transfer to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_assignment_to_itat
+            await log_ticket_assignment_to_itat(
+                session=session,
+                ticket=ticket,
+                staff_id=target_staff_internal_id,
+                action="transferred"
+            )
+        except Exception as e:
+            # Log error but don't fail the operation
+            logger.error(
+                f"Failed to log ticket transfer to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True
+            )
         
         logger.info(
             f"Ticket transferred: ticket_id={ticket_id}, "

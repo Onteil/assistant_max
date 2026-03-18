@@ -422,7 +422,7 @@ def get_active_tickets_keyboard(
         if ticket.created_at:
             created_datetime = ticket.created_at.strftime("%d.%m %H:%M")
         
-        button_text = f"{status_emoji} {type_emoji} {type_name} ({created_datetime})"
+        button_text = f"{status_emoji} {type_emoji} {type_name} #{ticket.id} ({created_datetime})"
         
         buttons.append([
             KeyboardButton(
@@ -648,20 +648,19 @@ async def handle_manager_menu_action(
                 return
             
             # Call admin panel handler (message already deleted above)
-            from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard
+            from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard, get_admin_panel_menu_text
             
             # Clear any existing FSM state
             await context.clear()
             
-            # Get admin panel main menu keyboard
-            keyboard = get_admin_panel_keyboard()
+            # Get admin panel main menu keyboard and text
+            keyboard = await get_admin_panel_keyboard(session)
+            menu_text = await get_admin_panel_menu_text(session)
             
             # Send admin panel main menu
-            from bots.max_bot.texts import ADMIN_PANEL_MENU
-            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADMIN_PANEL_MENU,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -1198,7 +1197,7 @@ def get_archive_keyboard(
         if ticket.created_at:
             created_datetime = ticket.created_at.strftime("%d.%m %H:%M")
         
-        button_text = f"{status_emoji} {type_emoji} {type_name} ({created_datetime})"
+        button_text = f"{status_emoji} {type_emoji} {type_name} #{ticket.id} ({created_datetime})"
         
         buttons.append([
             KeyboardButton(

@@ -62,6 +62,7 @@ class TicketType(enum.Enum):
     INVOICE = "invoice"
     TECHNICAL_SUPPORT = "technical_support"
     RENEWAL = "renewal"
+    PHONE_CHANGE = "phone_change"
 
 
 class TicketStatus(enum.Enum):
@@ -138,6 +139,9 @@ class ActionType(enum.Enum):
     BROADCAST_SENT = "broadcast_sent"
     SETTING_CHANGED = "setting_changed"
     SETTING_RESET = "setting_reset"
+    PHONE_CHANGE_REQUESTED = "phone_change_requested"
+    PHONE_CHANGE_APPROVED = "phone_change_approved"
+    PHONE_CHANGE_REJECTED = "phone_change_rejected"
 
 
 class WorkMode(enum.Enum):
@@ -643,6 +647,11 @@ class Ticket(Base, TimestampMixin):
     
     # Ticket details
     description = Column(String, nullable=True)
+    
+    # Phone change specific fields
+    old_phone = Column(String(20), nullable=True, comment="Old phone number for phone change requests")
+    new_phone = Column(String(20), nullable=True, comment="New phone number for phone change requests")
+    resolution_comment = Column(String, nullable=True, comment="Resolution comment for closed tickets")
     
     # Delivery configuration
     delivery_method = Column(

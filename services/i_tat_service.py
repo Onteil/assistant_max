@@ -70,8 +70,8 @@ class ITatAPIClient:
         self,
         user_id: int,
         phone: str,
-        first_name: str | None,
-        last_name: str | None,
+        name: str | None,
+        surname: str | None,
         grand_key: str
     ) -> dict[str, Any]:
         """Заглушка для регистрации пользователя"""
@@ -177,6 +177,82 @@ class ITatAPIClient:
             "key_number": key_number,
             "old_user_id": old_user_id,
             "new_user_id": new_user_id
+        }
+
+    # ========== Заглушки для новых методов ==========
+
+    async def _mock_check_inn(self, messenger: str, user_id: int, inn: str) -> dict[str, Any]:
+        """Заглушка для проверки ИНН"""
+        logger.info(f"[MOCK] Checking INN: inn={inn}, user={user_id}, messenger={messenger}")
+        return {"status": "ok", "message": "ИНН доступен"}
+
+    async def _mock_update_user_assets(
+        self, messenger: str, user_id: int, asset_type: str, action: str, value: str
+    ) -> dict[str, Any]:
+        """Заглушка для обновления активов пользователя"""
+        logger.info(f"[MOCK] Updating user assets: user={user_id}, type={asset_type}, action={action}, value={value}")
+        return {"status": "success", "message": "Ассет успешно привязан/удален"}
+
+    async def _mock_update_staff(
+        self, messenger: str, user_id: int, action: str, **kwargs
+    ) -> dict[str, Any]:
+        """Заглушка для обновления сотрудника"""
+        logger.info(f"[MOCK] Updating staff: user={user_id}, action={action}, messenger={messenger}")
+        return {"status": "ok", "message": "Сотрудник обновлен"}
+
+
+    async def _mock_change_phone(
+        self, messenger: str, user_id: int, old_phone: str, new_phone: str, staff_id: int
+    ) -> dict[str, Any]:
+        """Заглушка для смены номера телефона"""
+        logger.info(f"[MOCK] Changing phone: user={user_id}, old={old_phone}, new={new_phone}")
+        return {"status": "ok", "message": "Номер телефона изменен"}
+
+    async def _mock_audit_log(self, messenger: str, action_type: str, **kwargs) -> dict[str, Any]:
+        """Заглушка для аудит лога"""
+        logger.info(f"[MOCK] Audit log: action={action_type}, messenger={messenger}")
+        return {"status": "ok", "message": "Событие записано"}
+
+    async def _mock_get_ticket_history(self, ticket_id: str) -> dict[str, Any]:
+        """Заглушка для истории тикета"""
+        logger.info(f"[MOCK] Getting ticket history: ticket_id={ticket_id}")
+        return {"status": "ok", "history": [{"action": "created", "timestamp": "2026-03-18T10:00:00Z"}]}
+
+    async def _mock_resolve_conflict(
+        self, key_number: str, action: str, new_user_phone: str, old_user_phone: str, **kwargs
+    ) -> dict[str, Any]:
+        """Заглушка для разрешения конфликта ключа"""
+        logger.info(f"[MOCK] Resolving key conflict: key={key_number}, action={action}")
+        if action == "transfer":
+            return {"status": "ok", "message": "Ключ успешно перенесен в 1С"}
+        else:
+            return {"status": "ok", "message": "Попытка переноса отклонена"}
+
+    async def _mock_run_webhook_retry(self, **kwargs) -> dict[str, Any]:
+        """Заглушка для запуска webhook retry"""
+        logger.info("[MOCK] Running webhook retry")
+        return {
+            "status": "ok",
+            "message": "Retry process completed",
+            "limit": 100,
+            "max_attempts": 3,
+            "checked": 50,
+            "processed": 45,
+            "succeeded": 40,
+            "failed": 5,
+            "skipped_max_attempts": 0
+        }
+
+    async def _mock_get_webhook_retry_status(self, **kwargs) -> dict[str, Any]:
+        """Заглушка для статуса webhook retry"""
+        logger.info("[MOCK] Getting webhook retry status")
+        return {
+            "total": 100,
+            "queued": 10,
+            "success": 80,
+            "failed": 5,
+            "dead_letter": 5,
+            "queued_at_max_attempts": 2
         }
 
     async def _make_request(
@@ -307,22 +383,28 @@ class ITatAPIClient:
 
     async def register_user(
         self, 
+        messenger: str,
         user_id: int | None = None,
         phone: str = "",
-        first_name: str | None = None,
-        last_name: str | None = None,
+        name: str = "",
+        surname: str = "",
+        inn: str = "",
         grand_key: str = "",
+        email: str | None = None,
         telegram_id: int | None = None  # Backward compatibility
     ) -> dict[str, Any]:
         """
         Register a new user in the I-TAT CRM system.
 
         Args:
+            messenger: Messenger type ("telegram" or "max")
             user_id: User ID from messenger (Telegram/MAX)
             phone: Phone number (format: "+79001234567")
-            first_name: User's first name (optional)
-            last_name: User's last name (optional)
+            name: User's first name
+            surname: User's last name
+            inn: Organization INN
             grand_key: Protection key number (format: "MG123456" or "00202_12345")
+            email: User's email (optional)
             telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
@@ -353,21 +435,23 @@ class ITatAPIClient:
         
         # Использование заглушки
         if self.use_mock:
-            return await self._mock_register_user(user_id, phone, first_name, last_name, grand_key)
+            return await self._mock_register_user(user_id, phone, name, surname, grand_key)
         
         endpoint = f"{self.base_url}/user/register"
         payload = {
+            "messenger": messenger,
             "user_id": user_id,
             "phone": phone,
+            "name": name,
+            "surname": surname,
+            "inn": inn,
             "grand_key": grand_key,
         }
         
-        if first_name:
-            payload["first_name"] = first_name
-        if last_name:
-            payload["last_name"] = last_name
+        if email:
+            payload["email"] = email
 
-        logger.info(f"Registering user: user_id={user_id}, phone={phone}")
+        logger.info(f"Registering user: user_id={user_id}, phone={phone}, messenger={messenger}")
         return await self._make_request("POST", endpoint, json=payload)
 
     # ========== Блок: Профиль и Проверки ==========
@@ -478,9 +562,13 @@ class ITatAPIClient:
     async def log_ticket(
         self,
         ticket_id: str,
+        messenger: str,
         user_id: int | None = None,
+        staff_id: int | None = None,
         ticket_type: str = "",
         status: str = "",
+        created_at: str | None = None,
+        updated_at: str | None = None,
         comment: str | None = None,
         history_link: str | None = None,
         telegram_id: int | None = None  # Backward compatibility
@@ -490,9 +578,13 @@ class ITatAPIClient:
 
         Args:
             ticket_id: Ticket ID in the bot (format: "TKT_12345")
+            messenger: Messenger type ("telegram" or "max")
             user_id: User ID from messenger (Telegram/MAX)
+            staff_id: Staff member ID (optional)
             ticket_type: Ticket type (e.g., "Техподдержка", "Счет")
             status: Ticket status (e.g., "Новое", "Закрыто")
+            created_at: Creation timestamp (ISO format)
+            updated_at: Update timestamp (ISO format)
             comment: Optional employee comment
             history_link: Optional link to ticket history
             telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
@@ -526,14 +618,26 @@ class ITatAPIClient:
             return await self._mock_log_ticket(ticket_id, user_id, ticket_type, status, comment, history_link)
         
         endpoint = f"{self.base_url}/tickets/log"
-        payload = {"ticket_id": ticket_id, "user_id": user_id, "type": ticket_type, "status": status}
+        payload = {
+            "ticket_id": ticket_id, 
+            "messenger": messenger,
+            "user_id": user_id, 
+            "type": ticket_type, 
+            "status": status
+        }
 
+        if staff_id:
+            payload["staff_id"] = staff_id
+        if created_at:
+            payload["created_at"] = created_at
+        if updated_at:
+            payload["updated_at"] = updated_at
         if comment:
             payload["comment"] = comment
         if history_link:
             payload["history_link"] = history_link
 
-        logger.info(f"Logging ticket: ticket_id={ticket_id}, type={ticket_type}, status={status}")
+        logger.info(f"Logging ticket: ticket_id={ticket_id}, type={ticket_type}, status={status}, messenger={messenger}")
         return await self._make_request("POST", endpoint, json=payload)
 
     # ========== Блок: Регистрация - Одобрение и Отклонение ==========
@@ -735,6 +839,408 @@ class ITatAPIClient:
                 else:
                     logger.error(f"API call failed after {max_retries} attempts: {e}")
                     raise
+
+    # ========== Блок: Новые методы API ==========
+
+    async def check_inn(
+        self,
+        messenger: str,
+        user_id: int,
+        inn: str
+    ) -> dict[str, Any]:
+        """
+        Check INN availability and validation.
+
+        Args:
+            messenger: Messenger type ("telegram" or "max")
+            user_id: User ID from messenger
+            inn: Organization INN to check
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "ИНН доступен"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_check_inn(messenger, user_id, inn)
+            
+        endpoint = f"{self.base_url}/assets/check_inn"
+        payload = {
+            "messenger": messenger,
+            "user_id": user_id,
+            "inn": inn
+        }
+
+        logger.info(f"Checking INN: inn={inn}, user={user_id}, messenger={messenger}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def update_user_assets(
+        self,
+        messenger: str,
+        user_id: int,
+        asset_type: str,
+        action: str,
+        value: str
+    ) -> dict[str, Any]:
+        """
+        Update user assets (add/remove INN or grand_key).
+
+        Args:
+            messenger: Messenger type ("telegram" or "max")
+            user_id: User ID from messenger
+            asset_type: Asset type ("inn" or "grand_key")
+            action: Action to perform ("add" or "remove")
+            value: Asset value (INN number or key number)
+
+        Returns:
+            {
+                "status": "success",
+                "message": "Ассет успешно привязан/удален"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 409, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_update_user_assets(messenger, user_id, asset_type, action, value)
+            
+        endpoint = f"{self.base_url}/user/assets/update"
+        payload = {
+            "messenger": messenger,
+            "user_id": user_id,
+            "asset_type": asset_type,
+            "action": action,
+            "value": value
+        }
+
+        logger.info(f"Updating user assets: user={user_id}, type={asset_type}, action={action}, value={value}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def update_staff(
+        self,
+        messenger: str,
+        user_id: int,
+        action: str,
+        role: str | None = None,
+        position: str | None = None,
+        is_active: bool | None = None,
+        reserves: list[int] | None = None
+    ) -> dict[str, Any]:
+        """
+        Update staff member information.
+
+        Args:
+            messenger: Messenger type ("telegram" or "max")
+            user_id: Staff member's user ID in messenger
+            action: Action to perform ("upsert" or "deactivate")
+            role: Staff role (optional)
+            position: Staff position (optional)
+            is_active: Active status (optional)
+            reserves: List of reserve staff IDs (optional)
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "Сотрудник обновлен"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_update_staff(messenger, user_id, action, role=role, position=position, is_active=is_active, reserves=reserves)
+            
+        endpoint = f"{self.base_url}/system/staff/update"
+        payload = {
+            "messenger": messenger,
+            "user_id": user_id,
+            "action": action
+        }
+
+        if role is not None:
+            payload["role"] = role
+        if position is not None:
+            payload["position"] = position
+        if is_active is not None:
+            payload["is_active"] = is_active
+        if reserves is not None:
+            payload["reserves"] = reserves
+
+        logger.info(f"Updating staff: user={user_id}, action={action}, messenger={messenger}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def resolve_conflict(
+        self,
+        key_number: str,
+        action: str,
+        new_user_phone: str,
+        old_user_phone: str,
+        user_id: int | None = None,
+        messenger: str = "max",
+        reason: str | None = None
+    ) -> dict[str, Any]:
+        """
+        Resolve key conflict by transferring or rejecting.
+
+        Args:
+            key_number: Key number in conflict
+            action: Action to take ("transfer" or "reject")
+            new_user_phone: Phone of user requesting the key
+            old_user_phone: Phone of current key owner
+            user_id: MAX user ID of admin performing the action (optional)
+            messenger: Messenger type ("max" or "telegram")
+            reason: Optional reason for the action
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "Ключ успешно перенесен в 1С" | "Попытка переноса отклонена"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_resolve_conflict(key_number, action, new_user_phone, old_user_phone, reason=reason)
+            
+        endpoint = f"{self.base_url}/assets/resolve_conflict"
+        payload = {
+            "key_number": key_number,
+            "action": action,
+            "new_user_phone": new_user_phone,
+            "old_user_phone": old_user_phone,
+            "messenger": messenger
+        }
+
+        if user_id is not None:
+            payload["user_id"] = user_id
+        if reason:
+            payload["reason"] = reason
+
+        logger.info(f"Resolving key conflict: key={key_number}, action={action}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def change_phone(
+        self,
+        messenger: str,
+        user_id: int,
+        old_phone: str,
+        new_phone: str,
+        staff_id: int
+    ) -> dict[str, Any]:
+        """
+        Change user's phone number.
+
+        Args:
+            messenger: Messenger type ("telegram" or "max")
+            user_id: User ID from messenger
+            old_phone: Current phone number
+            new_phone: New phone number
+            staff_id: Staff member who approved the change
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "Номер телефона изменен"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 409, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_change_phone(messenger, user_id, old_phone, new_phone, staff_id)
+            
+        endpoint = f"{self.base_url}/user/change_phone"
+        payload = {
+            "messenger": messenger,
+            "user_id": user_id,
+            "old_phone": old_phone,
+            "new_phone": new_phone,
+            "staff_id": staff_id
+        }
+
+        logger.info(f"Changing phone: user={user_id}, old={old_phone}, new={new_phone}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def audit_log(
+        self,
+        messenger: str,
+        action_type: str,
+        action_timestamp: str | None = None,
+        user_id: int | None = None,
+        staff_id: int | None = None,
+        ticket_id: str | None = None,
+        action_details: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """
+        Log system events for audit trail.
+
+        Args:
+            messenger: Messenger type ("telegram" or "max")
+            action_type: Type of action performed
+            action_timestamp: When the action occurred (ISO format)
+            user_id: User ID involved (optional)
+            staff_id: Staff ID who performed action (optional)
+            ticket_id: Ticket ID involved (optional)
+            action_details: Additional details as JSON (optional)
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "Событие записано"
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_audit_log(messenger, action_type, action_timestamp=action_timestamp, user_id=user_id, staff_id=staff_id, ticket_id=ticket_id, action_details=action_details)
+            
+        endpoint = f"{self.base_url}/system/audit_log"
+        payload = {
+            "messenger": messenger,
+            "action_type": action_type
+        }
+
+        if action_timestamp:
+            payload["action_timestamp"] = action_timestamp
+        if user_id:
+            payload["user_id"] = user_id
+        if staff_id:
+            payload["staff_id"] = staff_id
+        if ticket_id:
+            payload["ticket_id"] = ticket_id
+        if action_details:
+            payload["action_details"] = action_details
+
+        logger.info(f"Audit log: action={action_type}, messenger={messenger}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def get_ticket_history(
+        self,
+        ticket_id: str
+    ) -> dict[str, Any]:
+        """
+        Get ticket history from CRM.
+
+        Args:
+            ticket_id: Ticket ID to get history for
+
+        Returns:
+            {
+                "status": "ok",
+                "history": [...]
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (400, 404, 500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_get_ticket_history(ticket_id)
+            
+        endpoint = f"{self.base_url}/tickets/{ticket_id}/history"
+
+        logger.info(f"Getting ticket history: ticket_id={ticket_id}")
+        return await self._make_request("GET", endpoint)
+
+    async def run_webhook_retry(
+        self,
+        limit: int | None = None,
+        max_attempts: int | None = None
+    ) -> dict[str, Any]:
+        """
+        Run webhook retry process.
+
+        Args:
+            limit: Maximum number of records to process (optional)
+            max_attempts: Maximum retry attempts (optional)
+
+        Returns:
+            {
+                "status": "ok",
+                "message": "Retry process completed",
+                "limit": 100,
+                "max_attempts": 3,
+                "checked": 50,
+                "processed": 45,
+                "succeeded": 40,
+                "failed": 5,
+                "skipped_max_attempts": 0
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status (500)
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_run_webhook_retry(limit=limit, max_attempts=max_attempts)
+            
+        endpoint = f"{self.base_url}/system/webhook_retry/run"
+        payload = {}
+
+        if limit is not None:
+            payload["limit"] = limit
+        if max_attempts is not None:
+            payload["max_attempts"] = max_attempts
+
+        logger.info(f"Running webhook retry: limit={limit}, max_attempts={max_attempts}")
+        return await self._make_request("POST", endpoint, json=payload)
+
+    async def get_webhook_retry_status(
+        self,
+        max_attempts: int | None = None
+    ) -> dict[str, Any]:
+        """
+        Get webhook retry queue status.
+
+        Args:
+            max_attempts: Filter by max attempts (optional)
+
+        Returns:
+            {
+                "total": 100,
+                "queued": 10,
+                "success": 80,
+                "failed": 5,
+                "dead_letter": 5,
+                "queued_at_max_attempts": 2
+            }
+        
+        Raises:
+            httpx.TimeoutException: Request timeout
+            httpx.HTTPStatusError: HTTP error status
+            httpx.ConnectError: Connection error
+        """
+        if self.use_mock:
+            return await self._mock_get_webhook_retry_status(max_attempts=max_attempts)
+            
+        endpoint = f"{self.base_url}/system/webhook_retry/status"
+        params = {}
+
+        if max_attempts is not None:
+            params["max_attempts"] = max_attempts
+
+        logger.info(f"Getting webhook retry status: max_attempts={max_attempts}")
+        return await self._make_request("GET", endpoint, params=params)
 
 
 # Singleton instance

@@ -68,7 +68,7 @@ def get_calendar_main_keyboard() -> Keyboard:
     
     Buttons:
     [📅 На неделю] [📅 На месяц]
-    [📋 Список правил] [🗑 Очистить период]
+    [📋 Добавить/Список] [🗑 Очистить период]
     [❓ Пример команд]
     [◀️ Назад в админ-панель]
     """
@@ -87,7 +87,7 @@ def get_calendar_main_keyboard() -> Keyboard:
         # Row 2: Rule list and clear period
         [
             KeyboardButton(
-                text="📋 Список правил",
+                text="📋 Добавить/Список",
                 payload=CalendarMenuPayload(action="rules").pack()
             ),
             KeyboardButton(
@@ -264,7 +264,7 @@ async def handle_calendar_action(
             await handle_monthly_view(event, session, messenger_adapter)
         
         elif action == "rules":
-            await handle_rule_list(event, session, messenger_adapter)
+            await handle_rule_list(event, session, messenger_adapter, context=context)
         
         elif action == "clear":
             await handle_clear_period_start(event, context, session, messenger_adapter)
@@ -278,14 +278,14 @@ async def handle_calendar_action(
         
         elif action == "back":
             # Return to admin panel
-            from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard
-            from bots.max_bot.texts import ADMIN_PANEL_MENU
+            from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard, get_admin_panel_menu_text
             
-            keyboard = get_admin_panel_keyboard()
+            keyboard = await get_admin_panel_keyboard(session)
+            menu_text = await get_admin_panel_menu_text(session)
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADMIN_PANEL_MENU,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -473,15 +473,15 @@ async def handle_monthly_view(
         )
 
 
-async def handle_rule_list(
+async def handle_rule_list_stub(
     event: MessageCallback,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
-    """Show list of calendar rules."""
+    """Show list of calendar rules (stub - deprecated)."""
     chat_id = event.message.recipient.chat_id
     
-    # TODO: Implement rule list
+    # TODO: Remove this stub function - use the main handle_rule_list instead
     keyboard = Keyboard(
         buttons=[
             [
@@ -623,7 +623,8 @@ async def handle_rule_list(
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
     target_year: int | None = None,
-    target_month: int | None = None
+    target_month: int | None = None,
+    context: MemoryContext | None = None
 ) -> None:
     """
     Display list of all active schedule rules with pagination by month.
@@ -635,6 +636,7 @@ async def handle_rule_list(
         messenger_adapter: MAXMessengerAdapter
         target_year: Specific year to display
         target_month: Specific month to display
+        context: MemoryContext for FSM state (required for initial call)
     """
     chat_id = event.message.recipient.chat_id
     
@@ -657,16 +659,23 @@ async def handle_rule_list(
         
         # First message: Instructions (only on initial call)
         if target_year is None and target_month is None:
+            # Set FSM state to enable text command handling
+            if context:
+                from bots.max_bot.states import CalendarStates
+                await context.set_state(CalendarStates.managing_calendar)
+            
             instructions_text = (
                 "📝 <b>Как добавить правило календаря</b>\n\n"
                 "Отправьте команду в одном из форматов:\n\n"
                 "<b>Одна дата:</b>\n"
                 "• <code>31 января рабочее время с 9 до 15</code>\n"
+                "• <code>21 марта рабочее время с 8:30 до 17:00</code>\n"
                 "• <code>23 февраля нерабочее время</code>\n"
-                "• <code>8 марта продленное время с 8 до 20</code>\n\n"
+                "• <code>8 марта продленное время с 17:30 до 20:15</code>\n\n"
                 "<b>Период (диапазон дат):</b>\n"
                 "• <code>с 1 по 5 февраля нерабочее время</code>\n"
-                "• <code>с 10 по 15 марта рабочее время с 10 до 16</code>\n\n"
+                "• <code>с 10 по 15 марта рабочее время с 10 до 16</code>\n"
+                "• <code>с 1 по 5 апреля продленное время с 18:30 до 22:00</code>\n\n"
                 "<i>После отправки команды система покажет интерпретацию и попросит подтверждение.</i>"
             )
             
@@ -952,6 +961,7 @@ async def handle_calendar_text_command(
     
     Supports:
     - Adding rules: "31 января рабочее время с 9 до 15"
+    - Adding rules with minutes: "21 марта рабочее время с 8:30 до 17:00"
     - Deleting rules: "Удалить правило 2"
     - Period clearing: "Очистить с 1 по 5 февраля"
     

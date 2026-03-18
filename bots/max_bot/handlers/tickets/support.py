@@ -1,4 +1,4 @@
-﻿"""
+"""
 Technical Support Handler for MAX Bot
 
 Handles technical support flow including:
@@ -49,6 +49,8 @@ from bots.max_bot.texts import (
     SUPPORT_RESPONSE_TIME_REGULAR,
     SUPPORT_RESPONSE_TIME_EXTENDED,
     SUPPORT_RESPONSE_TIME_NON_WORKING,
+    SUPPORT_NON_WORKING_HOURS_MESSAGE,
+    RENEWAL_NON_WORKING_HOURS_MESSAGE,
 )
 from database.models import (
     KeyConflictStatus,
@@ -275,6 +277,9 @@ async def handle_renewal_callback(
                 f"ticket_id={existing_ticket.id}"
             )
             
+            # Notify manager about duplicate attempt
+            await notify_manager_about_duplicate_renewal(session, existing_ticket, user.id)
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=f"📋 У вас уже есть активная заявка на продление (#{existing_ticket.id}).\n\n"
@@ -334,6 +339,13 @@ async def create_renewal_ticket(
             )
             return
         
+        # Check current work mode for response time message
+        from services.calendar_service import get_current_work_mode
+        from database.models import WorkMode
+        
+        work_mode = await get_current_work_mode(session)
+        is_working = work_mode != WorkMode.NON_WORKING
+        
         # Determine assigned manager (with admin fallback if no manager)
         from services.ticket_service import determine_assigned_manager
         
@@ -368,6 +380,17 @@ async def create_renewal_ticket(
             f"assigned_staff={assigned_staff_id}, has_manager={has_manager}"
         )
         
+        # Log ticket creation to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
+            await log_ticket_creation_to_itat(session, ticket)
+        except Exception as e:
+            # Log error but don't fail ticket creation
+            logger.error(
+                f"Failed to log renewal ticket to I-TAT API: ticket_id={ticket.id}, error={e}",
+                exc_info=True
+            )
+        
         # Get manager name and position for user message
         manager_name = "Менеджер"
         manager_position = "Менеджер"
@@ -383,16 +406,35 @@ async def create_renewal_ticket(
                 manager_name = staff_member.full_name or "Менеджер"
                 manager_position = staff_member.position or "Менеджер"
         
-        # Send success message to user
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=RENEWAL_TICKET_CREATED.format(
-                ticket_id=ticket.id,
-                manager_name=manager_name,
-                manager_position=manager_position
-            ),
-            parse_mode="HTML"
-        )
+        # Send success message to user based on working hours
+        if is_working:
+            # Working hours - standard message
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=RENEWAL_TICKET_CREATED.format(
+                    ticket_id=ticket.id,
+                    manager_name=manager_name,
+                    manager_position=manager_position
+                ),
+                parse_mode="HTML"
+            )
+        else:
+            # Non-working hours - friendly message
+            from bots.max_bot.texts import RENEWAL_NON_WORKING_HOURS_MESSAGE
+            
+            # Show ticket creation confirmation first
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"✅ <b>Заявка на продление создана!</b>\n\nНомер заявки: #{ticket.id}",
+                parse_mode="HTML"
+            )
+            
+            # Then show non-working hours message
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=RENEWAL_NON_WORKING_HOURS_MESSAGE,
+                parse_mode="HTML"
+            )
         
         # Show main menu after successful ticket creation
         from services.ticket_service import get_user_active_tickets_count
@@ -413,12 +455,12 @@ async def create_renewal_ticket(
             parse_mode="HTML"
         )
         
-        # Send notifications
+        # Send notifications based on working hours
         from services.ticket_service import send_staff_notification
         from loaders import max_bot
         
-        if assigned_staff_id:
-            # Send notification to assigned manager or admin
+        if assigned_staff_id and is_working:
+            # Send notification only during working hours
             notification_sent = await send_staff_notification(
                 bot=max_bot,
                 staff_id=assigned_staff_id,
@@ -445,6 +487,12 @@ async def create_renewal_ticket(
                     user=user,
                     assigned_admin_id=assigned_staff_id
                 )
+        elif assigned_staff_id and not is_working:
+            # Non-working hours - ticket queued, notifications will be sent at 9 AM
+            logger.info(
+                f"Renewal ticket queued for next working period: ticket_id={ticket.id}, "
+                f"staff_id={assigned_staff_id}, work_mode={work_mode.value}"
+            )
     
     except Exception as e:
         logger.error(
@@ -1087,11 +1135,22 @@ async def process_new_key_for_support(
             await context.clear()
             return
         
+        # Get user to access max_user_id for API calls
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            return
+        
         # Check for key conflicts via i-TAT API
         itat_client = get_itat_client()
         conflict_response = await itat_client.check_key_conflict(
             grand_key=normalized_key,
-            user_id=user_id
+            user_id=user.max_user_id
         )
         
         logger.info(f"Key conflict check result: {conflict_response}")
@@ -1104,6 +1163,23 @@ async def process_new_key_for_support(
         
         # Add key to user profile
         await add_user_key(session, user_id, normalized_key, conflict_status)
+        
+        # Update user assets via i-TAT API (only if no conflict)
+        if conflict_status == KeyConflictStatus.NONE:
+            try:
+                itat_client = get_itat_client()
+                assets_response = await itat_client.update_user_assets(
+                    messenger="max",
+                    user_id=user.max_user_id,
+                    asset_type="grand_key",
+                    action="add",
+                    value=normalized_key
+                )
+                logger.info(f"Assets update result: {assets_response}")
+            except Exception as api_error:
+                logger.error(f"Assets update API error: {api_error}")
+                # Continue even if API fails - local data is already saved
+        
         await session.commit()
         
         logger.info(f"GS_Key added: user_id={user_id}, key={normalized_key}, conflict={conflict_status.value}")
@@ -1301,6 +1377,17 @@ async def create_support_ticket(
             f"has_support_staff={has_support_staff}"
         )
         
+        # Log ticket creation to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
+            await log_ticket_creation_to_itat(session, ticket)
+        except Exception as e:
+            # Log error but don't fail ticket creation
+            logger.error(
+                f"Failed to log support ticket to I-TAT API: ticket_id={ticket.id}, error={e}",
+                exc_info=True
+            )
+        
         # Schedule 10-minute escalation check for technical support tickets
         # This will notify admins if ticket is not taken by support staff
         try:
@@ -1337,8 +1424,16 @@ async def create_support_ticket(
         response_time_messages = {
             WorkMode.REGULAR: SUPPORT_RESPONSE_TIME_REGULAR,
             WorkMode.EXTENDED: SUPPORT_RESPONSE_TIME_EXTENDED,
-            WorkMode.NON_WORKING: SUPPORT_RESPONSE_TIME_NON_WORKING
+            WorkMode.NON_WORKING: None  # Will be handled separately
         }
+        
+        # Get response time message based on work mode
+        if work_mode == WorkMode.NON_WORKING:
+            # Import the new non-working hours message
+            from bots.max_bot.texts import SUPPORT_NON_WORKING_HOURS_MESSAGE
+            response_time_message = SUPPORT_NON_WORKING_HOURS_MESSAGE
+        else:
+            response_time_message = response_time_messages[work_mode]
         
         # Send success message to user
         await messenger_adapter.send_message(
@@ -1346,7 +1441,7 @@ async def create_support_ticket(
             text=SUPPORT_TICKET_CREATED.format(
                 ticket_id=ticket.id,
                 routing_message=routing_messages[work_mode],
-                response_time_message=response_time_messages[work_mode]
+                response_time_message=response_time_message
             ),
             parse_mode="HTML"
         )
@@ -1771,5 +1866,108 @@ async def _notify_admin_about_no_support_staff(
         logger.error(
             f"Error in _notify_admin_about_no_support_staff: "
             f"ticket_id={ticket.id}, error={e}",
+            exc_info=True
+        )
+
+
+async def notify_manager_about_duplicate_renewal(
+    session: AsyncSession,
+    existing_ticket: Ticket,
+    user_id: int
+) -> None:
+    """
+    Notify manager about user's attempt to create duplicate renewal ticket.
+    
+    Sends notification to the manager assigned to the existing renewal ticket
+    with a button to open the ticket card.
+    
+    Args:
+        session: Database session
+        existing_ticket: The existing active renewal ticket
+        user_id: User ID who attempted to create duplicate ticket
+    
+    Requirements: Manager notification for duplicate renewal attempts
+    """
+    try:
+        from loaders import max_bot
+        from bots.max_bot.handlers.staff.manager import format_ticket_card_detailed, get_ticket_action_keyboard
+        from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+        from bots.max_bot.payloads import ManagerTicketActionPayload
+        from database.models import Staff_Member
+        from sqlalchemy import select
+        
+        # Get assigned staff member
+        if not existing_ticket.assigned_staff_id:
+            logger.warning(f"No assigned staff for renewal ticket {existing_ticket.id}")
+            return
+        
+        # Load ticket relationships for proper formatting
+        from sqlalchemy.orm import selectinload
+        stmt = select(Ticket).where(Ticket.id == existing_ticket.id).options(
+            selectinload(Ticket.user),
+            selectinload(Ticket.organization),
+            selectinload(Ticket.gs_keys)
+        )
+        result = await session.execute(stmt)
+        ticket_with_relations = result.scalar_one_or_none()
+        
+        if not ticket_with_relations:
+            logger.warning(f"Ticket not found: {existing_ticket.id}")
+            return
+        
+        stmt = select(Staff_Member).where(Staff_Member.id == existing_ticket.assigned_staff_id)
+        result = await session.execute(stmt)
+        staff_member = result.scalar_one_or_none()
+        
+        if not staff_member or not staff_member.max_chat_id:
+            logger.warning(
+                f"Staff member not found or no MAX chat ID: "
+                f"staff_id={existing_ticket.assigned_staff_id}"
+            )
+            return
+        
+        # Format ticket card
+        ticket_card = format_ticket_card_detailed(ticket_with_relations)
+        
+        # Create notification message
+        notification_text = (
+            f"🔔 <b>Повторная попытка создания заявки на продление</b>\n\n"
+            f"Пользователь повторно нажал кнопку \"Продлить\", но у него уже есть активная заявка:\n\n"
+            f"{ticket_card}"
+        )
+        
+        # Create keyboard with "Go to ticket" button (using history action to show ticket details)
+        keyboard = Keyboard(
+            buttons=[[
+                KeyboardButton(
+                    text="📋 Перейти к заявке",
+                    payload=ManagerTicketActionPayload(
+                        action="history", 
+                        ticket_id=existing_ticket.id
+                    ).pack()
+                )
+            ]],
+            inline=True
+        )
+        
+        # Send notification to manager
+        messenger_adapter = MAXMessengerAdapter(max_bot)
+        await messenger_adapter.send_message(
+            chat_id=staff_member.max_chat_id,
+            text=notification_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(
+            f"Duplicate renewal notification sent: "
+            f"ticket_id={existing_ticket.id}, staff_id={existing_ticket.assigned_staff_id}, "
+            f"user_id={user_id}"
+        )
+    
+    except Exception as e:
+        logger.error(
+            f"Error sending duplicate renewal notification: "
+            f"ticket_id={existing_ticket.id}, user_id={user_id}, error={e}",
             exc_info=True
         )

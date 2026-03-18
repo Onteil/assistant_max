@@ -346,6 +346,8 @@ async def delete_organization(
     """
     Delete organization from user profile.
     
+    Removes organization from local database and updates i-TAT API.
+    
     Args:
         chat_id: Chat ID for sending messages
         user_id: Internal user ID
@@ -375,6 +377,31 @@ async def delete_organization(
             
             if org_to_remove:
                 user.organizations.remove(org_to_remove)
+                
+                # Update user assets via i-TAT API
+                itat_client = get_itat_client()
+                try:
+                    assets_response = await itat_client.update_user_assets(
+                        messenger="max",
+                        user_id=user.max_user_id,
+                        asset_type="inn",
+                        action="remove",
+                        value=inn
+                    )
+                    logger.info(f"Assets removal result: {assets_response}")
+                except Exception as api_error:
+                    logger.error(f"Assets removal API error: {api_error}")
+                    # Continue even if API fails - local data is already updated
+                
+                # Log profile update to audit
+                from bots.max_bot.utils.audit_logger import log_user_profile_updated
+                await log_user_profile_updated(
+                    user_id=user_id,
+                    field="organization",
+                    old_value=inn,
+                    new_value="",  # Removed
+                    max_user_id=user.max_messenger_data.max_user_id if user.max_messenger_data else 0
+                )
                 
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
@@ -420,6 +447,8 @@ async def delete_key(
     """
     Delete GS key from user profile.
     
+    Removes key from local database and updates i-TAT API.
+    
     Args:
         chat_id: Chat ID for sending messages
         user_id: Internal user ID
@@ -430,23 +459,54 @@ async def delete_key(
     logger.info(f"Deleting key: user_id={user_id}, key_id={key_id}")
     
     try:
-        # Get key
-        from database.models import GS_Key
+        # Get user and key
+        from database.models import GS_Key, User
         from sqlalchemy import select, and_
+        from sqlalchemy.orm import selectinload
         
-        stmt = select(GS_Key).where(
-            and_(
-                GS_Key.user_id == user_id,
-                GS_Key.id == key_id
-            )
+        # Get user with key
+        stmt = (
+            select(User)
+            .where(User.id == user_id)
+            .options(selectinload(User.gs_keys))
         )
         result = await session.execute(stmt)
-        key = result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Find the key
+        key = None
+        for gs_key in user.gs_keys:
+            if gs_key.id == key_id:
+                key = gs_key
+                break
         
         if key:
             key_number = key.key_number
             await session.delete(key)
             await session.flush()
+            
+            # Update user assets via i-TAT API
+            itat_client = get_itat_client()
+            try:
+                assets_response = await itat_client.update_user_assets(
+                    messenger="max",
+                    user_id=user.max_user_id,
+                    asset_type="grand_key",
+                    action="remove",
+                    value=key_number
+                )
+                logger.info(f"Assets removal result: {assets_response}")
+            except Exception as api_error:
+                logger.error(f"Assets removal API error: {api_error}")
+                # Continue even if API fails - local data is already updated
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
@@ -999,6 +1059,11 @@ async def handle_profile_callback(
                     parse_mode="HTML"
                 )
             
+            elif action == "change_phone":
+                # Start phone change flow
+                from bots.max_bot.handlers.user.phone_change import start_phone_change
+                await start_phone_change(event, context, session, messenger_adapter)
+            
             elif action == "toggle_notif":
                 # Toggle notification preferences
                 if user.notification_preferences:
@@ -1112,8 +1177,8 @@ async def process_add_inn(
     Process new INN input for profile, validate, add organization.
     
     Validates INN format (10 or 12 digits).
-    Checks for duplicate organizations and prevents duplicates.
-    Adds organization to user profile.
+    Checks INN availability via i-TAT API.
+    Adds organization to user profile via i-TAT API and local database.
     Refreshes profile display with updated data.
     
     maxapi Pattern Notes:
@@ -1140,7 +1205,7 @@ async def process_add_inn(
     is_valid, error_msg = validate_inn(inn)
     
     if not is_valid:
-        logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
+        logger.warning(f"Invalid INN format: inn={inn}, error={error_msg}")
         from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
         keyboard = get_cancel_keyboard()
         await messenger_adapter.send_message(
@@ -1150,6 +1215,36 @@ async def process_add_inn(
             parse_mode="HTML"
         )
         return
+    
+    # Check INN with i-TAT API
+    from services.i_tat_service import get_itat_client
+    try:
+        itat_client = get_itat_client()
+        api_response = await itat_client.check_inn(
+            messenger="max",
+            user_id=user.max_user_id,
+            inn=inn
+        )
+        logger.info(f"i-TAT API INN check successful: {api_response}")
+        
+        # Check if INN is valid according to i-TAT
+        if not api_response.get("is_valid", True):
+            error_details = api_response.get("error_message", "INN не найден в базе данных")
+            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+            from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
+            keyboard = get_cancel_keyboard()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+            return
+            
+    except Exception as api_error:
+        logger.error(f"i-TAT API INN check error: {api_error}")
+        # Continue with local validation if API fails
+        logger.info(f"Continuing with local INN validation due to API error")
     
     try:
         # Get user
@@ -1164,8 +1259,22 @@ async def process_add_inn(
             await context.clear()
             return
         
-        # Add organization to user profile
+        # Add organization to user profile locally
         await add_user_organization(session, user.id, inn)
+        
+        # Update user assets via i-TAT API
+        try:
+            assets_response = await itat_client.update_user_assets(
+                messenger="max",
+                user_id=user.max_user_id,
+                asset_type="inn",
+                action="add",
+                value=inn
+            )
+            logger.info(f"Assets update result: {assets_response}")
+        except Exception as api_error:
+            logger.error(f"Assets update API error: {api_error}")
+            # Continue even if API fails - local data is already saved
         
         logger.info(f"Organization added to profile: user_id={user.id}, inn={inn}")
         
@@ -1224,7 +1333,7 @@ async def process_add_key(
     Validates key format (XXXXX_XXXXX).
     Checks for key conflicts via i-TAT API.
     If conflict detected, creates KEY_CONFLICT ticket and flags key as PENDING_REVIEW.
-    Adds key to user profile.
+    Adds key to user profile via i-TAT API and local database.
     Refreshes profile display with updated data.
     
     maxapi Pattern Notes:
@@ -1281,7 +1390,7 @@ async def process_add_key(
         itat_client = get_itat_client()
         conflict_response = await itat_client.check_key_conflict(
             grand_key=normalized_key,
-            user_id=user.id
+            user_id=user.max_user_id
         )
         
         logger.info(f"Key conflict check result: {conflict_response}")
@@ -1314,6 +1423,17 @@ async def process_add_key(
                 f"KEY_CONFLICT ticket created: ticket_id={ticket.id}, key={normalized_key}"
             )
             
+            # Log ticket creation to I-TAT API
+            try:
+                from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
+                await log_ticket_creation_to_itat(session, ticket)
+            except Exception as e:
+                # Log error but don't fail ticket creation
+                logger.error(
+                    f"Failed to log key conflict ticket to I-TAT API: ticket_id={ticket.id}, error={e}",
+                    exc_info=True
+                )
+            
             # Clear FSM state
             await context.clear()
             
@@ -1332,6 +1452,20 @@ async def process_add_key(
                 normalized_key,
                 KeyConflictStatus.NONE
             )
+            
+            # Update user assets via i-TAT API
+            try:
+                assets_response = await itat_client.update_user_assets(
+                    messenger="max",
+                    user_id=user.max_user_id,
+                    asset_type="grand_key",
+                    action="add",
+                    value=normalized_key
+                )
+                logger.info(f"Assets update result: {assets_response}")
+            except Exception as api_error:
+                logger.error(f"Assets update API error: {api_error}")
+                # Continue even if API fails - local data is already saved
             
             logger.info(f"GS_Key added to profile: user_id={user.id}, key={normalized_key}")
             

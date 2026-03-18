@@ -298,6 +298,23 @@ async def handle_client_message_to_ticket_max(
                 }
             )
             
+            # Log status change to I-TAT API
+            try:
+                from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+                await log_ticket_status_change_to_itat(
+                    session=session,
+                    ticket=ticket,
+                    old_status=old_status,
+                    new_status=TicketStatus.IN_PROGRESS,
+                    comment="Клиент ответил на заявку, статус изменен на 'В работе'"
+                )
+            except Exception as e:
+                # Log error but don't fail the operation
+                logger.error(
+                    f"Failed to log status change to I-TAT API: ticket_id={ticket.id}, error={e}",
+                    exc_info=True
+                )
+            
             logger.info(
                 f"Ticket status changed from WAITING_CLIENT to IN_PROGRESS: "
                 f"ticket_id={ticket.id}"

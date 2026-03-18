@@ -14,7 +14,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import NPS_Response, SurveyType, User, Staff_Member, StaffRole
+from database.models import NPS_Response, SurveyType, User, Staff_Member, StaffRole, MAX_Messenger_Data
 from services.i_tat_service import get_itat_client
 
 logger = logging.getLogger(__name__)
@@ -391,9 +391,23 @@ async def notify_staff_about_low_rating(
             if admin.tg_user_id:
                 messenger_type = "telegram"
                 messenger_id = admin.tg_user_id
-            elif admin.max_chat_id:
-                messenger_type = "max"
-                messenger_id = admin.max_chat_id
+            elif admin.max_user_id:
+                # For MAX, get chat_id from max_messenger_data table
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                max_chat_id = result_chat.scalar_one_or_none()
+                
+                if max_chat_id:
+                    messenger_type = "max"
+                    messenger_id = max_chat_id
+                else:
+                    logger.warning(
+                        f"Administrator {admin.id} ({admin.full_name}) has max_user_id={admin.max_user_id} "
+                        f"but no chat_id found in max_messenger_data table, skipping"
+                    )
+                    continue
             else:
                 logger.warning(
                     f"Administrator {admin.id} ({admin.full_name}) has no messenger ID, skipping"

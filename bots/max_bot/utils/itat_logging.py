@@ -1,0 +1,220 @@
+"""
+I-TAT API logging utilities for MAX bot.
+
+This module provides helper functions to log ticket operations to I-TAT API
+for audit trail and CRM integration.
+"""
+
+import logging
+from typing import Optional
+
+from database.models import Ticket, TicketType, TicketStatus, User
+from services.i_tat_service import get_itat_client
+from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
+
+
+async def log_ticket_to_itat(
+    session: AsyncSession,
+    ticket: Ticket,
+    status: str,
+    comment: Optional[str] = None,
+    staff_id: Optional[int] = None
+) -> bool:
+    """
+    Log ticket operation to I-TAT API.
+    
+    Args:
+        session: Database session
+        ticket: Ticket object
+        status: Ticket status in Russian (e.g., "Новое", "В работе", "Закрыто")
+        comment: Optional comment for the operation
+        staff_id: Optional staff member ID (internal ID, not messenger ID)
+    
+    Returns:
+        bool: True if logging was successful, False otherwise
+    
+    Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 7.1
+    """
+    try:
+        # Get I-TAT API client
+        api_client = get_itat_client()
+        
+        # Get user with MAX messenger data
+        user = ticket.user
+        if not user or not user.max_messenger_data:
+            logger.warning(
+                f"Cannot log ticket to I-TAT: user has no MAX messenger data. "
+                f"ticket_id={ticket.id}, user_id={ticket.user_id}"
+            )
+            return False
+        
+        # Map ticket type to API format
+        ticket_type_map = {
+            TicketType.INVOICE: "Счет",
+            TicketType.TECHNICAL_SUPPORT: "Техподдержка", 
+            TicketType.RENEWAL: "Продление",
+            TicketType.PHONE_CHANGE: "Смена телефона",
+            TicketType.KEY_CONFLICT: "Конфликт ключа"
+        }
+        
+        # Prepare API call parameters
+        api_params = {
+            "ticket_id": f"TKT_{ticket.id}",
+            "messenger": "max",
+            "user_id": user.max_messenger_data.max_user_id,
+            "ticket_type": ticket_type_map.get(ticket.ticket_type, "Прочее"),
+            "status": status,
+            "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
+            "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None
+        }
+        
+        # Add optional parameters
+        if comment:
+            api_params["comment"] = comment
+        
+        if staff_id:
+            api_params["staff_id"] = staff_id
+        
+        # Call I-TAT API
+        await api_client.log_ticket(**api_params)
+        
+        logger.info(
+            f"Ticket logged to I-TAT API: ticket_id={ticket.id}, "
+            f"status={status}, messenger=max"
+        )
+        return True
+        
+    except Exception as e:
+        # Log error but don't fail the operation
+        logger.error(
+            f"Failed to log ticket to I-TAT API: ticket_id={ticket.id}, "
+            f"status={status}, error={e}",
+            exc_info=True
+        )
+        return False
+
+
+async def log_ticket_creation_to_itat(
+    session: AsyncSession,
+    ticket: Ticket
+) -> bool:
+    """
+    Log ticket creation to I-TAT API.
+    
+    Args:
+        session: Database session
+        ticket: Created ticket object
+    
+    Returns:
+        bool: True if logging was successful, False otherwise
+    """
+    description_preview = ""
+    if ticket.description:
+        description_preview = ticket.description[:100]
+        if len(ticket.description) > 100:
+            description_preview += "..."
+    
+    comment = f"Заявка создана через MAX бот. Описание: {description_preview or 'Не указано'}"
+    
+    return await log_ticket_to_itat(
+        session=session,
+        ticket=ticket,
+        status="Новое",
+        comment=comment
+    )
+
+
+async def log_ticket_status_change_to_itat(
+    session: AsyncSession,
+    ticket: Ticket,
+    old_status: TicketStatus,
+    new_status: TicketStatus,
+    staff_id: Optional[int] = None,
+    comment: Optional[str] = None
+) -> bool:
+    """
+    Log ticket status change to I-TAT API.
+    
+    Args:
+        session: Database session
+        ticket: Ticket object
+        old_status: Previous ticket status
+        new_status: New ticket status
+        staff_id: Staff member ID who performed the action
+        comment: Optional comment for the status change
+    
+    Returns:
+        bool: True if logging was successful, False otherwise
+    """
+    # Map status to Russian
+    status_map = {
+        TicketStatus.NEW: "Новое",
+        TicketStatus.IN_PROGRESS: "В работе",
+        TicketStatus.WAITING_CLIENT: "Ожидание клиента",
+        TicketStatus.CLOSED: "Закрыто",
+        TicketStatus.CANCELLED: "Отменено"
+    }
+    
+    status_text = status_map.get(new_status, new_status.value)
+    
+    # Generate comment if not provided
+    if not comment:
+        old_status_text = status_map.get(old_status, old_status.value)
+        comment = f"Статус изменен с '{old_status_text}' на '{status_text}'"
+    
+    return await log_ticket_to_itat(
+        session=session,
+        ticket=ticket,
+        status=status_text,
+        comment=comment,
+        staff_id=staff_id
+    )
+
+
+async def log_ticket_assignment_to_itat(
+    session: AsyncSession,
+    ticket: Ticket,
+    staff_id: int,
+    action: str = "assigned"
+) -> bool:
+    """
+    Log ticket assignment to I-TAT API.
+    
+    Args:
+        session: Database session
+        ticket: Ticket object
+        staff_id: Staff member ID who was assigned or performed assignment
+        action: Type of assignment action ("assigned", "transferred", "taken")
+    
+    Returns:
+        bool: True if logging was successful, False otherwise
+    """
+    # Map status to Russian
+    status_map = {
+        TicketStatus.NEW: "Новое",
+        TicketStatus.IN_PROGRESS: "В работе",
+        TicketStatus.WAITING_CLIENT: "Ожидание клиента",
+        TicketStatus.CLOSED: "Закрыто",
+        TicketStatus.CANCELLED: "Отменено"
+    }
+    
+    status_text = status_map.get(ticket.ticket_status, ticket.ticket_status.value)
+    
+    # Generate comment based on action
+    action_comments = {
+        "assigned": "Заявка назначена сотруднику",
+        "transferred": "Заявка передана другому сотруднику", 
+        "taken": "Заявка взята в работу"
+    }
+    
+    comment = action_comments.get(action, f"Действие с заявкой: {action}")
+    
+    return await log_ticket_to_itat(
+        session=session,
+        ticket=ticket,
+        status=status_text,
+        comment=comment,
+        staff_id=staff_id
+    )

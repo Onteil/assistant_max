@@ -501,6 +501,33 @@ async def handle_employee_role_selection(
         session.add(new_employee)
         await session.flush()
         
+        # Call i-TAT API to create staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee_max_id,
+                action="upsert",
+                role=staff_role.value,
+                position=None,  # No position set during creation
+                is_active=True
+            )
+            logger.info(f"i-TAT API staff creation successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff creation error: {api_error}")
+            # Continue with local creation even if API fails
+        
+        # Log action to audit
+        from bots.max_bot.utils.audit_logger import log_staff_created
+        await log_staff_created(
+            staff_id=new_employee.id,
+            admin_id=admin.id,
+            admin_name=admin.full_name,
+            admin_max_id=max_user_id,
+            staff_name=employee_name
+        )
+        
         # Log action
         action_log = Action_Log(
             action_type=ActionType.STAFF_ACTIVATED,
@@ -1276,9 +1303,27 @@ async def handle_employee_name_edit_input(
         
         old_name = employee.full_name
         employee.full_name = new_name
+        
+        # Call i-TAT API to update staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=employee.staff_role.value if employee.staff_role else None,
+                position=employee.position,
+                is_active=employee.is_active
+            )
+            logger.info(f"i-TAT API staff update successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff update error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
         
-        # Log action
+        # Log action locally
         action_log = Action_Log(
             action_type=ActionType.STAFF_UPDATED,
             staff_id=admin.id,
@@ -1290,6 +1335,29 @@ async def handle_employee_name_edit_input(
             }
         )
         session.add(action_log)
+        
+        # Log action to i-TAT API
+        try:
+            itat_client = get_itat_client()
+            await itat_client.audit_log(
+                messenger="max",
+                action_type="staff_updated",
+                action_timestamp=datetime.utcnow().isoformat(),
+                staff_id=admin.id,
+                action_details={
+                    "field": "name",
+                    "old_value": old_name,
+                    "new_value": new_name,
+                    "admin_name": admin.full_name,
+                    "admin_max_id": max_user_id,
+                    "target_staff_id": employee.id
+                }
+            )
+            logger.info(f"i-TAT API audit log successful for staff name update")
+        except Exception as audit_error:
+            logger.error(f"i-TAT API audit log error: {audit_error}")
+            # Continue even if audit logging fails
+        
         await session.commit()
         
         # Clear FSM state
@@ -1496,9 +1564,27 @@ async def handle_employee_role_change(
         old_role = employee.staff_role
         new_role = StaffRole(payload.role)
         employee.staff_role = new_role
+        
+        # Call i-TAT API to update staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=new_role.value,
+                position=employee.position,
+                is_active=employee.is_active
+            )
+            logger.info(f"i-TAT API staff update successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff update error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
         
-        # Log action
+        # Log action locally
         action_log = Action_Log(
             action_type=ActionType.STAFF_UPDATED,
             staff_id=admin.id,
@@ -1510,6 +1596,29 @@ async def handle_employee_role_change(
             }
         )
         session.add(action_log)
+        
+        # Log action to i-TAT API
+        try:
+            itat_client = get_itat_client()
+            await itat_client.audit_log(
+                messenger="max",
+                action_type="staff_updated",
+                action_timestamp=datetime.utcnow().isoformat(),
+                staff_id=admin.id,
+                action_details={
+                    "field": "role",
+                    "old_value": old_role.value,
+                    "new_value": new_role.value,
+                    "admin_name": admin.full_name,
+                    "admin_max_id": max_user_id,
+                    "target_staff_id": employee.id
+                }
+            )
+            logger.info(f"i-TAT API audit log successful for staff role update")
+        except Exception as audit_error:
+            logger.error(f"i-TAT API audit log error: {audit_error}")
+            # Continue even if audit logging fails
+        
         await session.commit()
         
         # Show updated employee card
@@ -1731,7 +1840,33 @@ async def handle_confirm_deactivate(
         
         # Deactivate employee
         employee.is_active = False
+        
+        # Call i-TAT API to deactivate staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="deactivate",
+                is_active=False
+            )
+            logger.info(f"i-TAT API staff deactivation successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff deactivation error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
+        
+        # Log action to audit
+        from bots.max_bot.utils.audit_logger import log_staff_deactivated
+        await log_staff_deactivated(
+            staff_id=payload.employee_id,
+            admin_id=admin.id,
+            admin_name=admin.full_name,
+            admin_max_id=max_user_id,
+            reason=f"Деактивирован администратором. Переназначено заявок: {reassigned_count}"
+        )
         
         # Log action
         action_log = Action_Log(
@@ -1848,7 +1983,34 @@ async def handle_activate_employee(
         
         # Activate employee
         employee.is_active = True
+        
+        # Call i-TAT API to activate staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=employee.staff_role.value if employee.staff_role else None,
+                position=employee.position,
+                is_active=True
+            )
+            logger.info(f"i-TAT API staff activation successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff activation error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
+        
+        # Log action to audit
+        from bots.max_bot.utils.audit_logger import log_staff_activated
+        await log_staff_activated(
+            staff_id=payload.employee_id,
+            admin_id=admin.id,
+            admin_name=admin.full_name,
+            admin_max_id=max_user_id
+        )
         
         # Log action
         action_log = Action_Log(
@@ -2055,6 +2217,24 @@ async def handle_employee_signature_edit_input(
         
         old_signature = employee.position
         employee.position = new_signature
+        
+        # Call i-TAT API to update staff
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=employee.staff_role.value if employee.staff_role else None,
+                position=new_signature,
+                is_active=employee.is_active
+            )
+            logger.info(f"i-TAT API staff update successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff update error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
         
         # Log action
@@ -2729,6 +2909,40 @@ async def handle_backup_manager_assignment(
             )
             return
         
+        # Call i-TAT API to update staff with reserves
+        from services.i_tat_service import get_itat_client
+        try:
+            # Collect current reserves
+            reserves = []
+            if employee.backup_manager_1_id:
+                backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
+                backup1_result = await session.execute(backup1_stmt)
+                backup1 = backup1_result.scalar_one_or_none()
+                if backup1 and backup1.max_user_id:
+                    reserves.append(backup1.max_user_id)
+            
+            if employee.backup_manager_2_id:
+                backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
+                backup2_result = await session.execute(backup2_stmt)
+                backup2 = backup2_result.scalar_one_or_none()
+                if backup2 and backup2.max_user_id:
+                    reserves.append(backup2.max_user_id)
+            
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=employee.staff_role.value if employee.staff_role else None,
+                position=employee.position,
+                is_active=employee.is_active,
+                reserves=reserves
+            )
+            logger.info(f"i-TAT API staff reserves update successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff reserves update error: {api_error}")
+            # Continue with local update even if API fails
+        
         await session.commit()
         
         # Log action
@@ -2835,6 +3049,40 @@ async def handle_backup_manager_removal(
             backup = backup_result.scalar_one_or_none()
             removed_name = backup.full_name if backup else "Неизвестно"
             employee.backup_manager_2_id = None
+        
+        # Call i-TAT API to update staff with updated reserves
+        from services.i_tat_service import get_itat_client
+        try:
+            # Collect current reserves after removal
+            reserves = []
+            if employee.backup_manager_1_id:
+                backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
+                backup1_result = await session.execute(backup1_stmt)
+                backup1 = backup1_result.scalar_one_or_none()
+                if backup1 and backup1.max_user_id:
+                    reserves.append(backup1.max_user_id)
+            
+            if employee.backup_manager_2_id:
+                backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
+                backup2_result = await session.execute(backup2_stmt)
+                backup2 = backup2_result.scalar_one_or_none()
+                if backup2 and backup2.max_user_id:
+                    reserves.append(backup2.max_user_id)
+            
+            itat_client = get_itat_client()
+            api_response = await itat_client.update_staff(
+                messenger="max",
+                user_id=employee.max_user_id,
+                action="upsert",
+                role=employee.staff_role.value if employee.staff_role else None,
+                position=employee.position,
+                is_active=employee.is_active,
+                reserves=reserves
+            )
+            logger.info(f"i-TAT API staff reserves update successful: {api_response}")
+        except Exception as api_error:
+            logger.error(f"i-TAT API staff reserves update error: {api_error}")
+            # Continue with local update even if API fails
         
         await session.commit()
         

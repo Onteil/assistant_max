@@ -945,10 +945,12 @@ async def submit_registration(
     
     try:
         api_response = await api_client.register_user(
+            messenger="telegram",
             user_id=user.id,  # Use bot DB user.id instead of telegram_id
             phone=phone_number,
-            first_name=first_name,
-            last_name=last_name,
+            name=first_name,
+            surname=last_name,
+            inn=inn,
             grand_key=gs_key
         )
         

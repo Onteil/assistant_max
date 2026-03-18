@@ -45,19 +45,68 @@ async def is_admin(session: AsyncSession, max_user_id: int) -> Staff_Member | No
         return None
 
 
-def get_admin_panel_keyboard() -> Keyboard:
+async def get_admin_panel_menu_text(session: AsyncSession) -> str:
     """
-    Create admin panel main menu keyboard.
+    Get admin panel menu text with operations indicator.
+    
+    Args:
+        session: Database session for counting operations
+        
+    Returns:
+        Admin panel menu text with operations indicator if there are pending operations
+    """
+    from bots.max_bot.utils.operations_counter import count_all_operations, format_total_operations_indicator
+    
+    base_text = """🔐 <b>Административная панель</b>
+
+Выберите раздел для управления:
+
+👥 <b>Сотрудники</b> - управление персоналом
+📋 <b>Операции</b> - регистрации, рассылки, конфликты, смена номера
+📅 <b>График работы</b> - настройка расписания
+⚙️ <b>Настройки</b> - системные параметры
+📊 <b>Статистика</b> - аналитика и отчеты"""
+    
+    try:
+        operations_counts = await count_all_operations(session)
+        operations_indicator = format_total_operations_indicator(operations_counts['total'])
+        
+        if operations_indicator:
+            return base_text + f"\n\n{operations_indicator}"
+        else:
+            return base_text
+            
+    except Exception as e:
+        logger.error(f"Error getting operations indicator for admin panel text: {e}")
+        return base_text
+
+
+async def get_admin_panel_keyboard(session: AsyncSession) -> Keyboard:
+    """
+    Create admin panel main menu keyboard with operation counters.
+    
+    Args:
+        session: Database session for counting operations
     
     Returns:
-        Keyboard with admin panel menu buttons
+        Keyboard with admin panel menu buttons including operation counters
     
     Layout:
-    [👥 Сотрудники] [📋 Операции]
+    [👥 Сотрудники] [📋 Операции (N)]
     [📅 График работы] [⚙️ Настройки]
     [📊 Статистика]
     [🏠 В меню]
     """
+    # Get operation counts
+    from bots.max_bot.utils.operations_counter import count_all_operations, format_operation_counter
+    
+    try:
+        operations_counts = await count_all_operations(session)
+        operations_counter = format_operation_counter(operations_counts['total'])
+    except Exception as e:
+        logger.error(f"Error getting operation counts for admin panel: {e}")
+        operations_counter = ""
+    
     buttons = [
         # Row 1: Employees and Operations
         [
@@ -66,7 +115,7 @@ def get_admin_panel_keyboard() -> Keyboard:
                 payload=AdminMenuPayload(action="employees").pack()
             ),
             KeyboardButton(
-                text="📋 Операции",
+                text=f"📋 Операции{operations_counter}",
                 payload=AdminMenuPayload(action="operations").pack()
             )
         ],
@@ -156,15 +205,14 @@ async def handle_admin_panel_action(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
-        # Get admin panel main menu keyboard
-        keyboard = get_admin_panel_keyboard()
+        # Get admin panel main menu keyboard and text
+        keyboard = await get_admin_panel_keyboard(session)
+        menu_text = await get_admin_panel_menu_text(session)
         
         # Send admin panel main menu
-        from bots.max_bot.texts import ADMIN_PANEL_MENU
-        
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=ADMIN_PANEL_MENU,
+            text=menu_text,
             keyboard=keyboard,
             parse_mode="HTML"
         )
@@ -244,13 +292,12 @@ async def handle_admin_menu_action(
         
         elif action == "employees_back":
             # Return to admin panel from employees section
-            from bots.max_bot.texts import ADMIN_PANEL_MENU
-            
-            keyboard = get_admin_panel_keyboard()
+            keyboard = await get_admin_panel_keyboard(session)
+            menu_text = await get_admin_panel_menu_text(session)
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADMIN_PANEL_MENU,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -286,13 +333,12 @@ async def handle_admin_menu_action(
         
         elif action == "calendar_back":
             # Return to admin panel from calendar section
-            from bots.max_bot.texts import ADMIN_PANEL_MENU
-            
-            keyboard = get_admin_panel_keyboard()
+            keyboard = await get_admin_panel_keyboard(session)
+            menu_text = await get_admin_panel_menu_text(session)
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADMIN_PANEL_MENU,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -325,13 +371,12 @@ async def handle_admin_menu_action(
         
         elif action == "back":
             # Return to admin panel main menu
-            from bots.max_bot.texts import ADMIN_PANEL_MENU
-            
-            keyboard = get_admin_panel_keyboard()
+            keyboard = await get_admin_panel_keyboard(session)
+            menu_text = await get_admin_panel_menu_text(session)
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ADMIN_PANEL_MENU,
+                text=menu_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )

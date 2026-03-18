@@ -1240,6 +1240,7 @@ async def create_invoice_ticket(
                 
                 await api_client.log_ticket(
                     ticket_id=f"TKT_{ticket.id}",
+                    messenger="telegram",
                     user_id=user.id,
                     ticket_type=ticket_type_map.get(ticket.ticket_type, "Счет"),
                     status="Новое",

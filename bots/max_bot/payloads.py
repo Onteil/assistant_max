@@ -1030,3 +1030,20 @@ class BackupEscalationPayload(CallbackPayload, prefix='backup_esc'):
     action: str
     ticket_id: int
     escalation_level: int
+
+
+# ============================================================================
+# Phone Change Management Payloads
+# ============================================================================
+
+class PhoneChangePayload(CallbackPayload, prefix='phone_change'):
+    """Payload for phone change management actions.
+
+    Used by administrators to manage phone number change requests.
+    
+    Fields:
+        action: Action type - "list", "view", "approve", "reject", "back"
+        ticket_id: ID of the phone change ticket (optional, for view/approve/reject)
+    """
+    action: str
+    ticket_id: int | None = None

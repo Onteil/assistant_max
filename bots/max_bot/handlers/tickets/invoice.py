@@ -59,7 +59,7 @@ from bots.max_bot.texts import (
     INVOICE_INN_ADDED,
     INVOICE_KEY_ADDED,
     INVOICE_KEY_CONFLICT,
-    INVOICE_RESPONSE_TIME_NON_WORKING,
+    INVOICE_NON_WORKING_HOURS_MESSAGE,
     INVOICE_RESPONSE_TIME_WORKING,
     INVOICE_SELECT_DELIVERY,
     INVOICE_SELECT_KEYS,
@@ -604,13 +604,43 @@ async def process_new_inn(
     is_valid, error_msg = validate_inn(inn)
     
     if not is_valid:
-        logger.warning(f"Invalid INN: inn={inn}, error={error_msg}")
+        logger.warning(f"Invalid INN format: inn={inn}, error={error_msg}")
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_VALIDATION_INN.format(error_details=error_msg),
             parse_mode="HTML"
         )
         return
+    
+    # Check INN with i-TAT API
+    from services.i_tat_service import get_itat_client
+    try:
+        # Get max_user_id from event for API call
+        max_user_id = event.message.sender.user_id
+        
+        itat_client = get_itat_client()
+        api_response = await itat_client.check_inn(
+            messenger="max",
+            user_id=max_user_id,
+            inn=inn
+        )
+        logger.info(f"i-TAT API INN check successful: {api_response}")
+        
+        # Check if INN is valid according to i-TAT
+        if not api_response.get("is_valid", True):
+            error_details = api_response.get("error_message", "INN не найден в базе данных")
+            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+                parse_mode="HTML"
+            )
+            return
+            
+    except Exception as api_error:
+        logger.error(f"i-TAT API INN check error: {api_error}")
+        # Continue with local validation if API fails
+        logger.info(f"Continuing with local INN validation due to API error")
     
     try:
         # Get user_id with fallback to database lookup
@@ -624,8 +654,35 @@ async def process_new_inn(
         if not user_id:
             return  # Error already handled in helper function
         
+        # Get user to access max_user_id for API calls
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            return
+        
         # Add organization to user profile
         await add_user_organization(session, user_id, inn)
+        
+        # Update user assets via i-TAT API
+        try:
+            itat_client = get_itat_client()
+            assets_response = await itat_client.update_user_assets(
+                messenger="max",
+                user_id=user.max_user_id,
+                asset_type="inn",
+                action="add",
+                value=inn
+            )
+            logger.info(f"Assets update result: {assets_response}")
+        except Exception as api_error:
+            logger.error(f"Assets update API error: {api_error}")
+            # Continue even if API fails - local data is already saved
+        
         await session.commit()
         
         logger.info(f"Organization added: user_id={user_id}, inn={inn}")
@@ -1296,11 +1353,22 @@ async def process_new_key(
         if not user_id:
             return  # Error already handled in helper function
         
+        # Get user to access max_user_id for API calls
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            logger.error(f"User not found: user_id={user_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            return
+        
         # Check for key conflicts via i-TAT API
         itat_client = get_itat_client()
         conflict_response = await itat_client.check_key_conflict(
             grand_key=normalized_key,
-            user_id=user_id
+            user_id=user.max_user_id
         )
         
         logger.info(f"Key conflict check result: {conflict_response}")
@@ -1313,6 +1381,23 @@ async def process_new_key(
         
         # Add key to user profile
         await add_user_key(session, user_id, normalized_key, conflict_status)
+        
+        # Update user assets via i-TAT API (only if no conflict)
+        if conflict_status == KeyConflictStatus.NONE:
+            try:
+                itat_client = get_itat_client()
+                assets_response = await itat_client.update_user_assets(
+                    messenger="max",
+                    user_id=user.max_user_id,
+                    asset_type="grand_key",
+                    action="add",
+                    value=normalized_key
+                )
+                logger.info(f"Assets update result: {assets_response}")
+            except Exception as api_error:
+                logger.error(f"Assets update API error: {api_error}")
+                # Continue even if API fails - local data is already saved
+        
         await session.commit()
         
         logger.info(f"GS_Key added: user_id={user_id}, key={normalized_key}, conflict={conflict_status.value}")
@@ -1978,6 +2063,17 @@ async def create_invoice_ticket(
             f"assigned_staff={assigned_staff_id}, has_manager={has_manager}"
         )
         
+        # Log ticket creation to I-TAT API
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
+            await log_ticket_creation_to_itat(session, ticket)
+        except Exception as e:
+            # Log error but don't fail ticket creation
+            logger.error(
+                f"Failed to log invoice ticket to I-TAT API: ticket_id={ticket.id}, error={e}",
+                exc_info=True
+            )
+        
         # Clear FSM state
         await context.clear()
         
@@ -2007,7 +2103,9 @@ async def create_invoice_ticket(
         if is_working:
             response_time_message = INVOICE_RESPONSE_TIME_WORKING
         else:
-            response_time_message = INVOICE_RESPONSE_TIME_NON_WORKING
+            # Import the new non-working hours message
+            from bots.max_bot.texts import INVOICE_NON_WORKING_HOURS_MESSAGE
+            response_time_message = INVOICE_NON_WORKING_HOURS_MESSAGE
         
         # Send success message to user
         # Use different message template based on whether user has assigned manager
