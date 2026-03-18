@@ -17,7 +17,7 @@ from bots.max_bot.states import ProfileStates
 from database.models import TicketType, ActionType
 from services.user_service import get_user_by_max_id
 from services.ticket_service import create_ticket
-from services.validation_service import validate_phone
+from services.validation_service import validate_phone_number
 from services.i_tat_service import get_itat_client
 from bots.max_bot.texts import (
     ERROR_GENERAL,
