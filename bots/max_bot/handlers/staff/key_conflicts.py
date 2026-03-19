@@ -713,20 +713,16 @@ async def handle_key_rejection(
 ) -> None:
     """
     Reject key transfer request.
-    
+
     Workflow:
-    1. Delete any GS_Key records for new user with this key_number
-    2. Update GS_Key.conflict_status = RESOLVED
-    3. Send notification to new user (KEY_CONFLICT_REJECTED)
-    4. Log action in Action_Log
-    
+    1. Reset GS_Key.conflict_status back to NONE (key stays with current owner)
+    2. Send notification to new user (KEY_CONFLICT_REJECTED)
+    3. Log action in Action_Log
+
     Uses replace_message pattern.
-    
+
     Requirements: 9.1-9.8
     """
-    from sqlalchemy import delete
-    from database.models import ticket_keys
-    
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
@@ -773,8 +769,8 @@ async def handle_key_rejection(
             )
             return
         
-        # Check if already resolved
-        if gs_key.conflict_status == KeyConflictStatus.RESOLVED:
+        # Check if conflict is no longer pending (already resolved or reset)
+        if gs_key.conflict_status != KeyConflictStatus.PENDING_REVIEW:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="✅ Конфликт уже разрешен.",
@@ -824,42 +820,10 @@ async def handle_key_rejection(
             logger.error(f"i-TAT API error for key conflict rejection: {api_error}")
             # Continue with local processing even if API fails
         
-        # Find all GS_Key records for this key_number from new user
-        keys_to_delete_stmt = select(GS_Key).where(
-            GS_Key.user_id == new_user_id,
-            GS_Key.key_number == key_number
-        )
-        keys_to_delete_result = await session.execute(keys_to_delete_stmt)
-        keys_to_delete = keys_to_delete_result.scalars().all()
-        
-        if keys_to_delete:
-            # Delete related ticket_keys entries first
-            key_ids_to_delete = [key.id for key in keys_to_delete]
-            
-            delete_ticket_keys_stmt = delete(ticket_keys).where(
-                ticket_keys.c.key_id.in_(key_ids_to_delete)
-            )
-            await session.execute(delete_ticket_keys_stmt)
-            
-            # Now delete the GS_Key records
-            delete_keys_stmt = delete(GS_Key).where(
-                GS_Key.user_id == new_user_id,
-                GS_Key.key_number == key_number
-            )
-            delete_result = await session.execute(delete_keys_stmt)
-            deleted_count = delete_result.rowcount
-            
-            logger.info(
-                f"Deleted {deleted_count} GS_Key record(s) with key_number={key_number} "
-                f"from user {new_user_id} (and related ticket_keys entries)"
-            )
-        else:
-            logger.warning(
-                f"No GS_Key records found with key_number={key_number} for user {new_user_id}"
-            )
-        
-        # Update GS_Key.conflict_status to RESOLVED
-        gs_key.conflict_status = KeyConflictStatus.RESOLVED
+        # Conflict is stored on the existing key record (no duplicate row for new user).
+        # On rejection: reset conflict status back to NONE so the key is clean again.
+        gs_key.conflict_status = KeyConflictStatus.NONE
+        gs_key.conflict_reported_at = None
         
         await session.commit()
         

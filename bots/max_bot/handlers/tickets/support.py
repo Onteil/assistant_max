@@ -280,10 +280,23 @@ async def handle_renewal_callback(
             # Notify manager about duplicate attempt
             await notify_manager_about_duplicate_renewal(session, existing_ticket, user.id)
             
+            # Show message with "В меню" button
+            from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+            from services.ticket_service import get_user_active_tickets_count
+            
+            active_tickets_count = await get_user_active_tickets_count(session, user.id)
+            keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=f"📋 У вас уже есть активная заявка на продление (#{existing_ticket.id}).\n\n"
                      f"Ожидайте ответа от менеджера.",
+                parse_mode="HTML"
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="Выберите нужное действие:",
+                keyboard=keyboard,
                 parse_mode="HTML"
             )
             return
@@ -1354,9 +1367,9 @@ async def create_support_ticket(
     try:
         # Get data from context
         data = await context.get_data()
-        problem_description = data.get("problem_description", "")
-        attachments = data.get("attachments", [])
-        selected_keys = data.get("selected_keys", [])
+        problem_description = data.get("problem_description") or ""
+        attachments = data.get("attachments") or []
+        selected_keys = data.get("selected_keys") or []
         
         # Get user to determine assigned manager
         user = await get_user_by_id(session, user_id)
@@ -1486,26 +1499,32 @@ async def create_support_ticket(
             )
         
         # Schedule 10-minute escalation check for technical support tickets
-        # This will notify admins if ticket is not taken by support staff
-        try:
-            from celery_app.escalation_tasks import schedule_technical_support_monitoring
+        # Only in REGULAR/EXTENDED modes - NON_WORKING tickets wait without escalation
+        if work_mode != WorkMode.NON_WORKING:
+            try:
+                from celery_app.escalation_tasks import schedule_technical_support_monitoring
+                
+                task_id = await schedule_technical_support_monitoring(ticket_id=ticket.id)
+                
+                logger.info(
+                    f"Technical support monitoring scheduled: ticket_id={ticket.id}, "
+                    f"task_id={task_id}"
+                )
             
-            task_id = await schedule_technical_support_monitoring(ticket_id=ticket.id)
-            
+            except Exception as e:
+                # Don't fail ticket creation if escalation scheduling fails
+                logger.error(
+                    f"Failed to schedule technical support monitoring for ticket {ticket.id}: {e}",
+                    exc_info=True
+                )
+                logger.warning(
+                    f"Ticket {ticket.id} created without escalation monitoring. "
+                    f"Manual intervention may be required."
+                )
+        else:
             logger.info(
-                f"Technical support monitoring scheduled: ticket_id={ticket.id}, "
-                f"task_id={task_id}"
-            )
-        
-        except Exception as e:
-            # Don't fail ticket creation if escalation scheduling fails
-            logger.error(
-                f"Failed to schedule technical support monitoring for ticket {ticket.id}: {e}",
-                exc_info=True
-            )
-            logger.warning(
-                f"Ticket {ticket.id} created without escalation monitoring. "
-                f"Manual intervention may be required."
+                f"Technical support ticket {ticket.id} created in NON_WORKING mode - "
+                f"escalation not scheduled (will be processed in next working period)"
             )
         
         # Clear FSM state
@@ -1515,7 +1534,7 @@ async def create_support_ticket(
         routing_messages = {
             WorkMode.REGULAR: SUPPORT_ROUTING_REGULAR,
             WorkMode.EXTENDED: SUPPORT_ROUTING_EXTENDED,
-            WorkMode.NON_WORKING: SUPPORT_ROUTING_NON_WORKING
+            WorkMode.NON_WORKING: ""  # NON_WORKING info is fully covered by response_time_message
         }
         
         response_time_messages = {
@@ -1526,7 +1545,6 @@ async def create_support_ticket(
         
         # Get response time message based on work mode
         if work_mode == WorkMode.NON_WORKING:
-            # Import the new non-working hours message
             from bots.max_bot.texts import SUPPORT_NON_WORKING_HOURS_MESSAGE
             response_time_message = SUPPORT_NON_WORKING_HOURS_MESSAGE
         else:
@@ -2068,29 +2086,65 @@ async def notify_manager_about_duplicate_renewal(
         
         # Try assigned staff first, fallback to any admin with max_chat_id
         staff_member = None
+        staff_chat_id = None
         if existing_ticket.assigned_staff_id:
             stmt = select(Staff_Member).where(Staff_Member.id == existing_ticket.assigned_staff_id)
             result = await session.execute(stmt)
             candidate = result.scalar_one_or_none()
-            if candidate and candidate.max_chat_id:
-                staff_member = candidate
-            else:
-                logger.warning(
-                    f"Assigned staff not found or no MAX chat ID: "
-                    f"staff_id={existing_ticket.assigned_staff_id}, falling back to admin"
-                )
+            if candidate:
+                # Try direct max_chat_id first
+                if candidate.max_chat_id:
+                    staff_member = candidate
+                    staff_chat_id = candidate.max_chat_id
+                elif candidate.max_user_id:
+                    # Fallback: look up chat_id from MAX_Messenger_Data by max_user_id
+                    from database.models import MAX_Messenger_Data
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == candidate.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    resolved_chat_id = result_chat.scalar_one_or_none()
+                    if resolved_chat_id:
+                        staff_member = candidate
+                        staff_chat_id = resolved_chat_id
+                    else:
+                        logger.warning(
+                            f"Assigned staff has no MAX chat ID in staff_members or max_messenger_data: "
+                            f"staff_id={existing_ticket.assigned_staff_id}, "
+                            f"max_user_id={candidate.max_user_id}, falling back to admin"
+                        )
+                else:
+                    logger.warning(
+                        f"Assigned staff not found or no MAX chat ID: "
+                        f"staff_id={existing_ticket.assigned_staff_id}, falling back to admin"
+                    )
         
         if not staff_member:
-            # Fallback: find any admin with max_chat_id
-            from database.models import StaffRole
+            # Fallback: find any admin with max_chat_id or resolvable via MAX_Messenger_Data
+            from database.models import StaffRole, MAX_Messenger_Data
             stmt = select(Staff_Member).where(
                 Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-                Staff_Member.max_chat_id.isnot(None)
-            ).limit(1)
+                Staff_Member.is_active == True  # noqa: E712
+            ).limit(5)
             result = await session.execute(stmt)
-            staff_member = result.scalar_one_or_none()
+            admin_candidates = result.scalars().all()
+            for admin_candidate in admin_candidates:
+                if admin_candidate.max_chat_id:
+                    staff_member = admin_candidate
+                    staff_chat_id = admin_candidate.max_chat_id
+                    break
+                elif admin_candidate.max_user_id:
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == admin_candidate.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    resolved_chat_id = result_chat.scalar_one_or_none()
+                    if resolved_chat_id:
+                        staff_member = admin_candidate
+                        staff_chat_id = resolved_chat_id
+                        break
         
-        if not staff_member:
+        if not staff_member or not staff_chat_id:
             logger.error(
                 f"No staff available to notify about duplicate renewal: "
                 f"ticket_id={existing_ticket.id}"
@@ -2124,7 +2178,7 @@ async def notify_manager_about_duplicate_renewal(
         # Send notification to manager
         messenger_adapter = MAXMessengerAdapter(max_bot)
         await messenger_adapter.send_message(
-            chat_id=staff_member.max_chat_id,
+            chat_id=staff_chat_id,
             text=notification_text,
             keyboard=keyboard,
             parse_mode="HTML"

@@ -630,22 +630,26 @@ async def add_user_key(
     conflict_status: KeyConflictStatus = KeyConflictStatus.NONE
 ) -> GS_Key:
     """
-    Create GS_Key record with conflict status.
-    
+    Create or update GS_Key record with conflict status.
+
+    If conflict_status is PENDING_REVIEW, the key already belongs to another user.
+    In that case we update the existing key's conflict_status instead of inserting
+    a duplicate (key_number has a unique constraint).  The new claimant's user_id
+    is stored in Action_Log so admin handlers can retrieve it.
+
     Args:
         session: Database session
-        user_id: Internal user ID (primary key)
-        key_number: GS_Key number (e.g., MG123456)
+        user_id: Internal user ID of the user who is adding the key
+        key_number: GS_Key number (e.g., MG123456 or 00000_00001)
         conflict_status: Conflict status (default: NONE)
-    
+
     Returns:
-        Created GS_Key object
-    
+        GS_Key object (existing record updated, or newly created)
+
     Raises:
         ValueError: If user not found
-        IntegrityError: If key_number already exists
         SQLAlchemyError: If database operation fails
-    
+
     Requirements: 18.6
     """
     try:
@@ -655,65 +659,85 @@ async def add_user_key(
             error_msg = f"User not found for key addition: user_id={user_id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
-        # Create GS_Key record
-        gs_key = GS_Key(
-            key_number=key_number,
-            user_id=user_id,
-            conflict_status=conflict_status,
-            conflict_reported_at=get_moscow_now_naive() if conflict_status == KeyConflictStatus.PENDING_REVIEW else None
-        )
-        
-        session.add(gs_key)
-        await session.flush()
-        
-        # Log key conflict if detected
+
         if conflict_status == KeyConflictStatus.PENDING_REVIEW:
-            # Get existing key owner to log in action details
-            stmt = select(GS_Key).where(GS_Key.key_number == key_number).where(GS_Key.id != gs_key.id)
+            # Key already exists in DB under another user.
+            # Find that existing record and mark it as PENDING_REVIEW.
+            stmt = select(GS_Key).where(GS_Key.key_number == key_number)
             result = await session.execute(stmt)
             existing_key = result.scalar_one_or_none()
-            
+
+            if existing_key:
+                # Update conflict status on the existing record
+                existing_key.conflict_status = KeyConflictStatus.PENDING_REVIEW
+                existing_key.conflict_reported_at = get_moscow_now_naive()
+                await session.flush()
+
+                action_details_dict = {
+                    "key_number": key_number,
+                    "conflict_status": conflict_status.value,
+                    "conflict_reported_at": existing_key.conflict_reported_at.isoformat(),
+                    "new_user_id": user_id,
+                    "existing_user_id": existing_key.user_id,
+                }
+
+                await _log_action(
+                    session=session,
+                    action_type=ActionType.KEY_CONFLICT_DETECTED,
+                    user_id=user_id,
+                    action_details=action_details_dict,
+                )
+                logger.warning(
+                    f"Key conflict recorded on existing record: key={key_number}, "
+                    f"owner_user_id={existing_key.user_id}, claimant_user_id={user_id}"
+                )
+                return existing_key
+
+            # Key doesn't exist in DB yet but i-TAT says conflict — create new record
+            # (edge case: key exists in i-TAT but not locally)
+            gs_key = GS_Key(
+                key_number=key_number,
+                user_id=user_id,
+                conflict_status=conflict_status,
+                conflict_reported_at=get_moscow_now_naive(),
+            )
+            session.add(gs_key)
+            await session.flush()
+
             action_details_dict = {
                 "key_number": key_number,
                 "conflict_status": conflict_status.value,
-                "conflict_reported_at": gs_key.conflict_reported_at.isoformat() if gs_key.conflict_reported_at else None,
-                "new_user_id": user_id  # Store new user ID for later retrieval
+                "conflict_reported_at": gs_key.conflict_reported_at.isoformat(),
+                "new_user_id": user_id,
             }
-            
-            if existing_key:
-                action_details_dict["existing_user_id"] = existing_key.user_id
-            
             await _log_action(
                 session=session,
                 action_type=ActionType.KEY_CONFLICT_DETECTED,
                 user_id=user_id,
-                action_details=action_details_dict
+                action_details=action_details_dict,
             )
             logger.warning(
-                f"GS_Key created with conflict: user_id={user_id}, "
-                f"key_number={key_number}, conflict_status={conflict_status.value}"
+                f"Key conflict (no local owner): key={key_number}, claimant_user_id={user_id}"
             )
-        else:
-            logger.info(
-                f"GS_Key created: user_id={user_id}, key_number={key_number}"
-            )
-        
-        return gs_key
-    
-    except IntegrityError as e:
-        logger.error(
-            f"Integrity error adding user key: user_id={user_id}, "
-            f"key_number={key_number}, error={e}",
-            exc_info=True
+            return gs_key
+
+        # No conflict — create a fresh record
+        gs_key = GS_Key(
+            key_number=key_number,
+            user_id=user_id,
+            conflict_status=KeyConflictStatus.NONE,
         )
-        raise
-    
+        session.add(gs_key)
+        await session.flush()
+
+        logger.info(f"GS_Key created: user_id={user_id}, key_number={key_number}")
+        return gs_key
+
     except SQLAlchemyError as e:
         logger.error(
             f"Database error adding user key: user_id={user_id}, "
             f"key_number={key_number}, error={e}",
-            exc_info=True
+            exc_info=True,
         )
         raise
 

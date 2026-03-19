@@ -44,6 +44,7 @@ from database.models import (
     Ticket,
     TicketStatus,
     TicketType,
+    WorkMode,
 )
 from services.escalation_service import create_escalation, get_active_admins
 
@@ -1550,6 +1551,21 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 "message": "Ticket already taken",
                 "ticket_id": ticket_id,
                 "ticket_status": ticket.ticket_status.value
+            }
+        
+        # Check current work mode - do NOT escalate during NON_WORKING hours
+        from services.calendar_service import get_current_work_mode
+        current_work_mode = await get_current_work_mode(session)
+        if current_work_mode == WorkMode.NON_WORKING:
+            logger.info(
+                f"Technical support escalation skipped - NON_WORKING mode: "
+                f"ticket_id={ticket_id}, work_mode={current_work_mode.value}"
+            )
+            return {
+                "status": "skipped",
+                "message": "Non-working hours - escalation deferred",
+                "ticket_id": ticket_id,
+                "work_mode": current_work_mode.value
             }
         
         # Get active administrators

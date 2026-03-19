@@ -1234,9 +1234,8 @@ def create_tickets_router() -> Router:
         InvoiceStates.adding_new_key
     )(process_new_key)
     
-    # Handler for entering description
+    # Handler for entering description (text, photo, voice, document)
     tickets_router.message_created(
-        F.message.body.text,
         InvoiceStates.entering_description
     )(process_description)
     

@@ -134,6 +134,7 @@ async def get_user_id_with_fallback(
         selected_inn=None,
         selected_keys=[],
         description=None,
+        attachments=[],
         delivery_method=None,
         delivery_email=None
     )
@@ -226,6 +227,7 @@ async def cmd_invoice(
             selected_inn=None,
             selected_keys=[],
             description=None,
+            attachments=[],
             delivery_method=None,
             delivery_email=None
         )
@@ -1461,41 +1463,94 @@ async def process_new_key(
 async def process_description(
     event: MessageCreated,
     context: MemoryContext,
+    session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Process invoice description, validate length, proceed to delivery.
+    Process invoice description (text, photo, voice, document), proceed to delivery.
     
-    Validates description length (max 1000 characters).
-    Stores description in FSM context.
+    Validates text length (max 1000 characters).
+    Handles photo, voice, and document attachments.
+    Stores description and attachments in FSM context.
     Displays delivery method selection keyboard.
     
     Args:
         event: Message event from MAX
         context: FSM context for state management
+        session: Database session
         messenger_adapter: Messenger adapter for sending messages
     
     Requirements: 2.10, 2.11
     """
     chat_id = event.message.recipient.chat_id
-    description = event.message.body.text.strip()
     
-    logger.info(f"Processing description: chat_id={chat_id}, length={len(description)}")
-    
-    # Validate description length
-    if len(description) > 1000:
-        logger.warning(f"Description too long: length={len(description)}")
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=f"{ERROR_TEXT_TOO_LONG}\n\nМаксимальная длина описания: 1000 символов. Ваше описание: {len(description)} символов.",
-            keyboard=get_description_input_keyboard(),
-            parse_mode="HTML"
-        )
-        return
+    logger.info(f"Processing invoice description: chat_id={chat_id}")
     
     try:
-        # Store description in context
-        await context.update_data(description=description)
+        # Get existing attachments from context
+        data = await context.get_data()
+        attachments = data.get("attachments") or []
+        
+        # Handle text message
+        if event.message.body and event.message.body.text:
+            description = event.message.body.text.strip()
+            
+            # Validate description length
+            if len(description) > 1000:
+                logger.warning(f"Description too long: length={len(description)}")
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"{ERROR_TEXT_TOO_LONG}\n\nМаксимальная длина описания: 1000 символов. Ваше описание: {len(description)} символов.",
+                    keyboard=get_description_input_keyboard(),
+                    parse_mode="HTML"
+                )
+                return
+            
+            await context.update_data(description=description)
+            logger.info(f"Invoice description stored: chat_id={chat_id}, length={len(description)}")
+        
+        # Handle attachments (photo, voice, document)
+        if event.message.body and event.message.body.attachments:
+            for attachment in event.message.body.attachments:
+                if attachment.type == "image":
+                    photo_url = attachment.payload.url
+                    caption = event.message.body.text if event.message.body else None
+                    attachments.append({
+                        "type": "image",
+                        "url": photo_url,
+                        "caption": caption
+                    })
+                    logger.info(f"Invoice photo attachment added: chat_id={chat_id}")
+                
+                elif attachment.type == "voice":
+                    voice_url = attachment.payload.url
+                    attachments.append({
+                        "type": "voice",
+                        "url": voice_url
+                    })
+                    logger.info(f"Invoice voice attachment added: chat_id={chat_id}")
+                
+                elif attachment.type == "file":
+                    file_url = attachment.payload.url
+                    file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "document"
+                    from services.validation_service import classify_file_type
+                    file_type = classify_file_type(file_name)
+                    attachments.append({
+                        "type": "document",
+                        "url": file_url,
+                        "file_name": file_name,
+                        "file_type": file_type.value
+                    })
+                    logger.info(f"Invoice document attachment added: chat_id={chat_id}, file={file_name}")
+            
+            await context.update_data(attachments=attachments)
+        
+        # Check if we have description or attachments to proceed
+        updated_data = await context.get_data()
+        description = updated_data.get("description")
+        if not description and not attachments:
+            # Nothing received yet — wait
+            return
         
         # Transition to delivery selection state
         await context.set_state(InvoiceStates.selecting_delivery)
@@ -1510,7 +1565,7 @@ async def process_description(
     
     except Exception as e:
         logger.error(
-            f"Error processing description: chat_id={chat_id}, error={e}",
+            f"Error processing invoice description: chat_id={chat_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
@@ -1897,6 +1952,110 @@ async def process_email(
         )
 
 
+async def _forward_attachments_to_staff(
+    messenger_adapter: MAXMessengerAdapter,
+    session: AsyncSession,
+    ticket_id: int,
+    staff_id: int,
+    attachments: list,
+    user_name: str
+) -> None:
+    """
+    Forward FSM attachments (photo/voice/document) to a staff member's chat.
+    
+    Called after send_staff_notification to deliver files attached by the client
+    during the invoice description step.
+    """
+    import uuid
+    from pathlib import Path
+    from database.models import Staff_Member, MAX_Messenger_Data
+    from sqlalchemy import select as sa_select
+    
+    if not attachments:
+        return
+    
+    # Get staff chat_id
+    stmt_staff = sa_select(Staff_Member).where(Staff_Member.id == staff_id)
+    res_staff = await session.execute(stmt_staff)
+    staff_member = res_staff.scalar_one_or_none()
+    
+    if not staff_member or not staff_member.max_user_id:
+        logger.warning(f"Staff member not found or no MAX ID: staff_id={staff_id}")
+        return
+    
+    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
+        MAX_Messenger_Data.max_user_id == staff_member.max_user_id
+    )
+    res_chat = await session.execute(stmt_chat)
+    staff_chat_id = res_chat.scalar_one_or_none()
+    
+    if not staff_chat_id:
+        logger.warning(f"No MAX chat_id for staff: staff_id={staff_id}")
+        return
+    
+    for attachment in attachments:
+        att_type = attachment.get("type")
+        file_url = attachment.get("url")
+        
+        if not file_url:
+            continue
+        
+        caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
+        
+        try:
+            temp_dir = Path("media/temp")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            if att_type == "image":
+                ext = ".jpg"
+                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}{ext}"
+                local_path = await messenger_adapter.download_file(
+                    file_url=file_url,
+                    destination=f"media/temp/{unique_name}"
+                )
+                await messenger_adapter.send_photo(
+                    chat_id=staff_chat_id,
+                    photo_path=local_path,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            elif att_type in ("voice", "file", "document", "video"):
+                file_name = attachment.get("file_name", "file")
+                ext = Path(file_name).suffix or ".bin"
+                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}{ext}"
+                local_path = await messenger_adapter.download_file(
+                    file_url=file_url,
+                    destination=f"media/temp/{unique_name}"
+                )
+                await messenger_adapter.send_document(
+                    chat_id=staff_chat_id,
+                    document_path=local_path,
+                    caption=caption,
+                    parse_mode="HTML"
+                )
+            else:
+                logger.warning(f"Unknown attachment type for forwarding: {att_type}")
+                continue
+            
+            # Clean up temp file
+            try:
+                Path(local_path).unlink()
+            except Exception:
+                pass
+            
+            logger.info(
+                f"Invoice attachment forwarded to staff: ticket_id={ticket_id}, "
+                f"staff_chat_id={staff_chat_id}, type={att_type}"
+            )
+        
+        except Exception as e:
+            logger.error(
+                f"Failed to forward invoice attachment to staff: ticket_id={ticket_id}, "
+                f"type={att_type}, error={e}",
+                exc_info=True
+            )
+
+
 # ========== Confirmation and Ticket Creation ==========
 
 
@@ -1929,6 +2088,7 @@ async def show_invoice_confirmation(
         selected_inn = data.get("selected_inn")
         selected_keys = data.get("selected_keys", [])
         description = data.get("description")
+        attachments = data.get("attachments") or []
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
         
@@ -1967,6 +2127,14 @@ async def show_invoice_confirmation(
             confirmation_text += f"\n📝 <b>Описание:</b>\n{description}\n"
         else:
             confirmation_text += "\n📝 <b>Описание:</b> Без описания\n"
+        
+        # Attachments
+        if attachments:
+            att_types = {"image": "🖼 фото", "voice": "🎤 голосовое", "document": "📄 файл"}
+            att_summary = ", ".join(
+                att_types.get(a.get("type", ""), "файл") for a in attachments
+            )
+            confirmation_text += f"📎 <b>Вложения:</b> {len(attachments)} ({att_summary})\n"
         
         # Delivery method
         if delivery_method == DeliveryMethod.TELEGRAM:
@@ -2031,6 +2199,7 @@ async def create_invoice_ticket(
         selected_inn = data.get("selected_inn")
         selected_keys = data.get("selected_keys", [])
         description = data.get("description")
+        attachments = data.get("attachments") or []
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
         
@@ -2193,6 +2362,24 @@ async def create_invoice_ticket(
                             f"Manager notification sent immediately: ticket_id={ticket.id}, "
                             f"staff_id={assigned_staff_id}, work_mode={work_mode.value}"
                         )
+                        
+                        # Forward attachments to manager if any
+                        if attachments:
+                            try:
+                                await _forward_attachments_to_staff(
+                                    messenger_adapter=messenger_adapter,
+                                    session=session,
+                                    ticket_id=ticket.id,
+                                    staff_id=assigned_staff_id,
+                                    attachments=attachments,
+                                    user_name=user.full_name or "Клиент"
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to forward attachments for invoice ticket: "
+                                    f"ticket_id={ticket.id}, error={e}",
+                                    exc_info=True
+                                )
                     else:
                         logger.warning(
                             f"Failed to send staff notification: ticket_id={ticket.id}, "
