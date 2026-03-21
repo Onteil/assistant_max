@@ -12,10 +12,14 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+import logging
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import beat_init
 
 from constants import CELERY_REDIS_DB_NUMBER, REDIS
+
+logger = logging.getLogger(__name__)
 
 # Создаем экземпляр Celery приложения
 app = Celery(
@@ -66,12 +70,36 @@ app.conf.beat_schedule = {
     },
     "process-pending-tickets": {
         "task": "celery_app.ticket_notification_tasks.process_pending_tickets",
-        "schedule": crontab(minute=0, hour=9),  # Run daily at 9:00 AM Moscow time (start of work day)
+        "schedule": crontab(minute=0, hour=8),  # Run daily at 9:00 AM Moscow time (start of work day)
         "options": {"queue": "ticket_notifications"},
     },
     "check-work-mode-transition": {
         "task": "celery_app.work_mode_monitor_tasks.check_work_mode_transition",
-        "schedule": crontab(minute="*/5"),  # Run every 5 minutes to detect work mode changes
+        "schedule": crontab(minute="*/2"),  # Run every 5 minutes to detect work mode changes
         "options": {"queue": "work_mode_monitor"},
     },
 }
+
+
+@beat_init.connect
+def on_beat_init(sender, **kwargs):
+    """
+    On Beat startup: trigger work mode check immediately.
+
+    This handles the case when Beat starts after the scheduled time (e.g. 8:00 AM)
+    has already passed. The work mode monitor will detect the NON_WORKING → REGULAR
+    transition (or missing Redis key) and trigger pending ticket processing right away.
+    """
+    import pytz
+    from datetime import datetime
+
+    MOSCOW_TZ = pytz.timezone('Europe/Moscow')
+    now = datetime.now(MOSCOW_TZ)
+    logger.info(f"Celery Beat started at {now.strftime('%H:%M')} Moscow time — triggering startup work mode check")
+
+    try:
+        from celery_app.work_mode_monitor_tasks import check_work_mode_transition
+        check_work_mode_transition.apply_async(queue="work_mode_monitor")
+        logger.info("Startup work mode check scheduled")
+    except Exception as e:
+        logger.error(f"Failed to schedule startup work mode check: {e}", exc_info=True)

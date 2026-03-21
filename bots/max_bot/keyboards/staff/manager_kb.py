@@ -34,7 +34,7 @@ def get_manager_menu_keyboard(is_admin: bool = False) -> Keyboard:
         # Row 2: Archive
         [
             KeyboardButton(
-                text="🗄 Архив обращений",
+                text="🗃️ Архив обращений",
                 payload=ManagerMenuActionPayload(action="archive").pack()
             )
         ]

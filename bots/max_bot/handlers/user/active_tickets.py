@@ -340,7 +340,7 @@ async def handle_close_active_tickets(
                 "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
                 "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
                 "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
                 "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
                 "Выберите нужное действие:"
             )
@@ -485,7 +485,7 @@ async def handle_ticket_history(
         lines = [
             f"📜 <b>История переписки - Заявка #{ticket_id}</b>",
             f"Страница {page + 1} из {total_pages} (сообщений {start_idx + 1}-{end_idx} из {total_messages})",
-            "─" * 29,
+            "─" * 5,
             ""
         ]
         
@@ -527,12 +527,33 @@ async def handle_ticket_history(
             # Check for file attachments
             if msg.file_attachments:
                 for attachment in msg.file_attachments:
-                    file_type = attachment.file_type.value if attachment.file_type else "файл"
-                    lines.append(f"📎 {attachment.file_name} ({file_type})")
+                    from database.models import FileType as FT
+                    ft = attachment.file_type
+                    if ft == FT.IMAGE:
+                        label = "Изображение"
+                        emoji = "🖼"
+                    elif ft in (FT.DOCUMENT, FT.PDF):
+                        label = "Документ"
+                        emoji = "📄"
+                    elif ft == FT.OTHER:
+                        label = "Голосовое сообщение"
+                        emoji = "🎤"
+                    else:
+                        label = "Файл"
+                        emoji = "📎"
+                    file_url = attachment.max_file_url or (
+                        attachment.telegram_file_id
+                        if attachment.telegram_file_id and attachment.telegram_file_id.startswith("http")
+                        else None
+                    )
+                    if file_url:
+                        lines.append(f'{emoji} <a href="{file_url}">{label}</a>')
+                    else:
+                        lines.append(f"{emoji} {label}")
             
             lines.append("")  # Empty line between messages
         
-        lines.append("─" * 29)
+        lines.append("─" * 5)
         
         history_text = "\n".join(lines)
         

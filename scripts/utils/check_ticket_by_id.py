@@ -46,9 +46,9 @@ async def check_ticket(ticket_id_input: str):
             print(f"❌ Ticket #{ticket_id} not found")
             return
         
-        print("=" * 80)
+        print("─" * 5)
         print(f"📋 TICKET #{ticket.id}")
-        print("=" * 80)
+        print("─" * 5)
         
         # Basic info
         print(f"\n📊 Basic Information:")
@@ -181,7 +181,7 @@ async def check_ticket(ticket_id_input: str):
         else:
             print(f"   ⚠️ Настройка manager_response_timeout не найдена")
         
-        print("\n" + "=" * 80)
+        print("\n" + "─" * 5)
 
 
 if __name__ == "__main__":

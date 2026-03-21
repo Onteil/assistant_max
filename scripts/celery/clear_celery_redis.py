@@ -52,9 +52,9 @@ def clear_celery_beat_schedule():
         print(f"❌ Ошибка: {e}")
 
 if __name__ == "__main__":
-    print("=" * 60)
+    print("─" * 5)
     print("Очистка Celery Beat Schedule из Redis")
-    print("=" * 60)
+    print("─" * 5)
     print()
     
     clear_celery_beat_schedule()

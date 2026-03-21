@@ -589,6 +589,10 @@ async def process_problem_description(
         # Handle photo attachment
         if event.message.body and event.message.body.attachments:
             for attachment in event.message.body.attachments:
+                logger.info(
+                    f"Support description attachment: chat_id={chat_id}, "
+                    f"type={attachment.type!r}, payload={attachment.payload!r}"
+                )
                 if attachment.type == "image":
                     # Upload photo to MAX API
                     photo_url = attachment.payload.url
@@ -602,9 +606,9 @@ async def process_problem_description(
                     
                     logger.info(f"Photo attachment added: user_id={user_id}, url={photo_url}")
                 
-                elif attachment.type == "voice":
+                elif attachment.type in ("voice", "audio_video_note"):
                     # Handle voice message
-                    voice_url = attachment.payload.url
+                    voice_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
                     
                     attachments.append({
                         "type": "voice",
@@ -612,6 +616,17 @@ async def process_problem_description(
                     })
                     
                     logger.info(f"Voice attachment added: user_id={user_id}, url={voice_url}")
+                
+                elif attachment.type == "audio":
+                    # Handle audio message (голосовое сообщение в MAX)
+                    audio_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                    
+                    attachments.append({
+                        "type": "voice",
+                        "url": audio_url
+                    })
+                    
+                    logger.info(f"Audio attachment added: user_id={user_id}, url={audio_url}")
                 
                 elif attachment.type == "file":
                     # Handle document attachment
@@ -1275,6 +1290,8 @@ async def _forward_attachments_to_staff(
     if not attachments:
         return
 
+    caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
+
     for attachment in attachments:
         att_type = attachment.get("type")
         file_url = attachment.get("url")
@@ -1282,48 +1299,72 @@ async def _forward_attachments_to_staff(
         if not file_url:
             continue
 
-        caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
-
         try:
             temp_dir = Path("media/temp")
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             if att_type == "image":
-                ext = ".jpg"
-                unique_name = f"support_{ticket_id}_{uuid.uuid4()}{ext}"
-                local_path = await messenger_adapter.download_file(
-                    file_url=file_url,
-                    destination=f"media/temp/{unique_name}"
-                )
-                await messenger_adapter.send_photo(
-                    chat_id=staff_chat_id,
-                    photo_path=local_path,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-            elif att_type in ("voice", "file", "document", "video"):
-                file_name = attachment.get("file_name", "file")
-                ext = Path(file_name).suffix or ".bin"
-                unique_name = f"support_{ticket_id}_{uuid.uuid4()}{ext}"
-                local_path = await messenger_adapter.download_file(
-                    file_url=file_url,
-                    destination=f"media/temp/{unique_name}"
-                )
-                await messenger_adapter.send_document(
-                    chat_id=staff_chat_id,
-                    document_path=local_path,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
+                # Images — download and send as photo
+                unique_name = f"support_{ticket_id}_{uuid.uuid4()}.jpg"
+                try:
+                    local_path = await messenger_adapter.download_file(
+                        file_url=file_url,
+                        destination=f"media/temp/{unique_name}"
+                    )
+                    await messenger_adapter.send_photo(
+                        chat_id=staff_chat_id,
+                        photo_path=local_path,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                    try:
+                        Path(local_path).unlink()
+                    except Exception:
+                        pass
+                except Exception as img_error:
+                    logger.error(f"Failed to send image: {img_error}")
+                    # Fallback to link
+                    notify_text = f"{caption}\n\n📷 <a href=\"{file_url}\">Скачать изображение</a>"
+                    await messenger_adapter.send_message(
+                        chat_id=staff_chat_id,
+                        text=notify_text,
+                        parse_mode="HTML"
+                    )
+            elif att_type == "voice":
+                # Voice — download and send as document (same as client→manager pattern)
+                unique_name = f"support_{ticket_id}_{uuid.uuid4()}.ogg"
+                try:
+                    local_path = await messenger_adapter.download_file(
+                        file_url=file_url,
+                        destination=f"media/temp/{unique_name}"
+                    )
+                    await messenger_adapter.send_document(
+                        chat_id=staff_chat_id,
+                        document_path=local_path,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                    try:
+                        Path(local_path).unlink()
+                    except Exception:
+                        pass
+                except Exception as voice_error:
+                    logger.error(f"Failed to send voice: {voice_error}")
+                    # Fallback to link
+                    notify_text = f"{caption}\n\n🎤 <a href=\"{file_url}\">Голосовое сообщение</a>"
+                    await messenger_adapter.send_message(
+                        chat_id=staff_chat_id,
+                        text=notify_text,
+                        parse_mode="HTML"
+                    )
             else:
-                logger.warning(f"Unknown attachment type for forwarding: {att_type}")
-                continue
-
-            # Clean up temp file
-            try:
-                Path(local_path).unlink()
-            except Exception:
-                pass
+                # Documents/files — send link to avoid .bin filename issues
+                notify_text = f"{caption}\n\n📎 <a href=\"{file_url}\">Скачать файл</a>"
+                await messenger_adapter.send_message(
+                    chat_id=staff_chat_id,
+                    text=notify_text,
+                    parse_mode="HTML"
+                )
 
             logger.info(
                 f"Attachment forwarded to staff: ticket_id={ticket_id}, "
@@ -1486,6 +1527,29 @@ async def create_support_ticket(
             f"work_mode={work_mode.value}, assigned_staff={assigned_staff_id}, "
             f"has_support_staff={has_support_staff}"
         )
+        
+        # Save attachments to DB so Celery queue task can forward them in non-working hours
+        if attachments:
+            logger.info(
+                f"Calling save_initial_ticket_attachments: ticket_id={ticket.id}, "
+                f"user_id={user_id}, attachments_count={len(attachments)}, attachments={attachments}"
+            )
+            try:
+                from services.ticket_service import save_initial_ticket_attachments
+                await save_initial_ticket_attachments(
+                    session=session,
+                    ticket_id=ticket.id,
+                    user_id=user_id,
+                    attachments=attachments,
+                )
+                await session.commit()
+                logger.info(f"Successfully saved and committed attachments for ticket_id={ticket.id}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to save initial attachments for support ticket: "
+                    f"ticket_id={ticket.id}, error={e}",
+                    exc_info=True
+                )
         
         # Log ticket creation to I-TAT API
         try:

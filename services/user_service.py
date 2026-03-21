@@ -9,7 +9,7 @@ Requirements: 1.5, 2.7, 7.5, 17.6, 18.6, 32.1, 33.1
 
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from utils.timezone_helpers import get_moscow_now_naive
 
@@ -28,6 +28,16 @@ from database.models import (
     User,
     user_organizations,
 )
+
+
+class KeyConflictError(Exception):
+    """Raised when a key already exists in DB under another user."""
+
+    def __init__(self, key_number: str, existing_user_id: int, gs_key: "GS_Key") -> None:
+        self.key_number = key_number
+        self.existing_user_id = existing_user_id
+        self.gs_key = gs_key
+        super().__init__(f"Key {key_number!r} already owned by user_id={existing_user_id}")
 
 logger = logging.getLogger(__name__)
 
@@ -721,7 +731,43 @@ async def add_user_key(
             )
             return gs_key
 
-        # No conflict — create a fresh record
+        # No conflict from i-TAT — but check DB first to avoid UniqueViolationError
+        stmt = select(GS_Key).where(GS_Key.key_number == key_number)
+        result = await session.execute(stmt)
+        existing_key = result.scalar_one_or_none()
+
+        if existing_key:
+            # Key exists in DB under another user but i-TAT didn't flag it.
+            # Treat as a conflict to avoid unique constraint violation.
+            logger.warning(
+                f"Key exists in DB but i-TAT returned no conflict: key={key_number}, "
+                f"owner_user_id={existing_key.user_id}, claimant_user_id={user_id}"
+            )
+            existing_key.conflict_status = KeyConflictStatus.PENDING_REVIEW
+            existing_key.conflict_reported_at = get_moscow_now_naive()
+            await session.flush()
+
+            await _log_action(
+                session=session,
+                action_type=ActionType.KEY_CONFLICT_DETECTED,
+                user_id=user_id,
+                action_details={
+                    "key_number": key_number,
+                    "conflict_status": KeyConflictStatus.PENDING_REVIEW.value,
+                    "conflict_reported_at": existing_key.conflict_reported_at.isoformat(),
+                    "new_user_id": user_id,
+                    "existing_user_id": existing_key.user_id,
+                    "source": "db_check_fallback",
+                },
+            )
+            # Raise a specific exception so callers can handle it as a conflict
+            raise KeyConflictError(
+                key_number=key_number,
+                existing_user_id=existing_key.user_id,
+                gs_key=existing_key,
+            )
+
+        # Safe to insert
         gs_key = GS_Key(
             key_number=key_number,
             user_id=user_id,
@@ -733,6 +779,8 @@ async def add_user_key(
         logger.info(f"GS_Key created: user_id={user_id}, key_number={key_number}")
         return gs_key
 
+    except KeyConflictError:
+        raise
     except SQLAlchemyError as e:
         logger.error(
             f"Database error adding user key: user_id={user_id}, "

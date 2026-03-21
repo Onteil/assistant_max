@@ -675,6 +675,8 @@ async def format_ticket_history(
     
     Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
     """
+    logger.info(f"Formatting ticket history: ticket_id={ticket_id}, page={page}")
+    
     try:
         from database.models import Message, Action_Log, ActionType
         
@@ -687,6 +689,11 @@ async def format_ticket_history(
         )
         messages_result = await session.execute(messages_stmt)
         messages = messages_result.scalars().all()
+        
+        logger.debug(
+            f"format_ticket_history: ticket_id={ticket_id}, "
+            f"found {len(messages)} messages"
+        )
         
         # Query action logs for status changes and transfers
         action_logs_stmt = (
@@ -771,19 +778,35 @@ async def format_ticket_history(
                     
                     # Format message
                     lines.append(f"{sender_emoji} {sender_name} ({timestamp}):")
-                    lines.append(f"  {message.message_text}")
+                    if message.message_text:
+                        lines.append(f"  {message.message_text}")
                     
                     # Add file attachments if any
                     if message.file_attachments:
                         for attachment in message.file_attachments:
-                            file_name = attachment.file_name or "файл"
-                            file_type_emoji = {
-                                FileType.PDF: "📄",
-                                FileType.IMAGE: "🖼",
-                                FileType.DOCUMENT: "📎",
-                                FileType.OTHER: "📎"
-                            }.get(attachment.file_type, "📎")
-                            lines.append(f"  {file_type_emoji} {file_name}")
+                            from database.models import FileType as FT
+                            ft = attachment.file_type
+                            if ft == FT.IMAGE:
+                                label = "Изображение"
+                                file_type_emoji = "�"
+                            elif ft in (FT.DOCUMENT, FT.PDF):
+                                label = "Документ"
+                                file_type_emoji = "📄"
+                            elif ft == FT.OTHER:
+                                label = "Голосовое сообщение"
+                                file_type_emoji = "🎤"
+                            else:
+                                label = "Файл"
+                                file_type_emoji = "📎"
+                            file_url = attachment.max_file_url or (
+                                attachment.telegram_file_id
+                                if attachment.telegram_file_id and attachment.telegram_file_id.startswith("http")
+                                else None
+                            )
+                            if file_url:
+                                lines.append(f'  {file_type_emoji} <a href="{file_url}">{label}</a>')
+                            else:
+                                lines.append(f"  {file_type_emoji} {label}")
                     
                     lines.append("")
                 
@@ -1192,7 +1215,7 @@ async def format_archive_header(
     filter_text = filter_text_map.get(current_filter, "День")
 
     header_lines = [
-        f"🗄 <b>Архив обращений</b>",
+        f"🗃️ <b>Архив обращений</b>",
         f"Фильтр: {filter_text} • Найдено: {tickets_count}",
         ""
     ]
@@ -2584,7 +2607,7 @@ async def format_ticket_message_history(
         lines = [
             f"💬 ИСТОРИЯ ПЕРЕПИСКИ - Заявка #{ticket.id}",
             f"Всего сообщений: {len(messages)}",
-            "─" * 29,
+            "─" * 5,
             ""
         ]
         
@@ -2631,7 +2654,7 @@ async def format_ticket_message_history(
             
             lines.append("")  # Empty line between messages
         
-        lines.append("─" * 29)
+        lines.append("─" * 5)
         lines.append(f"Конец истории переписки")
         
         return "\n".join(lines)

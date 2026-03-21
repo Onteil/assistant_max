@@ -44,9 +44,9 @@ class SubscriptionStatus(enum.Enum):
 
 class KeyConflictStatus(enum.Enum):
     """GS_Key conflict status values"""
-    NONE = "none"
-    PENDING_REVIEW = "pending_review"
-    RESOLVED = "resolved"
+    NONE = "NONE"
+    PENDING_REVIEW = "PENDING_REVIEW"
+    RESOLVED = "RESOLVED"
 
 
 class StaffRole(enum.Enum):
@@ -670,6 +670,10 @@ class Ticket(Base, TimestampMixin):
     
     # Timestamps
     closed_at = Column(DateTime, nullable=True)
+    queue_notification_sent_at = Column(
+        DateTime, nullable=True,
+        comment="Timestamp when queue notification was sent (prevents duplicate notifications)"
+    )
     # created_at and updated_at inherited from TimestampMixin
     
     # Relationships
@@ -746,8 +750,9 @@ class Message(Base):
     message_text = Column(String, nullable=False)
     message_type = Column(Enum(MessageType), nullable=False)
     
-    # Timestamp
-    sent_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    # Timestamp - use Moscow timezone
+    from utils.timezone_helpers import get_moscow_now_naive
+    sent_at = Column(DateTime, default=get_moscow_now_naive, nullable=False)
     
     # Relationships
     ticket = relationship(
@@ -762,7 +767,7 @@ class Message(Base):
 
 class File_Attachment(Base):
     """
-    File_Attachment model - stores references to files uploaded to Telegram.
+    File_Attachment model - stores references to files uploaded to Telegram or MAX.
     
     Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 7.10
     """
@@ -777,9 +782,12 @@ class File_Attachment(Base):
     
     # File metadata
     file_type = Column(Enum(FileType), nullable=False)
-    telegram_file_id = Column(String(256), nullable=False)
+    telegram_file_id = Column(Text, nullable=False)
     file_name = Column(String(256), nullable=True)
     file_size = Column(Integer, nullable=True)
+    
+    # MAX messenger file URL (used when file was uploaded via MAX bot)
+    max_file_url = Column(Text, nullable=True)
     
     # Uploader tracking
     uploader_id = Column(BigInteger, nullable=False)

@@ -23,9 +23,9 @@ from celery_app.nps_tasks import _send_survey_async
 async def debug_nps_task():
     """Отладка NPS задачи с детальными логами"""
     
-    print("=" * 60)
+    print("─" * 5)
     print("ОТЛАДКА NPS ЗАДАЧИ")
-    print("=" * 60)
+    print("─" * 5)
     
     # Параметры
     user_id = 3  # Используем реального пользователя из БД
@@ -101,15 +101,15 @@ async def debug_nps_task():
             event_date=event_date
         )
         
-        print("\n" + "=" * 60)
+        print("\n" + "─" * 5)
         print("РЕЗУЛЬТАТ")
-        print("=" * 60)
+        print("─" * 5)
         print(f"Статус: {result.get('status')}")
         print(f"Мессенджер: {result.get('messenger', 'N/A')}")
         print(f"Messenger ID: {result.get('messenger_id', 'N/A')}")
         print(f"Причина: {result.get('reason', 'N/A')}")
         print(f"Ошибка: {result.get('error', 'N/A')}")
-        print("=" * 60)
+        print("─" * 5)
         
         return result
         

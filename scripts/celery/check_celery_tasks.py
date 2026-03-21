@@ -12,9 +12,9 @@ from constants import REDIS, CELERY_REDIS_DB_NUMBER
 
 def check_scheduled_tasks():
     """Проверить запланированные задачи в Redis."""
-    print("=" * 60)
+    print("─" * 5)
     print("Проверка задач эскалации в Redis")
-    print("=" * 60)
+    print("─" * 5)
     print()
     
     try:
@@ -62,9 +62,9 @@ def check_scheduled_tasks():
                 print(f"  - {queue}: {length} задач")
         
         # Проверить задачи в базе данных
-        print(f"\n" + "=" * 60)
+        print(f"\n" + "─" * 5)
         print("Проверка задач в БД")
-        print("=" * 60)
+        print("─" * 5)
         print()
         
         import asyncio

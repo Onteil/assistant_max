@@ -52,29 +52,16 @@ async def error_handler(event: ErrorEvent):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    FastAPI lifespan context manager for application startup and shutdown.
-    
-    Startup sequence:
-    1. Initialize all bot components (on_init)
-    2. Set up webhooks for all bots (set_all_webhooks)
-    
-    Shutdown sequence:
-    1. Delete all webhooks (delete_all_webhooks)
-    2. Close all bot sessions and connections (close_bot_sessions)
-    
-    This ensures proper resource management and graceful shutdown.
-    
-    Requirements: 2.6, 2.7 - Configure background task processing and lifecycle management
-    Requirements: 12.2, 12.6 - Webhook lifecycle management and session cleanup
-    """
     logging.info("Application startup...")
+    from services.ssh_tunnel import start_tunnel, stop_tunnel
+    await start_tunnel()
     await on_init()
     await set_all_webhooks()
     yield
     logging.info("Application shutdown...")
     await delete_all_webhooks()
     await close_bot_sessions()
+    await stop_tunnel()
 
 
 # Инициализируем FastAPI с lifespan и root_path
@@ -232,11 +219,11 @@ async def max_feed_update(update_data: dict):
             msg = event_object.message
             has_contact = hasattr(msg.body, 'contact') if msg.body else False
             contact_value = getattr(msg.body, 'contact', None) if msg.body else None
-            has_attachments = hasattr(msg, 'attachments') and msg.attachments
+            has_attachments = hasattr(msg.body, 'attachments') and msg.body.attachments
             attachments_info = []
             if has_attachments:
-                for att in msg.attachments:
-                    att_type = type(att).__name__
+                for att in msg.body.attachments:
+                    att_type = att.type if hasattr(att, 'type') else type(att).__name__
                     att_dict = att.__dict__ if hasattr(att, '__dict__') else str(att)
                     attachments_info.append(f"{att_type}: {att_dict}")
             

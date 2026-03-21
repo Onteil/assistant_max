@@ -258,7 +258,7 @@ async def handle_focus_file_message(
                 # Classify file type based on extension
                 file_type = classify_file_type(file_name)
             
-            elif attachment.type == "voice":
+            elif attachment.type in ("voice", "audio_video_note"):
                 file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
                 file_type = FileType.OTHER
                 file_name = "voice.ogg"
@@ -284,8 +284,17 @@ async def handle_focus_file_message(
             # Get caption if provided (from message text)
             caption = event.message.body.text.strip() if event.message.body.text else None
             
-            # Use file name as message text if no caption
-            message_text = caption if caption else f"📎 {file_name}"
+            # Use emoji label as message text if no caption (no raw filename in text)
+            if caption:
+                message_text = caption
+            elif attachment.type == "image":
+                message_text = "📷 Фото"
+            elif attachment.type in ("voice", "audio", "audio_video_note"):
+                message_text = "🎤 Голосовое сообщение"
+            elif attachment.type == "video":
+                message_text = "🎥 Видео"
+            else:
+                message_text = "📎 Файл"
             
             # Send file to client
             await send_message_to_client_max(

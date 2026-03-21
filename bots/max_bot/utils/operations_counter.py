@@ -29,13 +29,14 @@ async def count_key_conflicts(session: AsyncSession) -> int:
         Number of keys with PENDING_REVIEW status
     """
     try:
-        stmt = select(func.count(GS_Key.id)).where(
-            GS_Key.conflict_status == KeyConflictStatus.PENDING_REVIEW
-        )
-        result = await session.execute(stmt)
-        count = result.scalar() or 0
-        logger.debug(f"Key conflicts count: {count}")
-        return count
+        async with session.begin_nested():
+            stmt = select(func.count(GS_Key.id)).where(
+                GS_Key.conflict_status == KeyConflictStatus.PENDING_REVIEW
+            )
+            result = await session.execute(stmt)
+            count = result.scalar() or 0
+            logger.debug(f"Key conflicts count: {count}")
+            return count
     except Exception as e:
         logger.error(f"Error counting key conflicts: {e}", exc_info=True)
         return 0
@@ -52,16 +53,17 @@ async def count_phone_changes(session: AsyncSession) -> int:
         Number of open phone change tickets
     """
     try:
-        stmt = select(func.count(Ticket.id)).where(
-            and_(
-                Ticket.ticket_type == TicketType.PHONE_CHANGE,
-                Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS])
+        async with session.begin_nested():
+            stmt = select(func.count(Ticket.id)).where(
+                and_(
+                    Ticket.ticket_type == TicketType.PHONE_CHANGE,
+                    Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS])
+                )
             )
-        )
-        result = await session.execute(stmt)
-        count = result.scalar() or 0
-        logger.debug(f"Phone changes count: {count}")
-        return count
+            result = await session.execute(stmt)
+            count = result.scalar() or 0
+            logger.debug(f"Phone changes count: {count}")
+            return count
     except Exception as e:
         logger.error(f"Error counting phone changes: {e}", exc_info=True)
         return 0
@@ -78,13 +80,14 @@ async def count_escalations(session: AsyncSession) -> int:
         Number of unresolved escalations
     """
     try:
-        stmt = select(func.count(Escalation.id)).where(
-            Escalation.is_resolved == False
-        )
-        result = await session.execute(stmt)
-        count = result.scalar() or 0
-        logger.debug(f"Escalations count: {count}")
-        return count
+        async with session.begin_nested():
+            stmt = select(func.count(Escalation.id)).where(
+                Escalation.is_resolved == False
+            )
+            result = await session.execute(stmt)
+            count = result.scalar() or 0
+            logger.debug(f"Escalations count: {count}")
+            return count
     except Exception as e:
         logger.error(f"Error counting escalations: {e}", exc_info=True)
         return 0

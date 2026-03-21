@@ -297,7 +297,7 @@ def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: 
     text += (
         f"\n<b>Доступные функции:</b>\n"
         f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
-        f"🗄 <b>Архив обращений</b> — поиск по завершенным заявкам\n"
+        f"🗃️ <b>Архив обращений</b> — поиск по завершенным заявкам\n"
         f"⚙️ <b>Настройки</b> — управление профилем и подписью\n"
     )
     
@@ -647,6 +647,9 @@ async def handle_manager_menu_action(
                 )
                 return
             
+            # Cache scalar attributes before further DB calls to avoid lazy-load issues
+            employee_full_name = employee.full_name
+            
             # Call admin panel handler (message already deleted above)
             from bots.max_bot.handlers.staff.admin_panel import get_admin_panel_keyboard, get_admin_panel_menu_text
             
@@ -665,7 +668,7 @@ async def handle_manager_menu_action(
                 parse_mode="HTML"
             )
             
-            logger.info(f"Administrator {max_user_id} ({employee.full_name}) accessed admin panel")
+            logger.info(f"Administrator {max_user_id} ({employee_full_name}) accessed admin panel")
         
         else:
             logger.warning(f"Unknown manager menu action: {action}")
@@ -1111,10 +1114,10 @@ def format_archive_header(
     filter_text = filter_names.get(current_filter, "День")
     
     if tickets_count == 0:
-        return f"🗄 <b>Архив обращений</b>\n\n<b>Фильтр:</b> {filter_text}\n\n<i>Нет закрытых заявок</i>"
+        return f"🗃️ <b>Архив обращений</b>\n\n<b>Фильтр:</b> {filter_text}\n\n<i>Нет закрытых заявок</i>"
     
     return (
-        f"🗄 <b>Архив обращений</b>\n\n"
+        f"🗃️ <b>Архив обращений</b>\n\n"
         f"<b>Фильтр:</b> {filter_text}\n"
         f"<b>Найдено:</b> {tickets_count}\n\n"
         f"Выберите заявку:"
@@ -2030,6 +2033,36 @@ async def handle_ticket_action(
             
             logger.info(f"Employee {max_user_id} initiated transfer for ticket {ticket_id}, found {len(available_employees)} employees")
         
+        elif action == "view_card":
+            # Show ticket card (used from notification buttons)
+            from sqlalchemy.orm import selectinload
+            stmt = select(Ticket).where(Ticket.id == ticket_id).options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys)
+            )
+            result = await session.execute(stmt)
+            ticket = result.scalar_one_or_none()
+
+            if not ticket:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Заявка не найдена.",
+                    parse_mode="HTML"
+                )
+                return
+
+            ticket_card = format_ticket_card_detailed(ticket)
+            keyboard = get_ticket_action_keyboard(ticket)
+
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ticket_card,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Employee {max_user_id} viewing card of ticket {ticket_id}")
+
         elif action == "history":
             # Show ticket message history with pagination
             from bots.max_bot.payloads import ManagerTicketHistoryPayload
@@ -2211,12 +2244,14 @@ async def handle_closing_comment_input(
             
             elif attachment.type == "file":
                 file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
-                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "document"
+                raw_name = attachment.payload.name if hasattr(attachment.payload, 'name') else None
+                from services.validation_service import resolve_file_name
+                file_name = resolve_file_name(raw_name, file_id, fallback="document.bin")
                 file_type = classify_file_type(file_name)
                 if not final_comment:
                     final_comment = f"📎 {file_name}"
             
-            elif attachment.type == "voice":
+            elif attachment.type in ("voice", "audio"):
                 file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
                 file_type = FileType.OTHER
                 if not final_comment:
@@ -2225,16 +2260,11 @@ async def handle_closing_comment_input(
             elif attachment.type == "video":
                 file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
                 file_type = FileType.OTHER
-                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "video.mp4"
+                raw_video_name = attachment.payload.name if hasattr(attachment.payload, 'name') else None
+                from services.validation_service import resolve_file_name
+                file_name = resolve_file_name(raw_video_name, file_id, fallback="video.mp4")
                 if not final_comment:
                     final_comment = f"🎥 {file_name}"
-            
-            elif attachment.type == "audio":
-                file_id = attachment.payload.url if hasattr(attachment.payload, 'url') else None
-                file_type = FileType.OTHER
-                file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "audio.mp3"
-                if not final_comment:
-                    final_comment = f"🎵 {file_name}"
             
             else:
                 logger.warning(f"Unknown attachment type: {attachment.type}")
@@ -2584,12 +2614,13 @@ async def handle_employee_selection(
 # ============================================================================
 
 # Message history pagination constants
-MANAGER_MESSAGES_PER_PAGE = 10
+MANAGER_MESSAGES_PER_PAGE = 5
+MAX_MESSAGE_TEXT_LENGTH = 4000  # MAX API message length limit
 
 
 async def handle_manager_ticket_history(
     event: MessageCallback,
-    payload,  # ManagerTicketHistoryPayload or ManagerTicketActionPayload
+    payload: ManagerTicketHistoryPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
@@ -2710,7 +2741,7 @@ async def handle_manager_ticket_history(
         lines = [
             f"📁 <b>История переписки - Заявка #{ticket_id}</b>",
             f"Страница {page + 1} из {total_pages} (сообщений {start_idx + 1}-{end_idx} из {total_messages})",
-            "─" * 29,
+            "─" * 5,
             ""
         ]
         
@@ -2753,12 +2784,33 @@ async def handle_manager_ticket_history(
             # Check for file attachments
             if msg.file_attachments:
                 for attachment in msg.file_attachments:
-                    file_type = attachment.file_type.value if attachment.file_type else "файл"
-                    lines.append(f"📎 {attachment.file_name} ({file_type})")
+                    from database.models import FileType as FT
+                    ft = attachment.file_type
+                    if ft == FT.IMAGE:
+                        label = "Изображение"
+                        emoji = "🖼"
+                    elif ft in (FT.DOCUMENT, FT.PDF):
+                        label = "Документ"
+                        emoji = "📄"
+                    elif ft == FT.OTHER:
+                        label = "Голосовое сообщение"
+                        emoji = "🎤"
+                    else:
+                        label = "Файл"
+                        emoji = "📎"
+                    file_url = attachment.max_file_url or (
+                        attachment.telegram_file_id
+                        if attachment.telegram_file_id and attachment.telegram_file_id.startswith("http")
+                        else None
+                    )
+                    if file_url:
+                        lines.append(f'{emoji} <a href="{file_url}">{label}</a>')
+                    else:
+                        lines.append(f"{emoji} {label}")
             
             lines.append("")  # Empty line between messages
         
-        lines.append("─" * 29)
+        lines.append("─" * 5)
         
         history_text = "\n".join(lines)
         
@@ -2796,6 +2848,10 @@ async def handle_manager_ticket_history(
         ])
         
         keyboard = Keyboard(buttons=buttons, inline=True)
+        
+        # Truncate if exceeds MAX API limit
+        if len(history_text) > MAX_MESSAGE_TEXT_LENGTH:
+            history_text = history_text[:MAX_MESSAGE_TEXT_LENGTH - 50] + "\n\n<i>... (текст обрезан)</i>"
         
         # Delete old message and send new one (replace_message pattern)
         if message_id:

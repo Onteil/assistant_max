@@ -39,7 +39,7 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 async def show_status():
     """Show current work mode and system status."""
     print("📊 Work Mode Monitor Status")
-    print("=" * 40)
+    print("─" * 5)
     
     try:
         async with get_session() as session:
@@ -165,7 +165,7 @@ async def monitor_transitions():
     """Monitor work mode changes in real-time."""
     print("👁️  Monitoring work mode transitions...")
     print("Press Ctrl+C to stop monitoring")
-    print("=" * 50)
+    print("─" * 5)
     
     last_mode = None
     

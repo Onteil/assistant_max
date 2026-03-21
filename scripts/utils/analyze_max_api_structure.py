@@ -276,9 +276,9 @@ def main():
     json_file.write_text(json_report, encoding='utf-8')
     print(f"✅ Создан: {json_file}")
     
-    print("\n" + "=" * 60)
+    print("\n" + "─" * 5)
     print("СВОДКА")
-    print("=" * 60)
+    print("─" * 5)
     print(f"\n📊 Всего методов: {len(methods)}")
     print(f"📁 Категорий: {len(categorized)}")
     print("\nРаспределение по категориям:")

@@ -1105,17 +1105,19 @@ def create_user_router() -> Router:
         
         if not was_routed:
             # Check if this is an employee without focus mode
-            await handle_message_without_focus(
+            # handle_message_without_focus returns early (without sending anything) if user is not staff
+            is_staff = await handle_message_without_focus(
                 event=event,
                 context=context,
                 session=session,
                 messenger_adapter=messenger_adapter
             )
             
-            # handle_message_without_focus returns early if user is not staff
-            # If we reach here, it's a client without active ticket
+            # If user was staff, handle_message_without_focus already responded — stop here
+            if is_staff:
+                return
             
-            # No active ticket - show helpful message
+            # Not staff and no active ticket - show helpful message to client
             chat_id = event.message.recipient.chat_id
             max_user_id = event.message.sender.user_id
             

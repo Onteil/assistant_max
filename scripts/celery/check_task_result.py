@@ -19,9 +19,9 @@ r = redis.Redis(
 reminder_task_id = "4aa19b95-7d5b-4562-aab7-c316b1161ea7"
 escalation_task_id = "f1203d5b-c069-4ea3-adb8-a7a3f796b5e9"
 
-print("=" * 60)
+print("─" * 5)
 print("Проверка результатов задач для тикета #36")
-print("=" * 60)
+print("─" * 5)
 
 # Check reminder task
 reminder_key = f"celery-task-meta-{reminder_task_id}"
@@ -49,4 +49,4 @@ if r.exists(escalation_key):
 else:
     print(f"\n❌ Escalation Task не найдена в Redis")
 
-print("\n" + "=" * 60)
+print("\n" + "─" * 5)

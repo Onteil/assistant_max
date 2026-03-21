@@ -11,16 +11,16 @@ import sys
 
 def start_beat():
     """Запустить Celery beat."""
-    print("=" * 60)
+    print("─" * 5)
     print("Запуск Celery Beat (планировщик)")
-    print("=" * 60)
+    print("─" * 5)
     print()
     print("Периодические задачи:")
     print("  - cleanup-old-nps-surveys-daily (3:00)")
     print("  - check-upcoming-expirations (9:00)")
     print()
     print("Для остановки нажмите Ctrl+C")
-    print("=" * 60)
+    print("─" * 5)
     print()
     
     try:

@@ -91,7 +91,9 @@ async def _check_expirations_async(reminder_days: list[int] = None) -> dict:
         # Get database session
         async with AsyncSessionLocal() as session:
             # Calculate target expiration dates for each reminder interval
-            today = datetime.now().date()
+            # Use Moscow timezone to match subscription_end_date stored in Moscow time
+            from utils.timezone_helpers import get_moscow_now_naive
+            today = get_moscow_now_naive().date()
             target_dates = [today + timedelta(days=days) for days in reminder_days]
             
             logger.info(

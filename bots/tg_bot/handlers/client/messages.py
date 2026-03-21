@@ -164,12 +164,12 @@ async def get_client_active_ticket(session: AsyncSession, tg_user_id: int) -> Ti
     & ~F.text.in_([
         # Client buttons
         "📥 Активные заявки", 
-        "🗄 Архив обращений", 
+        "🗃️ Архив обращений", 
         "⚙️ Настройки",
         # Staff buttons (to prevent interception by client handler)
         "🔐 Админ-панель",
         "📥 Активные заявки",  # Staff also has this
-        "🗄 Архив обращений",  # Staff also has this
+        "🗃️ Архив обращений",  # Staff also has this
         "⚙️ Настройки"  # Staff also has this
     ])
 )

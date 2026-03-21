@@ -36,7 +36,7 @@ from celery_app.escalation_tasks import schedule_escalation_monitoring
 async def test_backup_escalation_flow():
     """Test the backup manager escalation flow."""
     print("🧪 Testing Backup Manager Escalation Flow")
-    print("=" * 50)
+    print("─" * 5)
     
     async with AsyncSessionLocal() as session:
         # Find a test user
@@ -230,7 +230,7 @@ async def check_celery_status():
 async def main():
     """Main test function."""
     print("🚀 Backup Manager Escalation Test")
-    print("=" * 50)
+    print("─" * 5)
     
     # Check Celery status
     celery_ok = await check_celery_status()
@@ -243,7 +243,7 @@ async def main():
     # Run escalation flow test
     success = await test_backup_escalation_flow()
     
-    print("\n" + "=" * 50)
+    print("\n" + "─" * 5)
     if success:
         print("🎉 Test completed successfully!")
         print("📊 Monitor the escalation flow in real-time using Celery logs")

@@ -50,6 +50,7 @@ from database.models import KeyConflictStatus, TicketType
 from services.i_tat_service import get_itat_client
 from services.ticket_service import create_ticket
 from services.user_service import (
+    KeyConflictError,
     add_user_key,
     add_user_organization,
     get_user_by_id,
@@ -1118,7 +1119,7 @@ async def handle_profile_callback(
                     "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
                     "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
                     "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                    "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
                     "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
                     "Выберите нужное действие:"
                 )
@@ -1386,6 +1387,30 @@ async def process_add_key(
             await context.clear()
             return
         
+        # Check if user already has this key in DB
+        existing_keys = await get_user_keys(session, user.id)
+        if any(k.key_number == normalized_key for k in existing_keys):
+            logger.warning(f"Duplicate key attempt: user_id={user.id}, key={normalized_key}")
+            from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            from bots.max_bot.payloads import ProfileViewPayload
+            keyboard = Keyboard(
+                buttons=[
+                    [KeyboardButton(
+                        text="⬅️ Назад к ключам",
+                        payload=ProfileViewPayload(section="keys", page=0).pack()
+                    )]
+                ],
+                inline=True
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Ключ <b>{normalized_key}</b> уже добавлен в ваш профиль.",
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+            return
+        
         # Check for key conflicts via i-TAT API
         itat_client = get_itat_client()
         conflict_response = await itat_client.check_key_conflict(
@@ -1493,22 +1518,63 @@ async def process_add_key(
         # Show keys list
         await show_keys_list(chat_id, user.id, session, messenger_adapter)
     
+    except KeyConflictError as e:
+        logger.warning(
+            f"Key conflict (DB fallback): user_id={user.id}, key={normalized_key}, "
+            f"owner_user_id={e.existing_user_id}"
+        )
+        await session.commit()
+        await context.clear()
+
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+            await notify_admins_key_conflict(session, user.id, normalized_key)
+        except Exception as notify_error:
+            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
+
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from bots.max_bot.payloads import ProfileViewPayload
+        keyboard = Keyboard(
+            buttons=[
+                [KeyboardButton(
+                    text="⬅️ Назад к ключам",
+                    payload=ProfileViewPayload(section="keys", page=0).pack()
+                )]
+            ],
+            inline=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ADD_KEY_CONFLICT.format(key=normalized_key),
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
     except IntegrityError as e:
         logger.warning(
             f"Duplicate key: user_id={user.id}, key={normalized_key}, error={e}",
             exc_info=True
         )
+        await session.rollback()
         await context.clear()
         
-        # Send duplicate message
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from bots.max_bot.payloads import ProfileViewPayload
+        keyboard = Keyboard(
+            buttons=[
+                [KeyboardButton(
+                    text="⬅️ Назад к ключам",
+                    payload=ProfileViewPayload(section="keys", page=0).pack()
+                )]
+            ],
+            inline=True
+        )
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="❌ Этот ключ уже добавлен в ваш профиль.",
+            text=f"⚠️ Ключ <b>{normalized_key}</b> уже добавлен в ваш профиль.",
+            keyboard=keyboard,
             parse_mode="HTML"
         )
-        
-        # Show keys list
-        await show_keys_list(chat_id, user.id, session, messenger_adapter)
     
     except Exception as e:
         logger.error(

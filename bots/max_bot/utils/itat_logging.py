@@ -11,6 +11,8 @@ from typing import Optional
 from database.models import Ticket, TicketType, TicketStatus, User
 from services.i_tat_service import get_itat_client
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,13 @@ async def log_ticket_to_itat(
         # Get I-TAT API client
         api_client = get_itat_client()
         
-        # Get user with MAX messenger data
-        user = ticket.user
+        # Get user with MAX messenger data (eager load to avoid lazy-load in async context)
+        result = await session.execute(
+            select(User)
+            .options(selectinload(User.max_messenger_data))
+            .where(User.id == ticket.user_id)
+        )
+        user = result.scalar_one_or_none()
         if not user or not user.max_messenger_data:
             logger.warning(
                 f"Cannot log ticket to I-TAT: user has no MAX messenger data. "

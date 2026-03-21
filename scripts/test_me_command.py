@@ -82,18 +82,18 @@ async def test_me_command():
 
 async def main():
     """Main test function."""
-    logger.info("=" * 60)
+    logger.info("─" * 5)
     logger.info("MAX Bot /me Command Test")
-    logger.info("=" * 60)
+    logger.info("─" * 5)
     
     success = await test_me_command()
     
-    logger.info("=" * 60)
+    logger.info("─" * 5)
     if success:
         logger.info("✅ All tests passed!")
     else:
         logger.error("❌ Tests failed!")
-    logger.info("=" * 60)
+    logger.info("─" * 5)
     
     return 0 if success else 1
 

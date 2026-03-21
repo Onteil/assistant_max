@@ -27,7 +27,7 @@ async def test_timezone_fix():
     """Test that timezone fix is working correctly."""
     
     print("🕐 Testing timezone fix implementation...")
-    print("=" * 50)
+    print("─" * 5)
     
     async with AsyncSessionLocal() as session:
         
@@ -170,7 +170,7 @@ async def test_timezone_fix():
         
         print()
         
-    print("=" * 50)
+    print("─" * 5)
     print("🎉 Timezone fix verification completed!")
     
     # Summary

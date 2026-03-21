@@ -58,6 +58,14 @@ ITAT_API_BASE_URL = os.getenv("ITAT_API_BASE_URL", "https://api.i-tat.ru")
 ITAT_API_USERNAME = os.getenv("ITAT_API_USERNAME", "")
 ITAT_API_PASSWORD = os.getenv("ITAT_API_PASSWORD", "")
 
+# Локальная разработка: изолированное подключение через VPN + SSH SOCKS5 туннель
+LOCAL_DEV = os.getenv("LOCAL_DEV", "false").lower() == "true"
+ITAT_SSH_HOST = os.getenv("ITAT_SSH_HOST", "")
+ITAT_SSH_LOGIN = os.getenv("ITAT_SSH_LOGIN", "")
+ITAT_SSH_PASSWORD = os.getenv("ITAT_SSH_PASSWORD", "")
+ITAT_SSH_SOCKS5_PORT = int(os.getenv("ITAT_SSH_SOCKS5_PORT", "1080"))
+ITAT_VPN_HOST = os.getenv("ITAT_VPN_HOST", "")
+
 # Registration Approval Method
 # Options: "bot" (approve in bot), "crm" (approve via 1C/CRM webhook)
 REGISTRATION_APPROVE_METHOD = os.getenv("REGISTRATION_APPROVE_METHOD", "bot").lower()

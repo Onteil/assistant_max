@@ -88,17 +88,17 @@ async def notify_admins_key_conflict(
         # Format notification message (no HTML tags for MAX)
         message_text = (
             f"⚠️ При добавлении ключа возник конфликт\n\n"
-            f"Данные нового пользователя:\n"
-            f"ФИО: {new_user.full_name or 'Не указано'}\n"
-            f"Телефон: {new_user.phone_number}\n"
-            f"MAX ID: {new_user.max_user_id or 'Не указан'}\n\n"
-            f"Конфликтный ключ: {key_number}\n\n"
-            f"Текущий владелец ключа:\n"
-            f"ФИО: {current_owner.full_name if current_owner else 'Не найден в системе'}\n"
-            f"Телефон: {current_owner.phone_number if current_owner else 'Не указан'}\n"
-            f"MAX ID: {current_owner.max_user_id if current_owner else 'Не указан'}\n\n"
-            f"Дата обнаружения: {conflict_date}\n\n"
-            f"Для разрешения конфликта перейдите в раздел 'Операции' → 'Конфликты ключей'"
+            f"👤 Данные нового пользователя:\n"
+            f"🪪 ФИО: {new_user.full_name or 'Не указано'}\n"
+            f"📞 Телефон: {new_user.phone_number}\n"
+            f"🆔 MAX ID: {new_user.max_user_id or 'Не указан'}\n\n"
+            f"🔑 Конфликтный ключ: {key_number}\n\n"
+            f"👤 Текущий владелец ключа:\n"
+            f"🪪 ФИО: {current_owner.full_name if current_owner else 'Не найден в системе'}\n"
+            f"📞 Телефон: {current_owner.phone_number if current_owner else 'Не указан'}\n"
+            f"🆔 MAX ID: {current_owner.max_user_id if current_owner else 'Не указан'}\n\n"
+            f"📅 Дата обнаружения: {conflict_date}\n\n"
+            f"🔧 Для разрешения конфликта перейдите в раздел 'Операции' → 'Конфликты ключей'"
         )
         
         # Send notification to all administrators using max_chat_id

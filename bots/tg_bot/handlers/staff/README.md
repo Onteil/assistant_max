@@ -25,7 +25,7 @@ Defined in `database.models.StaffRole`:
 ## Staff Menu Buttons
 
 - 📥 Активные заявки (Active Tickets)
-- 🗄 Архив обращений (Archive Search)
+- 🗃️ Архив обращений (Archive Search)
 - ⚙️ Настройки (Settings)
 - 🔐 Админ-панель (Admin Panel - administrators only)
 

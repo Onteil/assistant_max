@@ -304,13 +304,15 @@ async def notify_staff_about_low_rating(
     user: User,
     rating: int,
     survey_type: SurveyType,
-    feedback_comment: str | None = None
+    feedback_comment: str | None = None,
+    trigger_event_id: int | None = None
 ) -> bool:
     """
     Send notification to all administrators about low NPS rating (0-7).
     
     Notifies all active administrators about negative feedback.
-    Supports both Telegram and MAX messengers.
+    For MAX messenger: includes action buttons (call, write in MAX).
+    For Telegram: includes contact info and MAX profile link in text.
     
     Args:
         session: Database session
@@ -318,6 +320,7 @@ async def notify_staff_about_low_rating(
         rating: User's rating (0-7)
         survey_type: Type of survey (LOYALTY or SERVICE_QUALITY)
         feedback_comment: Optional feedback comment from user
+        trigger_event_id: Optional ID of the triggering event (ticket/invoice)
     
     Returns:
         bool: True if at least one notification sent successfully, False otherwise
@@ -364,11 +367,22 @@ async def notify_staff_about_low_rating(
             if manager:
                 manager_info = f"<b>Менеджер:</b> {manager.full_name}\n"
         
+        # Build ticket/invoice reference line
+        event_ref = ""
+        if trigger_event_id and trigger_event_id > 0:
+            event_ref = f"<b>Заявка:</b> #{trigger_event_id}\n"
+        
+        # MAX profile link — works only via username, not numeric ID
+        max_profile_url = None
+        if user.username:
+            max_profile_url = f"https://max.ru/{user.username}"
+        
         notification_text = (
             f"⚠️ <b>Низкая оценка NPS</b>\n\n"
             f"<b>Клиент:</b> {user_name}\n"
             f"<b>Контакты:</b>\n{contact_text}\n\n"
             f"{manager_info}"
+            f"{event_ref}"
             f"<b>Тип опроса:</b> {survey_type_text}\n"
             f"<b>Оценка:</b> {rating}/10\n"
         )
@@ -380,6 +394,11 @@ async def notify_staff_about_low_rating(
             f"\n💡 Пожалуйста, свяжитесь с клиентом для выяснения причин "
             f"и улучшения качества обслуживания."
         )
+        
+        # For Telegram: append MAX profile link in text (no buttons)
+        tg_notification_text = notification_text
+        if max_profile_url:
+            tg_notification_text += f"\n\n🔗 Профиль в MAX: {max_profile_url}"
         
         # Send notification to all administrators
         success_count = 0
@@ -418,12 +437,26 @@ async def notify_staff_about_low_rating(
             if messenger_type == "telegram":
                 success = await _send_telegram_notification(
                     messenger_id=messenger_id,
-                    text=notification_text
+                    text=tg_notification_text
                 )
             else:  # max
+                # Get client's max_chat_id for the profile link test
+                user_max_chat_id = None
+                if user.max_user_id:
+                    stmt_user_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == user.max_user_id
+                    )
+                    result_user_chat = await session.execute(stmt_user_chat)
+                    user_max_chat_id = result_user_chat.scalar_one_or_none()
+
                 success = await _send_max_notification(
                     messenger_id=messenger_id,
-                    text=notification_text
+                    text=notification_text,
+                    phone_number=user.phone_number,
+                    max_user_id=user.max_user_id,
+                    max_chat_id=user_max_chat_id,
+                    user_username=user.username,
+                    user_full_name=user.full_name or user.first_name
                 )
             
             if success:
@@ -516,14 +549,27 @@ async def _send_telegram_notification(
 
 async def _send_max_notification(
     messenger_id: int,
-    text: str
+    text: str,
+    phone_number: str | None = None,
+    max_user_id: int | None = None,
+    max_chat_id: int | None = None,
+    user_username: str | None = None,
+    user_full_name: str | None = None
 ) -> bool:
     """
-    Send notification via MAX bot.
+    Send notification via MAX bot, optionally with a contact attachment.
+    
+    If phone_number is provided, sends a contact card (VCF) as attachment
+    so the admin can tap to call directly from the notification.
     
     Args:
-        messenger_id: MAX chat ID
+        messenger_id: MAX chat ID of the admin
         text: Notification text (HTML formatted)
+        phone_number: Optional client phone number for contact card
+        max_user_id: Optional client MAX user ID
+        max_chat_id: Optional client MAX chat ID
+        user_username: Optional client username
+        user_full_name: Optional client full name for contact card
     
     Returns:
         bool: True if sent successfully, False otherwise
@@ -532,6 +578,8 @@ async def _send_max_notification(
         from maxapi import Bot as MAXBot
         from maxapi.enums.parse_mode import ParseMode
         from maxapi.exceptions import MaxApiError
+        from maxapi.types.attachments.attachment import Attachment, ContactAttachmentPayload
+        from maxapi.enums.attachment import AttachmentType
         from constants import MAX_BOT_TOKEN
         
         bot = MAXBot(
@@ -539,10 +587,22 @@ async def _send_max_notification(
             parse_mode=ParseMode.HTML
         )
         
+        # Build contact attachment if phone number is available
+        attachments = []
+        if phone_number:
+            name = user_full_name or "Клиент"
+            vcf = f"BEGIN:VCARD\nVERSION:3.0\nFN:{name}\nTEL:{phone_number}\nEND:VCARD"
+            contact_attachment = Attachment(
+                type=AttachmentType.CONTACT,
+                payload=ContactAttachmentPayload(vcf_info=vcf)
+            )
+            attachments = [contact_attachment]
+        
         try:
             await bot.send_message(
                 chat_id=messenger_id,
-                text=text
+                text=text,
+                attachments=attachments if attachments else None
             )
             return True
             

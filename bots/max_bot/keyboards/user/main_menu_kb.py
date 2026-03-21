@@ -41,8 +41,8 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
         ],
         # Второй ряд: Продление и Архив
         [
-            KeyboardButton(text="🔄 Продление", payload=MainMenuActionPayload(action="renewal").pack()),
-            KeyboardButton(text="🗄 Архив обращений", payload=MainMenuActionPayload(action="archive").pack())
+            # KeyboardButton(text="🔄 Продление", payload=MainMenuActionPayload(action="renewal").pack()),
+            KeyboardButton(text="🗃️ Архив обращений", payload=MainMenuActionPayload(action="archive").pack())
         ],
         # Третий ряд: Профиль
         [
@@ -52,7 +52,7 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
     
     # Если есть активные заявки, добавить кнопку с количеством
     if active_tickets_count > 0:
-        buttons.insert(2, [
+        buttons.insert(1, [
             KeyboardButton(
                 text=f"📥 Активные обращения ({active_tickets_count})",
                 payload=MainMenuActionPayload(action="active_tickets").pack()

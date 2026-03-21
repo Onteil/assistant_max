@@ -409,7 +409,8 @@ async def handle_nps_feedback(
                     user=user,
                     rating=rating,
                     survey_type=survey_type_enum,
-                    feedback_comment=feedback_text
+                    feedback_comment=feedback_text,
+                    trigger_event_id=trigger_event_id
                 )
             except Exception as e:
                 logger.error(
@@ -517,7 +518,8 @@ async def handle_nps_skip_feedback(
                 user=user,
                 rating=rating,
                 survey_type=survey_type,
-                feedback_comment=None  # User skipped feedback
+                feedback_comment=None,  # User skipped feedback
+                trigger_event_id=trigger_event_id
             )
         except Exception as e:
             logger.error(

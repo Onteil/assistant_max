@@ -17,6 +17,7 @@ from typing import Any
 import httpx
 
 from constants import ITAT_API_BASE_URL, ITAT_API_PASSWORD, ITAT_API_USERNAME
+from constants import LOCAL_DEV, ITAT_SSH_HOST, ITAT_SSH_SOCKS5_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,20 @@ class ITatAPIClient:
         self.password = password or ITAT_API_PASSWORD
         self.use_mock = use_mock if use_mock is not None else USE_MOCK_API
 
-        self.client = httpx.AsyncClient(
-            timeout=30.0, auth=(self.username, self.password), headers={"Content-Type": "application/json"}
-        )
+        # При LOCAL_DEV=true направляем трафик через SSH SOCKS5 туннель.
+        # Предварительно: 1) подключиться к PPTP VPN (ITAT_VPN_HOST)
+        #                  2) запустить туннель: ssh -D <port> -N <login>@<ssh_host>
+        client_kwargs: dict[str, Any] = {
+            "timeout": 30.0,
+            "auth": (self.username, self.password),
+            "headers": {"Content-Type": "application/json"},
+        }
+        if LOCAL_DEV and ITAT_SSH_HOST:
+            socks5_url = f"socks5://{ITAT_SSH_HOST}:{ITAT_SSH_SOCKS5_PORT}"
+            client_kwargs["proxy"] = socks5_url
+            logger.info(f"LOCAL_DEV: i-TAT requests routed via SOCKS5 proxy {socks5_url}")
+
+        self.client = httpx.AsyncClient(**client_kwargs)
 
     async def close(self):
         """Закрытие HTTP клиента"""

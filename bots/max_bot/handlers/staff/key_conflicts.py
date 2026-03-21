@@ -40,6 +40,7 @@ from database.models import (
     StaffRole,
     User,
 )
+from services.i_tat_service import get_itat_client
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +428,6 @@ async def handle_key_transfer(
     
     Requirements: 8.1-8.9
     """
-    from services.i_tat_service import get_itat_client
     import httpx
     
     chat_id = event.message.recipient.chat_id
@@ -611,7 +611,12 @@ async def handle_key_transfer(
                 if max_data:
                     await messenger_adapter.send_message(
                         chat_id=max_data.max_chat_id,
-                        text=f"✅ <b>Ключ передан вам</b>\n\nКлюч <code>{key_number}</code> теперь принадлежит вам.",
+                        text=(
+                            f"✅ <b>Конфликт ключа разрешён</b>\n\n"
+                            f"Ранее вы заявили права на ключ <code>{key_number}</code>, который был зарегистрирован на другого пользователя.\n\n"
+                            f"Администратор рассмотрел заявку и принял решение о передаче ключа вам.\n\n"
+                            f"🔑 Ключ <code>{key_number}</code> теперь принадлежит вам."
+                        ),
                         parse_mode="HTML"
                     )
                     logger.info(f"Sent key transfer notification to new user {new_user.id}")
@@ -840,7 +845,12 @@ async def handle_key_rejection(
                 if max_data:
                     await messenger_adapter.send_message(
                         chat_id=max_data.max_chat_id,
-                        text=f"❌ <b>Запрос отклонен</b>\n\nВаш запрос на ключ <code>{key_number}</code> был отклонен администратором.",
+                        text=(
+                            f"❌ <b>Конфликт ключа разрешён — отказ</b>\n\n"
+                            f"Ранее вы заявили права на ключ <code>{key_number}</code>, который был зарегистрирован на другого пользователя.\n\n"
+                            f"Администратор рассмотрел заявку и принял решение оставить ключ у текущего владельца.\n\n"
+                            f"Если вы считаете это ошибкой, обратитесь в службу поддержки."
+                        ),
                         parse_mode="HTML"
                     )
                     logger.info(f"Sent key rejection notification to user {new_user.id}")

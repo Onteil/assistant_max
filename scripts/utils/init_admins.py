@@ -352,12 +352,12 @@ async def initialize_admins() -> None:
                 await session.rollback()
     
     # Summary
-    logger.info("=" * 60)
+    logger.info("─" * 5)
     logger.info("Admin initialization complete!")
     logger.info(f"  Created: {created_count}")
     logger.info(f"  Already existed: {skipped_count}")
     logger.info(f"  Total: {len(admins_config)}")
-    logger.info("=" * 60)
+    logger.info("─" * 5)
 
 
 def main():

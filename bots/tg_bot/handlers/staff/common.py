@@ -1035,7 +1035,7 @@ async def handle_archive_cancel(
         
         # Edit message to remove keyboard
         await callback.message.edit_text(
-            "🗄 Архив обращений закрыт.",
+            "🗃️ Архив обращений закрыт.",
             reply_markup=None
         )
         

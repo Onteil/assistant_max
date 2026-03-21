@@ -56,6 +56,7 @@ from bots.max_bot.texts import (
 from database.models import KeyConflictStatus, RegistrationStatus
 from services.i_tat_service import get_itat_client
 from services.user_service import (
+    KeyConflictError,
     add_user_key,
     add_user_organization,
     create_user,
@@ -206,7 +207,7 @@ async def cmd_start(
                     "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
                     "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
                     "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                    "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
                     "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
                     "Выберите нужное действие:"
                 )
@@ -231,12 +232,12 @@ async def cmd_start(
             else:
                 # Rejected or other status - start new registration
                 logger.info(f"User with status {user.registration_status.value} starting registration: user_id={user.id}")
-                await start_registration(event, context, messenger_adapter)
+                await start_registration(event, context, messenger_adapter, session)
         
         else:
             # User not registered - start registration flow
             logger.info(f"New user starting registration: max_user_id={max_user_id}")
-            await start_registration(event, context, messenger_adapter)
+            await start_registration(event, context, messenger_adapter, session)
     
     except SQLAlchemyError as e:
         logger.error(
@@ -990,6 +991,19 @@ async def process_gs_key(
             await context.clear()
             return
         
+        # Check if user already has this key in DB
+        from services.user_service import get_user_keys
+        existing_keys = await get_user_keys(session, user_id)
+        if any(k.key_number == normalized_key for k in existing_keys):
+            logger.warning(f"Duplicate key in registration: user_id={user_id}, key={normalized_key}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ Ключ <b>{normalized_key}</b> уже добавлен в ваш профиль. Введите другой ключ или продолжите регистрацию.",
+                keyboard=get_key_input_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+        
         # Check for key conflicts via i-TAT API
         max_user_id = event.message.sender.user_id  # Use MAX user ID for API calls
         itat_client = get_itat_client()
@@ -1042,6 +1056,32 @@ async def process_gs_key(
             # Submit registration
             await submit_registration(context, session, messenger_adapter, chat_id, user_id)
     
+    except KeyConflictError as e:
+        logger.warning(
+            f"Key conflict (DB fallback) in registration: user_id={user_id}, "
+            f"key={normalized_key}, owner_user_id={e.existing_user_id}"
+        )
+        await session.commit()
+
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+            await notify_admins_key_conflict(session, user_id, normalized_key)
+        except Exception as notify_error:
+            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
+
+        # Store conflict info and show conflict resolution keyboard (same as i-TAT conflict flow)
+        await context.update_data(
+            key_number=normalized_key,
+            has_conflict=True,
+            conflict_owner="Другой пользователь",
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=REGISTRATION_KEY_CONFLICT.format(owner="Другой пользователь"),
+            keyboard=get_key_conflict_keyboard(),
+            parse_mode="HTML"
+        )
+
     except Exception as e:
         logger.error(
             f"Error processing GS_Key: key={key_number}, error={e}",

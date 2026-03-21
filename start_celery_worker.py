@@ -17,11 +17,11 @@ def start_worker():
     project_root = os.path.abspath(os.getcwd())
     os.environ['PYTHONPATH'] = project_root
     
-    print("=" * 60)
+    print("─" * 5)
     print("Запуск Celery Worker")
-    print("=" * 60)
+    print("─" * 5)
     print()
-    print("Очереди: nps_surveys, renewal_reminders, escalations, broadcasts")
+    print("Очереди: nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications, work_mode_monitor")
     print("Pool: solo (для Windows)")
     print(f"Python: {sys.executable}")
     print(f"PYTHONPATH: {project_root}")
@@ -36,7 +36,7 @@ def start_worker():
     print(f"Рабочая директория: {os.getcwd()}")
     print()
     print("Для остановки нажмите Ctrl+C")
-    print("=" * 60)
+    print("─" * 5)
     print()
     
     try:
@@ -48,7 +48,7 @@ def start_worker():
             "worker",
             "-l", "info",
             "--pool=solo",  # Для Windows
-            "-Q", "escalations,nps_surveys,renewal_reminders,broadcasts"  # escalations первым!
+            "-Q", "escalations,nps_surveys,renewal_reminders,broadcasts,ticket_notifications,work_mode_monitor"
         ])
     except KeyboardInterrupt:
         print("\n\n✅ Worker остановлен")

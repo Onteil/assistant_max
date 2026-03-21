@@ -610,7 +610,7 @@ class ManagerTicketHistoryPayload(CallbackPayload, prefix='mgr_history'):
     page: int = 0
 
 
-class ManagerTicketHistoryBackPayload(CallbackPayload, prefix='mgr_history_back'):
+class ManagerTicketHistoryBackPayload(CallbackPayload, prefix='mgr_hist_back'):
     """Payload for returning from ticket history to ticket card (manager interface).
     
     Used when manager clicks back button from history view.

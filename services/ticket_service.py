@@ -126,8 +126,11 @@ async def create_ticket(
         
         # Log ticket creation to i-TAT audit API
         try:
-            # Get user to extract max_user_id
-            user_stmt = select(User).where(User.id == ticket.user_id)
+            # Get user to extract max_user_id with eager loading of max_messenger_data
+            from sqlalchemy.orm import selectinload
+            user_stmt = select(User).where(User.id == ticket.user_id).options(
+                selectinload(User.max_messenger_data)
+            )
             user_result = await session.execute(user_stmt)
             user = user_result.scalar_one_or_none()
             
@@ -854,7 +857,7 @@ async def add_ticket_message(
             sender_id=sender_id,
             message_text=message_text,
             message_type=message_type,
-            sent_at=datetime.utcnow()
+            sent_at=get_moscow_now_naive()
         )
         
         session.add(message)
@@ -2594,92 +2597,103 @@ async def send_message_to_client_max(
         # Send message to client via MAX
         try:
             if file_id:
-                # Send file with caption by downloading and re-uploading
-                try:
-                    from pathlib import Path
-                    import uuid
-                    
-                    # Ensure temp directory exists
-                    temp_dir = Path("media/temp")
-                    temp_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Generate unique filename
-                    file_extension = ""
-                    if max_media_type == "image":
-                        file_extension = ".jpg"
-                    elif max_media_type == "file":
-                        # Try to extract extension from URL
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(file_id)
-                        path_parts = Path(parsed_url.path).suffix
-                        file_extension = path_parts if path_parts else ".bin"
-                    elif max_media_type == "video":
-                        file_extension = ".mp4"
-                    elif max_media_type == "voice":
-                        file_extension = ".ogg"
-                    elif max_media_type == "audio":
-                        file_extension = ".mp3"
-                    
-                    unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}{file_extension}"
-                    download_path = f"media/temp/{unique_filename}"
-                    
-                    # Download file from MAX URL
-                    local_path = await messenger_adapter.download_file(
-                        file_url=file_id,
-                        destination=download_path
-                    )
-                    
-                    # Send file to client based on type
-                    if max_media_type == "image":
-                        await messenger_adapter.send_photo(
-                            chat_id=client_chat_id,
-                            photo_path=local_path,
-                            caption=message_with_signature,
-                            keyboard=reply_keyboard,
-                            parse_mode="HTML"
-                        )
-                    else:
-                        # Send as document for all other types (file, video, voice, audio)
-                        await messenger_adapter.send_document(
-                            chat_id=client_chat_id,
-                            document_path=local_path,
-                            caption=message_with_signature,
-                            keyboard=reply_keyboard,
-                            parse_mode="HTML"
-                        )
-                    
-                    # Clean up temporary file
+                # For voice, audio, and image — download and re-upload to preserve native display
+                # For other files — send as link (MAX API doesn't support external file URLs)
+                if max_media_type in ("voice", "audio_video_note", "audio", "image"):
                     try:
-                        Path(local_path).unlink()
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to delete temp file {local_path}: {cleanup_error}")
+                        from pathlib import Path
+                        import uuid
+                        
+                        # Ensure temp directory exists
+                        temp_dir = Path("media/temp")
+                        temp_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Generate unique filename
+                        if max_media_type == "image":
+                            unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}.jpg"
+                        elif max_media_type in ("voice", "audio_video_note"):
+                            unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}.ogg"
+                        elif max_media_type == "audio":
+                            unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}.mp3"
+                        else:
+                            unique_filename = f"ticket_{ticket_id}_staff_{uuid.uuid4()}_file.bin"
+                        
+                        download_path = f"media/temp/{unique_filename}"
+                        
+                        # Download file from MAX URL
+                        local_path = await messenger_adapter.download_file(
+                            file_url=file_id,
+                            destination=download_path
+                        )
+                        
+                        # Send file to client based on type
+                        if max_media_type == "image":
+                            await messenger_adapter.send_photo(
+                                chat_id=client_chat_id,
+                                photo_path=local_path,
+                                caption=message_with_signature,
+                                keyboard=reply_keyboard,
+                                parse_mode="HTML"
+                            )
+                        elif max_media_type in ("voice", "audio_video_note", "audio"):
+                            await messenger_adapter.send_document(
+                                chat_id=client_chat_id,
+                                document_path=local_path,
+                                caption=message_with_signature,
+                                keyboard=reply_keyboard,
+                                parse_mode="HTML"
+                            )
+                        
+                        # Clean up temporary file
+                        try:
+                            Path(local_path).unlink()
+                        except Exception as cleanup_error:
+                            logger.warning(f"Failed to delete temp file {local_path}: {cleanup_error}")
+                        
+                        logger.info(
+                            f"File sent to client via MAX: ticket_id={ticket_id}, "
+                            f"employee_id={employee_id}, file_type={file_type}, "
+                            f"max_media_type={max_media_type}"
+                        )
                     
-                    logger.info(
-                        f"File sent to client via MAX: ticket_id={ticket_id}, "
-                        f"employee_id={employee_id}, file_type={file_type}, "
-                        f"max_media_type={max_media_type}"
-                    )
-                
-                except Exception as file_error:
-                    logger.error(
-                        f"Failed to send file to client: ticket_id={ticket_id}, "
-                        f"error={file_error}",
-                        exc_info=True
-                    )
-                    # Fallback: send text message with file URL
-                    fallback_text = (
+                    except Exception as file_error:
+                        logger.error(
+                            f"Failed to send file to client: ticket_id={ticket_id}, "
+                            f"error={file_error}",
+                            exc_info=True
+                        )
+                        # Fallback: send text message with file URL
+                        fallback_text = (
+                            f"{message_with_signature}\n\n"
+                            f'📎 <a href="{file_id}">Скачать файл</a>'
+                        )
+                        await messenger_adapter.send_message(
+                            chat_id=client_chat_id,
+                            text=fallback_text,
+                            keyboard=reply_keyboard,
+                            parse_mode="HTML"
+                        )
+                        logger.info(
+                            f"File URL sent to client as fallback: ticket_id={ticket_id}, "
+                            f"employee_id={employee_id}"
+                        )
+                else:
+                    # For other file types (file, video) — send as link
+                    file_link_text = (
                         f"{message_with_signature}\n\n"
-                        f"📎 Файл (ссылка для скачивания):\n{file_id}"
+                        f'📎 <a href="{file_id}">Скачать файл</a>'
                     )
                     await messenger_adapter.send_message(
                         chat_id=client_chat_id,
-                        text=fallback_text,
+                        text=file_link_text,
                         keyboard=reply_keyboard,
                         parse_mode="HTML"
                     )
+                    
                     logger.info(
-                        f"File URL sent to client as fallback: ticket_id={ticket_id}, "
-                        f"employee_id={employee_id}"
+                        f"File URL sent to client via MAX: ticket_id={ticket_id}, "
+                        f"employee_id={employee_id}, file_type={file_type}, "
+                        f"max_media_type={max_media_type}"
                     )
             else:
                 # Send text message
@@ -2761,3 +2775,95 @@ async def send_message_to_client_max(
             exc_info=True
         )
         raise
+
+
+async def save_initial_ticket_attachments(
+    session: AsyncSession,
+    ticket_id: int,
+    user_id: int,
+    attachments: list[dict],
+    description: str | None = None,
+) -> None:
+    """
+    Save FSM attachments to File_Attachment table for a newly created ticket.
+
+    Creates a system message with attachments so they appear in ticket history.
+    Also saves attachments directly to ticket for Celery queue task forwarding.
+
+    Args:
+        session: Database session (caller must commit after this call)
+        ticket_id: ID of the created ticket
+        user_id: Internal user ID (uploader)
+        attachments: List of attachment dicts from FSM context:
+            {"type": "image"|"voice"|"document"|"file", "url": str, "file_name": str|None}
+        description: Optional ticket description (unused, kept for API symmetry)
+    """
+    from database.models import File_Attachment, FileType, UploaderType, Message, MessageType, SenderType
+
+    if not attachments:
+        logger.debug(f"No attachments to save for ticket_id={ticket_id}")
+        return
+
+    logger.info(f"Saving {len(attachments)} initial attachments for ticket_id={ticket_id}")
+
+    # Create a system message for attachments to appear in history
+    system_message = Message(
+        ticket_id=ticket_id,
+        sender_type=SenderType.SYSTEM,
+        sender_id=None,
+        message_text="Вложения к заявке",
+        message_type=MessageType.TEXT,
+        sent_at=get_moscow_now_naive()
+    )
+    session.add(system_message)
+    await session.flush()  # Get message ID
+
+    logger.info(f"Created system message for attachments: message_id={system_message.id}, ticket_id={ticket_id}")
+
+    saved_count = 0
+    for att in attachments:
+        att_type = att.get("type", "document")
+        file_url = att.get("url")
+        file_name = att.get("file_name")
+
+        if not file_url:
+            logger.warning(f"Skipping attachment without URL: ticket_id={ticket_id}, att={att}")
+            continue
+
+        # Map FSM attachment type → FileType enum
+        if att_type == "image":
+            file_type = FileType.IMAGE
+            if not file_name:
+                file_name = "image.jpg"
+        elif att_type == "voice":
+            file_type = FileType.OTHER
+            if not file_name:
+                file_name = "voice.ogg"
+        else:
+            file_type = FileType.DOCUMENT
+            if not file_name:
+                file_name = "document"
+
+        fa = File_Attachment(
+            ticket_id=ticket_id,
+            message_id=system_message.id,  # Link to system message for history
+            file_type=file_type,
+            # telegram_file_id is NOT NULL — store MAX URL here as well
+            telegram_file_id=file_url,
+            max_file_url=file_url,
+            file_name=file_name,
+            file_size=None,
+            uploader_id=user_id,
+            uploader_type=UploaderType.USER,
+        )
+        session.add(fa)
+        saved_count += 1
+        logger.debug(
+            f"Added attachment to session: ticket_id={ticket_id}, message_id={system_message.id}, "
+            f"type={att_type}, file_type={file_type.value}, file_name={file_name}"
+        )
+
+    logger.info(
+        f"Saved {saved_count} initial attachments for ticket_id={ticket_id} "
+        f"with system message_id={system_message.id}"
+    )

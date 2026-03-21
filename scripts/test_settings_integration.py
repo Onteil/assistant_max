@@ -174,7 +174,7 @@ async def test_no_backup_managers_logic():
 async def main():
     """Run all tests."""
     print("🚀 Starting System Settings Integration Tests")
-    print("=" * 60)
+    print("─" * 5)
     
     tests = [
         ("System Settings Integration", test_system_settings_integration),
@@ -195,9 +195,9 @@ async def main():
             results.append((test_name, False))
     
     # Summary
-    print("\n" + "=" * 60)
+    print("\n" + "─" * 5)
     print("📊 TEST RESULTS SUMMARY")
-    print("=" * 60)
+    print("─" * 5)
     
     passed = 0
     total = len(results)

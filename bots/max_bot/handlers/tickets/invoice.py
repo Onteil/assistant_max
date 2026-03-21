@@ -1,4 +1,4 @@
-﻿"""
+"""
 Invoice Request Handler for MAX Bot
 
 Handles invoice request flow including:
@@ -1512,6 +1512,10 @@ async def process_description(
         # Handle attachments (photo, voice, document)
         if event.message.body and event.message.body.attachments:
             for attachment in event.message.body.attachments:
+                logger.info(
+                    f"Invoice description attachment: chat_id={chat_id}, "
+                    f"type={attachment.type!r}, payload={attachment.payload!r}"
+                )
                 if attachment.type == "image":
                     photo_url = attachment.payload.url
                     caption = event.message.body.text if event.message.body else None
@@ -1522,13 +1526,21 @@ async def process_description(
                     })
                     logger.info(f"Invoice photo attachment added: chat_id={chat_id}")
                 
-                elif attachment.type == "voice":
-                    voice_url = attachment.payload.url
+                elif attachment.type in ("voice", "audio_video_note"):
+                    voice_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
                     attachments.append({
                         "type": "voice",
                         "url": voice_url
                     })
-                    logger.info(f"Invoice voice attachment added: chat_id={chat_id}")
+                    logger.info(f"Invoice voice attachment added: chat_id={chat_id}, url={voice_url}")
+                
+                elif attachment.type == "audio":
+                    audio_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
+                    attachments.append({
+                        "type": "voice",
+                        "url": audio_url
+                    })
+                    logger.info(f"Invoice audio attachment added: chat_id={chat_id}, url={audio_url}")
                 
                 elif attachment.type == "file":
                     file_url = attachment.payload.url
@@ -1543,6 +1555,7 @@ async def process_description(
                     })
                     logger.info(f"Invoice document attachment added: chat_id={chat_id}, file={file_name}")
             
+            logger.info(f"Saving attachments to context: chat_id={chat_id}, count={len(attachments)}, data={attachments}")
             await context.update_data(attachments=attachments)
         
         # Check if we have description or attachments to proceed
@@ -1993,61 +2006,87 @@ async def _forward_attachments_to_staff(
         logger.warning(f"No MAX chat_id for staff: staff_id={staff_id}")
         return
     
+    caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
+
     for attachment in attachments:
         att_type = attachment.get("type")
         file_url = attachment.get("url")
-        
+
         if not file_url:
             continue
-        
-        caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
-        
+
         try:
             temp_dir = Path("media/temp")
             temp_dir.mkdir(parents=True, exist_ok=True)
-            
+
             if att_type == "image":
-                ext = ".jpg"
-                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}{ext}"
-                local_path = await messenger_adapter.download_file(
-                    file_url=file_url,
-                    destination=f"media/temp/{unique_name}"
-                )
-                await messenger_adapter.send_photo(
-                    chat_id=staff_chat_id,
-                    photo_path=local_path,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
-            elif att_type in ("voice", "file", "document", "video"):
-                file_name = attachment.get("file_name", "file")
-                ext = Path(file_name).suffix or ".bin"
-                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}{ext}"
-                local_path = await messenger_adapter.download_file(
-                    file_url=file_url,
-                    destination=f"media/temp/{unique_name}"
-                )
-                await messenger_adapter.send_document(
-                    chat_id=staff_chat_id,
-                    document_path=local_path,
-                    caption=caption,
-                    parse_mode="HTML"
-                )
+                # Images — download and send as photo
+                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}.jpg"
+                try:
+                    local_path = await messenger_adapter.download_file(
+                        file_url=file_url,
+                        destination=f"media/temp/{unique_name}"
+                    )
+                    await messenger_adapter.send_photo(
+                        chat_id=staff_chat_id,
+                        photo_path=local_path,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                    try:
+                        Path(local_path).unlink()
+                    except Exception:
+                        pass
+                except Exception as img_error:
+                    logger.error(f"Failed to send image: {img_error}")
+                    # Fallback to link
+                    notify_text = f"{caption}\n\n📷 <a href=\"{file_url}\">Скачать изображение</a>"
+                    await messenger_adapter.send_message(
+                        chat_id=staff_chat_id,
+                        text=notify_text,
+                        parse_mode="HTML"
+                    )
+            elif att_type == "voice":
+                # Voice — download and send as document (same as client→manager pattern)
+                unique_name = f"invoice_{ticket_id}_{uuid.uuid4()}.ogg"
+                try:
+                    local_path = await messenger_adapter.download_file(
+                        file_url=file_url,
+                        destination=f"media/temp/{unique_name}"
+                    )
+                    await messenger_adapter.send_document(
+                        chat_id=staff_chat_id,
+                        document_path=local_path,
+                        caption=caption,
+                        parse_mode="HTML"
+                    )
+                    try:
+                        Path(local_path).unlink()
+                    except Exception:
+                        pass
+                except Exception as voice_error:
+                    logger.error(f"Failed to send voice: {voice_error}")
+                    # Fallback to link
+                    notify_text = f"{caption}\n\n🎤 <a href=\"{file_url}\">Голосовое сообщение</a>"
+                    await messenger_adapter.send_message(
+                        chat_id=staff_chat_id,
+                        text=notify_text,
+                        parse_mode="HTML"
+                    )
             else:
-                logger.warning(f"Unknown attachment type for forwarding: {att_type}")
-                continue
-            
-            # Clean up temp file
-            try:
-                Path(local_path).unlink()
-            except Exception:
-                pass
-            
+                # Documents/files — send link to avoid .bin filename issues
+                notify_text = f"{caption}\n\n📎 <a href=\"{file_url}\">Скачать файл</a>"
+                await messenger_adapter.send_message(
+                    chat_id=staff_chat_id,
+                    text=notify_text,
+                    parse_mode="HTML"
+                )
+
             logger.info(
                 f"Invoice attachment forwarded to staff: ticket_id={ticket_id}, "
                 f"staff_chat_id={staff_chat_id}, type={att_type}"
             )
-        
+
         except Exception as e:
             logger.error(
                 f"Failed to forward invoice attachment to staff: ticket_id={ticket_id}, "
@@ -2243,6 +2282,29 @@ async def create_invoice_ticket(
             f"Invoice ticket created: ticket_id={ticket.id}, user_id={user_id}, "
             f"assigned_staff={assigned_staff_id}, has_manager={has_manager}"
         )
+        
+        # Save attachments to DB so Celery queue task can forward them in non-working hours
+        if attachments:
+            logger.info(
+                f"Calling save_initial_ticket_attachments: ticket_id={ticket.id}, "
+                f"user_id={user_id}, attachments_count={len(attachments)}, attachments={attachments}"
+            )
+            try:
+                from services.ticket_service import save_initial_ticket_attachments
+                await save_initial_ticket_attachments(
+                    session=session,
+                    ticket_id=ticket.id,
+                    user_id=user_id,
+                    attachments=attachments,
+                )
+                await session.commit()
+                logger.info(f"Successfully saved and committed attachments for ticket_id={ticket.id}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to save initial attachments for invoice ticket: "
+                    f"ticket_id={ticket.id}, error={e}",
+                    exc_info=True
+                )
         
         # Log ticket creation to I-TAT API
         try:

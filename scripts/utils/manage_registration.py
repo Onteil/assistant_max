@@ -40,7 +40,7 @@ async def list_pending_users():
             return
         
         print(f"\n📋 Pending Registrations ({len(users)}):")
-        print("=" * 80)
+        print("─" * 5)
         
         for user in users:
             print(f"\nUser ID: {user.id}")
@@ -50,7 +50,7 @@ async def list_pending_users():
             print(f"  Username: @{user.username}" if user.username else "  Username: N/A")
             print(f"  Created: {user.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        print("\n" + "=" * 80)
+        print("\n" + "─" * 5)
         print(f"\nTotal: {len(users)} pending registration(s)\n")
 
 
@@ -67,7 +67,7 @@ async def show_user_info(user_id: int):
             return
         
         print(f"\n👤 User Information:")
-        print("=" * 80)
+        print("─" * 5)
         print(f"ID: {user.id}")
         print(f"Full Name: {user.full_name or 'N/A'}")
         print(f"First Name: {user.first_name or 'N/A'}")
@@ -81,7 +81,7 @@ async def show_user_info(user_id: int):
         print(f"Created: {user.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
         if user.updated_at:
             print(f"Updated: {user.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("=" * 80 + "\n")
+        print("─" * 5 + "\n")
 
 
 async def approve_registration(user_id: int):

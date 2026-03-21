@@ -10,9 +10,9 @@ from celery_app.celery_config import app as celery_app
 
 def check_celery_status():
     """Проверить статус Celery."""
-    print("=" * 60)
+    print("─" * 5)
     print("Проверка статуса Celery")
-    print("=" * 60)
+    print("─" * 5)
     print()
     
     try:
@@ -47,9 +47,9 @@ def check_celery_status():
                         print(f"    {status} {task}")
         
         print()
-        print("=" * 60)
+        print("─" * 5)
         print("Проверка очередей")
-        print("=" * 60)
+        print("─" * 5)
         print()
         
         # Проверить активные задачи
@@ -82,9 +82,9 @@ def check_celery_status():
             print("✅ Нет запланированных задач")
         
         print()
-        print("=" * 60)
+        print("─" * 5)
         print("Проверка эскалаций")
-        print("=" * 60)
+        print("─" * 5)
         print()
         
         # Проверить наличие задач эскалации

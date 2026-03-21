@@ -302,7 +302,7 @@ async def test_timeout_configuration():
 async def main():
     """Run all tests."""
     print("🚀 Starting Backup Manager Escalation Tests")
-    print("=" * 50)
+    print("─" * 5)
     
     tests = [
         ("System Settings Integration", test_system_settings_integration),
@@ -322,9 +322,9 @@ async def main():
             results.append((test_name, False))
     
     # Summary
-    print("\n" + "=" * 50)
+    print("\n" + "─" * 5)
     print("📊 TEST RESULTS SUMMARY")
-    print("=" * 50)
+    print("─" * 5)
     
     passed = 0
     total = len(results)
