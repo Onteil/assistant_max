@@ -1217,38 +1217,8 @@ async def process_add_inn(
         )
         return
     
-    # Check INN with i-TAT API
-    from services.i_tat_service import get_itat_client
     try:
-        itat_client = get_itat_client()
-        api_response = await itat_client.check_inn(
-            messenger="max",
-            user_id=user.max_user_id,
-            inn=inn
-        )
-        logger.info(f"i-TAT API INN check successful: {api_response}")
-        
-        # Check if INN is valid according to i-TAT
-        if not api_response.get("is_valid", True):
-            error_details = api_response.get("error_message", "INN не найден в базе данных")
-            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
-            from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
-            keyboard = get_cancel_keyboard()
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-            return
-            
-    except Exception as api_error:
-        logger.error(f"i-TAT API INN check error: {api_error}")
-        # Continue with local validation if API fails
-        logger.info(f"Continuing with local INN validation due to API error")
-    
-    try:
-        # Get user
+        # Get user first
         user = await get_user_by_max_id(session, max_user_id)
         if not user:
             logger.error(f"User not found: max_user_id={max_user_id}")
@@ -1259,6 +1229,36 @@ async def process_add_inn(
             )
             await context.clear()
             return
+    
+        # Check INN with i-TAT API
+        from services.i_tat_service import get_itat_client
+        try:
+            itat_client = get_itat_client()
+            api_response = await itat_client.check_inn(
+                messenger="max",
+                user_id=user.max_user_id,
+                inn=inn
+            )
+            logger.info(f"i-TAT API INN check successful: {api_response}")
+            
+            # Check if INN is valid according to i-TAT
+            if not api_response.get("is_valid", True):
+                error_details = api_response.get("error_message", "INN не найден в базе данных")
+                logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+                from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
+                keyboard = get_cancel_keyboard()
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+                    keyboard=keyboard,
+                    parse_mode="HTML"
+                )
+                return
+                
+        except Exception as api_error:
+            logger.error(f"i-TAT API INN check error: {api_error}")
+            # Continue with local validation if API fails
+            logger.info(f"Continuing with local INN validation due to API error")
         
         # Add organization to user profile locally
         await add_user_organization(session, user.id, inn)

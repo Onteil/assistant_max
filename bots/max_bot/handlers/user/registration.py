@@ -833,35 +833,36 @@ async def process_inn(
         return
     
     # Check INN with i-TAT API
-    from services.i_tat_service import get_itat_client
-    try:
-        # Get max_user_id from event
-        max_user_id = event.message.sender.user_id
-        
-        itat_client = get_itat_client()
-        api_response = await itat_client.check_inn(
-            messenger="max",
-            user_id=max_user_id,
-            inn=inn
-        )
-        logger.info(f"i-TAT API INN check successful: {api_response}")
-        
-        # Check if INN is valid according to i-TAT
-        if not api_response.get("is_valid", True):
-            error_details = api_response.get("error_message", "INN не найден в базе данных")
-            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
-                keyboard=get_cancel_keyboard(),
-                parse_mode="HTML"
-            )
-            return
-            
-    except Exception as api_error:
-        logger.error(f"i-TAT API INN check error: {api_error}")
-        # Continue with local validation if API fails
-        logger.info(f"Continuing with local INN validation due to API error")
+    # DISABLED: User is not yet registered in i-TAT, so check_inn returns 404
+    # from services.i_tat_service import get_itat_client
+    # try:
+    #     # Get max_user_id from event
+    #     max_user_id = event.message.sender.user_id
+    #     
+    #     itat_client = get_itat_client()
+    #     api_response = await itat_client.check_inn(
+    #         messenger="max",
+    #         user_id=max_user_id,
+    #         inn=inn
+    #     )
+    #     logger.info(f"i-TAT API INN check successful: {api_response}")
+    #     
+    #     # Check if INN is valid according to i-TAT
+    #     if not api_response.get("is_valid", True):
+    #         error_details = api_response.get("error_message", "INN не найден в базе данных")
+    #         logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+    #         await messenger_adapter.send_message(
+    #             chat_id=chat_id,
+    #             text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+    #             keyboard=get_cancel_keyboard(),
+    #             parse_mode="HTML"
+    #         )
+    #         return
+    #         
+    # except Exception as api_error:
+    #     logger.error(f"i-TAT API INN check error: {api_error}")
+    #     # Continue with local validation if API fails
+    #     logger.info(f"Continuing with local INN validation due to API error")
     
     try:
         # Get user_id from context
@@ -1005,56 +1006,59 @@ async def process_gs_key(
             return
         
         # Check for key conflicts via i-TAT API
-        max_user_id = event.message.sender.user_id  # Use MAX user ID for API calls
-        itat_client = get_itat_client()
-        conflict_response = await itat_client.check_key_conflict(
-            grand_key=normalized_key,
-            user_id=max_user_id
+        # DISABLED: User is not yet registered in i-TAT, so check_key_conflict returns 404
+        # max_user_id = event.message.sender.user_id  # Use MAX user ID for API calls
+        # itat_client = get_itat_client()
+        # conflict_response = await itat_client.check_key_conflict(
+        #     grand_key=normalized_key,
+        #     user_id=max_user_id
+        # )
+        # 
+        # logger.info(f"Key conflict check result: {conflict_response}")
+        # 
+        # if conflict_response.get("status") == "conflict":
+        #     # Conflict detected - offer resolution options
+        #     owner_info = conflict_response.get("owner", "Неизвестный владелец")
+        #     
+        #     logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
+        #     
+        #     # Store conflict info in context
+        #     await context.update_data(
+        #         key_number=normalized_key,
+        #         has_conflict=True,
+        #         conflict_owner=owner_info
+        #     )
+        #     
+        #     # Display conflict resolution keyboard
+        #     await messenger_adapter.send_message(
+        #         chat_id=chat_id,
+        #         text=REGISTRATION_KEY_CONFLICT.format(owner=owner_info),
+        #         keyboard=get_key_conflict_keyboard(),
+        #         parse_mode="HTML"
+        #     )
+        # 
+        # else:
+        #     # No conflict - add key and proceed to submission
+        
+        # Skip i-TAT API check during registration - add key and proceed
+        await add_user_key(
+            session,
+            user_id,
+            normalized_key,
+            KeyConflictStatus.NONE
+        )
+        await session.commit()
+        
+        logger.info(f"GS_Key added without conflict: user_id={user_id}, key={normalized_key}")
+        
+        # Store key in context
+        await context.update_data(
+            key_number=normalized_key,
+            has_conflict=False
         )
         
-        logger.info(f"Key conflict check result: {conflict_response}")
-        
-        if conflict_response.get("status") == "conflict":
-            # Conflict detected - offer resolution options
-            owner_info = conflict_response.get("owner", "Неизвестный владелец")
-            
-            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
-            
-            # Store conflict info in context
-            await context.update_data(
-                key_number=normalized_key,
-                has_conflict=True,
-                conflict_owner=owner_info
-            )
-            
-            # Display conflict resolution keyboard
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=REGISTRATION_KEY_CONFLICT.format(owner=owner_info),
-                keyboard=get_key_conflict_keyboard(),
-                parse_mode="HTML"
-            )
-        
-        else:
-            # No conflict - add key and proceed to submission
-            await add_user_key(
-                session,
-                user_id,
-                normalized_key,
-                KeyConflictStatus.NONE
-            )
-            await session.commit()
-            
-            logger.info(f"GS_Key added without conflict: user_id={user_id}, key={normalized_key}")
-            
-            # Store key in context
-            await context.update_data(
-                key_number=normalized_key,
-                has_conflict=False
-            )
-            
-            # Submit registration
-            await submit_registration(context, session, messenger_adapter, chat_id, user_id)
+        # Submit registration
+        await submit_registration(context, session, messenger_adapter, chat_id, user_id)
     
     except KeyConflictError as e:
         logger.warning(
@@ -1310,6 +1314,7 @@ async def submit_registration(
         # Get context data
         data = await context.get_data()
         key_number = data.get("key_number")
+        inn = data.get("inn", "")
         
         # Submit to i-TAT API
         itat_client = get_itat_client()
@@ -1319,7 +1324,7 @@ async def submit_registration(
             phone=user.phone_number,
             name=user.first_name or "",
             surname=user.last_name or "",
-            inn=user.inn or "",
+            inn=inn,
             grand_key=key_number or "",
             email=user.email
         )
