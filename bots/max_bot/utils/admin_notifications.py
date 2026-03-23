@@ -28,6 +28,100 @@ from database.models import (
 logger = logging.getLogger(__name__)
 
 
+async def notify_admins_webhook_error(
+    session: AsyncSession,
+    webhook_name: str,
+    error_type: str,
+    error_details: str,
+    payload_summary: str | None = None
+) -> None:
+    """
+    Send webhook error notification to all MAX administrators.
+    
+    Called when a webhook endpoint encounters an error during processing.
+    Notifies admins about the error with details for debugging.
+    
+    IMPORTANT: Uses max_chat_id from staff_members table for sending messages.
+    
+    Args:
+        session: Database session
+        webhook_name: Name of the webhook endpoint (e.g., "user_update", "registration_status")
+        error_type: Type of error (e.g., "ValidationError", "DatabaseError")
+        error_details: Detailed error message
+        payload_summary: Optional summary of the webhook payload
+    """
+    try:
+        # Query all administrators with MAX chat_id
+        stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True,
+            Staff_Member.max_chat_id.isnot(None)
+        )
+        result = await session.execute(stmt)
+        admins = result.scalars().all()
+        
+        if not admins:
+            logger.warning("No active administrators with MAX chat_id found to send webhook error notification")
+            return
+        
+        # Format error date in Moscow timezone
+        moscow_tz = timezone(timedelta(hours=3))
+        error_date_moscow = datetime.now(moscow_tz)
+        error_date = error_date_moscow.strftime("%d.%m.%Y %H:%M:%S")
+        
+        # Format notification message
+        message_text = (
+            f"❌ Ошибка в вебхуке\n\n"
+            f"🔗 Вебхук: {webhook_name}\n"
+            f"⚠️ Тип ошибки: {error_type}\n"
+            f"📝 Детали: {error_details[:500]}\n"  # Limit to 500 chars
+        )
+        
+        if payload_summary:
+            message_text += f"\n📦 Данные запроса: {payload_summary[:200]}\n"
+        
+        message_text += f"\n📅 Время: {error_date}\n"
+        
+        # Send notification to all administrators using max_chat_id
+        bot = MaxBot(token=MAX_BOT_TOKEN)
+        
+        sent_count = 0
+        for admin in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin.max_chat_id,
+                    text=message_text
+                )
+                sent_count += 1
+                logger.info(f"Sent webhook error notification to admin {admin.id} (chat_id: {admin.max_chat_id})")
+                
+            except Exception as send_error:
+                logger.error(
+                    f"Failed to send webhook error notification to admin {admin.id} "
+                    f"(chat_id: {admin.max_chat_id}): {send_error}",
+                    exc_info=True
+                )
+        
+        # Close bot session
+        try:
+            if hasattr(bot, 'session') and bot.session:
+                await bot.session.close()
+        except Exception as e:
+            logger.warning(f"Error closing MAX bot session: {e}")
+        
+        logger.info(
+            f"Webhook error notification sent: webhook={webhook_name}, "
+            f"error_type={error_type}, admins_notified={sent_count}/{len(admins)}"
+        )
+        
+    except Exception as e:
+        logger.error(
+            f"Error sending webhook error notification: webhook={webhook_name}, "
+            f"error={e}",
+            exc_info=True
+        )
+
+
 async def notify_admins_key_conflict(
     session: AsyncSession,
     new_user_id: int,

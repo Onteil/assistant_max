@@ -334,11 +334,47 @@ async def ticket_reassignment_webhook(
             tickets_reassigned=tickets_reassigned
         )
         
-    except HTTPException:
+    except HTTPException as http_exc:
+        # Notify admins about HTTP errors
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = f"HTTP {http_exc.status_code}"
+            error_details = http_exc.detail
+            payload_summary = f"messenger={payload.messenger}, from_staff={payload.from_staff_id}, to_staff={payload.to_staff_id}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="ticket_reassignment",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         # Re-raise HTTP exceptions (404, 400, etc.)
         raise
         
     except Exception as e:
+        # Unexpected error - notify admins
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = type(e).__name__
+            error_details = str(e)
+            payload_summary = f"messenger={payload.messenger}, from_staff={payload.from_staff_id}, to_staff={payload.to_staff_id}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="ticket_reassignment",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         # Requirement 7.9: Rollback on failure (Requirement 18.1, 18.6, 18.9)
         logger.error(
             f"Error processing ticket reassignment webhook: {e}",

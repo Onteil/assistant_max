@@ -515,7 +515,19 @@ async def handle_employee_role_selection(
             )
             logger.info(f"i-TAT API staff creation successful: {api_response}")
         except Exception as api_error:
-            logger.error(f"i-TAT API staff creation error: {api_error}")
+            logger.error(f"i-TAT API staff creation error: {api_error}", exc_info=True)
+            # Show error to admin for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Ошибка создания сотрудника через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /system/staff/update\n"
+                     f"<b>Тип ошибки:</b> {error_type}\n"
+                     f"<b>Детали:</b> {error_msg}\n\n"
+                     f"<i>Сотрудник создан локально, но не синхронизирован с 1С.</i>",
+                parse_mode="HTML"
+            )
             # Continue with local creation even if API fails
         
         # Log action to audit
@@ -1318,7 +1330,19 @@ async def handle_employee_name_edit_input(
             )
             logger.info(f"i-TAT API staff update successful: {api_response}")
         except Exception as api_error:
-            logger.error(f"i-TAT API staff update error: {api_error}")
+            logger.error(f"i-TAT API staff update error (name change): {api_error}", exc_info=True)
+            # Show error to admin for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Ошибка обновления имени сотрудника через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /system/staff/update\n"
+                     f"<b>Тип ошибки:</b> {error_type}\n"
+                     f"<b>Детали:</b> {error_msg}\n\n"
+                     f"<i>Имя обновлено локально, но не синхронизировано с 1С.</i>",
+                parse_mode="HTML"
+            )
             # Continue with local update even if API fails
         
         await session.commit()
@@ -1579,7 +1603,19 @@ async def handle_employee_role_change(
             )
             logger.info(f"i-TAT API staff update successful: {api_response}")
         except Exception as api_error:
-            logger.error(f"i-TAT API staff update error: {api_error}")
+            logger.error(f"i-TAT API staff update error (role change): {api_error}", exc_info=True)
+            # Show error to admin for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Ошибка обновления роли сотрудника через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /system/staff/update\n"
+                     f"<b>Тип ошибки:</b> {error_type}\n"
+                     f"<b>Детали:</b> {error_msg}\n\n"
+                     f"<i>Роль обновлена локально, но не синхронизирована с 1С.</i>",
+                parse_mode="HTML"
+            )
             # Continue with local update even if API fails
         
         await session.commit()

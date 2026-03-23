@@ -1357,6 +1357,21 @@ async def submit_registration(
             exc_info=True
         )
         await session.rollback()
+        
+        # Show detailed error to testers
+        error_type = type(e).__name__
+        error_msg = str(e)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"❌ <b>Ошибка регистрации через i-TAT API</b>\n\n"
+                 f"<b>Метод:</b> POST /user/register\n"
+                 f"<b>Тип ошибки:</b> {error_type}\n"
+                 f"<b>Детали:</b> {error_msg}\n\n"
+                 f"<i>Попробуйте позже или обратитесь в поддержку.</i>",
+            parse_mode="HTML"
+        )
+        
+        # Original error message for fallback
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_GENERAL,

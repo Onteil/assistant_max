@@ -465,11 +465,47 @@ async def key_conflict_resolution_webhook(
             gs_key=payload.gs_key
         )
         
-    except HTTPException:
+    except HTTPException as http_exc:
+        # Notify admins about HTTP errors
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = f"HTTP {http_exc.status_code}"
+            error_details = http_exc.detail
+            payload_summary = f"messenger={payload.messenger}, gs_key={payload.gs_key}, action={payload.action}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="key_conflict_resolution",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         # Re-raise HTTP exceptions (404, 400, etc.)
         raise
         
     except Exception as e:
+        # Unexpected error - notify admins
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = type(e).__name__
+            error_details = str(e)
+            payload_summary = f"messenger={payload.messenger}, gs_key={payload.gs_key}, action={payload.action}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="key_conflict_resolution",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         # Unexpected error (Requirement 18.6, 18.9)
         logger.error(
             f"Error processing key conflict resolution webhook: {e}",

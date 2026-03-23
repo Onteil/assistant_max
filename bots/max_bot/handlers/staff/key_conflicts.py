@@ -531,19 +531,20 @@ async def handle_key_transfer(
             logger.info(f"i-TAT API key conflict resolution successful: {api_response}")
             
         except httpx.TimeoutException as e:
-            api_error_message = "Превышено время ожидания ответа от CRM"
+            api_error_message = f"Превышено время ожидания ответа от CRM\n<b>Тип:</b> TimeoutException\n<b>Детали:</b> {str(e)}"
             logger.error(f"i-TAT API timeout for key conflict resolution: {e}", exc_info=True)
             
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code
+            response_text = e.response.text[:200] if e.response.text else "Нет текста ответа"
             if status_code == 400:
-                api_error_message = "Неверные параметры запроса"
+                api_error_message = f"Неверные параметры запроса\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
             elif status_code == 404:
-                api_error_message = "Ключ не найден в CRM"
+                api_error_message = f"Ключ не найден в CRM\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
             elif status_code >= 500:
-                api_error_message = "Ошибка сервера CRM"
+                api_error_message = f"Ошибка сервера CRM\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
             else:
-                api_error_message = f"Ошибка API (код {status_code})"
+                api_error_message = f"Ошибка API\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
             
             logger.error(
                 f"i-TAT API HTTP error for key conflict resolution: {status_code} - {e.response.text}",
@@ -551,18 +552,22 @@ async def handle_key_transfer(
             )
             
         except httpx.ConnectError as e:
-            api_error_message = "Не удалось подключиться к CRM"
+            api_error_message = f"Не удалось подключиться к CRM\n<b>Тип:</b> ConnectError\n<b>Детали:</b> {str(e)}"
             logger.error(f"i-TAT API connection error for key conflict resolution: {e}", exc_info=True)
             
         except Exception as e:
-            api_error_message = "Неизвестная ошибка при обращении к CRM"
+            error_type = type(e).__name__
+            api_error_message = f"Неизвестная ошибка при обращении к CRM\n<b>Тип:</b> {error_type}\n<b>Детали:</b> {str(e)}"
             logger.error(f"Unexpected error calling i-TAT API for key conflict resolution: {e}", exc_info=True)
         
         # If API call failed, show error and log
         if not api_success:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"❌ Ошибка: {api_error_message}\n\nПопробуйте позже или обратитесь к администратору.",
+                text=f"❌ <b>Ошибка разрешения конфликта через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /assets/resolve_conflict\n"
+                     f"{api_error_message}\n\n"
+                     f"<i>Попробуйте позже или обратитесь к администратору.</i>",
                 parse_mode="HTML"
             )
             
@@ -822,7 +827,19 @@ async def handle_key_rejection(
             logger.info(f"i-TAT API key conflict rejection successful: {api_response}")
             
         except Exception as api_error:
-            logger.error(f"i-TAT API error for key conflict rejection: {api_error}")
+            logger.error(f"i-TAT API error for key conflict rejection: {api_error}", exc_info=True)
+            # Show error to admin for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /assets/resolve_conflict\n"
+                     f"<b>Тип ошибки:</b> {error_type}\n"
+                     f"<b>Детали:</b> {error_msg}\n\n"
+                     f"<i>Конфликт отклонен локально, но не синхронизирован с 1С.</i>",
+                parse_mode="HTML"
+            )
             # Continue with local processing even if API fails
         
         # Conflict is stored on the existing key record (no duplicate row for new user).

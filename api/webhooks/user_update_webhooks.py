@@ -563,12 +563,47 @@ async def user_update_webhook(
             updates_applied=updates_applied
         )
         
-    except HTTPException:
+    except HTTPException as http_exc:
+        # Notify admins about HTTP errors (validation, not found, etc.)
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = f"HTTP {http_exc.status_code}"
+            error_details = http_exc.detail
+            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="user_update",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         # Re-raise HTTP exceptions (404, 400, etc.)
         raise
         
     except Exception as e:
-        # Unexpected error
+        # Unexpected error - notify admins
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = type(e).__name__
+            error_details = str(e)
+            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="user_update",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         logger.error(
             f"Error processing user update webhook for {payload.messenger}_user_id={payload.user_id}: {e}",
             exc_info=True

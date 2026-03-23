@@ -300,7 +300,18 @@ async def approve_phone_change(
             )
             logger.info(f"i-TAT API phone change successful: {api_response}")
         except Exception as api_error:
-            logger.error(f"i-TAT API phone change error: {api_error}")
+            logger.error(f"i-TAT API phone change error: {api_error}", exc_info=True)
+            # Show error to testers for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            # Note: We don't send message here as this is admin action, log to admin instead
+            logger.warning(
+                f"⚠️ Ошибка смены номера через i-TAT API\n"
+                f"Метод: POST /user/change_phone\n"
+                f"Тип ошибки: {error_type}\n"
+                f"Детали: {error_msg}\n"
+                f"Номер изменен локально, но не синхронизирован с 1С."
+            )
             # Continue with local update even if API fails
         
         # Update user phone number

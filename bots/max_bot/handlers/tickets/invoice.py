@@ -640,7 +640,19 @@ async def process_new_inn(
             return
             
     except Exception as api_error:
-        logger.error(f"i-TAT API INN check error: {api_error}")
+        logger.error(f"i-TAT API INN check error: {api_error}", exc_info=True)
+        # Show error to testers for debugging
+        error_type = type(api_error).__name__
+        error_msg = str(api_error)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Ошибка проверки ИНН через i-TAT API</b>\n\n"
+                 f"<b>Метод:</b> POST /assets/check_inn\n"
+                 f"<b>Тип ошибки:</b> {error_type}\n"
+                 f"<b>Детали:</b> {error_msg}\n\n"
+                 f"<i>Продолжаем с локальной валидацией...</i>",
+            parse_mode="HTML"
+        )
         # Continue with local validation if API fails
         logger.info(f"Continuing with local INN validation due to API error")
     
@@ -682,7 +694,19 @@ async def process_new_inn(
             )
             logger.info(f"Assets update result: {assets_response}")
         except Exception as api_error:
-            logger.error(f"Assets update API error: {api_error}")
+            logger.error(f"Assets update API error: {api_error}", exc_info=True)
+            # Show error to testers for debugging
+            error_type = type(api_error).__name__
+            error_msg = str(api_error)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ <b>Ошибка обновления активов через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /user/assets/update\n"
+                     f"<b>Тип ошибки:</b> {error_type}\n"
+                     f"<b>Детали:</b> {error_msg}\n\n"
+                     f"<i>ИНН добавлен локально, но не синхронизирован с 1С.</i>",
+                parse_mode="HTML"
+            )
             # Continue even if API fails - local data is already saved
         
         await session.commit()
@@ -1397,7 +1421,19 @@ async def process_new_key(
                 )
                 logger.info(f"Assets update result: {assets_response}")
             except Exception as api_error:
-                logger.error(f"Assets update API error: {api_error}")
+                logger.error(f"Assets update API error: {api_error}", exc_info=True)
+                # Show error to testers for debugging
+                error_type = type(api_error).__name__
+                error_msg = str(api_error)
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ <b>Ошибка добавления ключа через i-TAT API</b>\n\n"
+                         f"<b>Метод:</b> POST /user/assets/update\n"
+                         f"<b>Тип ошибки:</b> {error_type}\n"
+                         f"<b>Детали:</b> {error_msg}\n\n"
+                         f"<i>Ключ добавлен локально, но не синхронизирован с 1С.</i>",
+                    parse_mode="HTML"
+                )
                 # Continue even if API fails - local data is already saved
         
         await session.commit()

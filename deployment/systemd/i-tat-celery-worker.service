@@ -14,9 +14,9 @@ Environment="TZ=Europe/Moscow"
 ExecStart=/home/razrab/i-tat-bot/venv/bin/celery \
     -A celery_app.celery_config \
     worker \
-    --loglevel=debug \
+    --loglevel=info \
     --pool=solo \
-    --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications \
+    --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor \
     --concurrency=4 \
     --max-tasks-per-child=1000 \
     --time-limit=300 \

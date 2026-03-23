@@ -331,10 +331,46 @@ async def test_renewal_reminder_webhook(
                     }
                 }
             
-    except HTTPException:
+    except HTTPException as http_exc:
+        # Notify admins about HTTP errors
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = f"HTTP {http_exc.status_code}"
+            error_details = http_exc.detail
+            payload_summary = f"messenger={payload.get('messenger')}, user_id={payload.get('user_id')}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="test_renewal_reminder",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         raise
         
     except Exception as e:
+        # Unexpected error - notify admins
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            
+            error_type = type(e).__name__
+            error_details = str(e)
+            payload_summary = f"messenger={payload.get('messenger')}, user_id={payload.get('user_id')}"
+            
+            await notify_admins_webhook_error(
+                session=session,
+                webhook_name="test_renewal_reminder",
+                error_type=error_type,
+                error_details=error_details,
+                payload_summary=payload_summary
+            )
+        except Exception as notify_error:
+            logger.error(f"Failed to send webhook error notification: {notify_error}")
+        
         logger.error(
             f"Error in test renewal reminder: user_id={payload.get('user_id')}, error={e}",
             exc_info=True
