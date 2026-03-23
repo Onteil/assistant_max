@@ -16,8 +16,8 @@ router = APIRouter()
 templates = Jinja2Templates(directory="api/templates")
 
 # Get configuration from environment
-WEBHOOK_HOST = os.getenv("HOST", "http://localhost:8453")
-# WEBHOOK_HOST = "https://assistant.i-tat.ru"
+# WEBHOOK_HOST = os.getenv("HOST", "http://localhost:8453")
+WEBHOOK_HOST = "https://assistant.i-tat.ru"
 WEBHOOK_PATH_MAX = os.getenv("WEBHOOK_PATH_MAX", "/max/webhook")
 WEBHOOK_PATH_MAIN = os.getenv("WEBHOOK_PATH_MAIN", "/max/webhook")
 API_PREFIX = "/bot/api"
