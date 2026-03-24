@@ -9,7 +9,7 @@ from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
 from bots.max_bot.payloads import ManagerMenuActionPayload
 
 
-def get_manager_menu_keyboard(is_admin: bool = False) -> Keyboard:
+def get_manager_menu_keyboard(is_admin: bool = False, new_tickets_count: int = 0) -> Keyboard:
     """
     Создает главное меню менеджера с inline клавиатурой.
     
@@ -17,17 +17,23 @@ def get_manager_menu_keyboard(is_admin: bool = False) -> Keyboard:
     
     Args:
         is_admin: Флаг, является ли сотрудник администратором
+        new_tickets_count: Количество новых заявок (не взятых в работу)
     
     Returns:
         Keyboard с кнопками меню менеджера
     
     Requirements: Manager Interface
     """
+    # Format active tickets button text with count if there are new tickets
+    active_tickets_text = "📥 Активные заявки"
+    if new_tickets_count > 0:
+        active_tickets_text = f"📥 Активные заявки ({new_tickets_count})"
+    
     buttons = [
         # Row 1: Active Tickets
         [
             KeyboardButton(
-                text="📥 Активные заявки",
+                text=active_tickets_text,
                 payload=ManagerMenuActionPayload(action="active_tickets").pack()
             )
         ],

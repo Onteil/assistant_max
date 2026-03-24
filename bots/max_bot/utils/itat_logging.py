@@ -81,8 +81,12 @@ async def log_ticket_to_itat(
         if comment:
             api_params["comment"] = comment
         
-        if staff_id:
+        # staff_id is now required by i-TAT API (as of 2026-03-24)
+        # Use 0 for user/system actions when no staff member is involved
+        if staff_id is not None:
             api_params["staff_id"] = staff_id
+        else:
+            api_params["staff_id"] = 0
         
         # Call I-TAT API
         await api_client.log_ticket(**api_params)
@@ -125,11 +129,14 @@ async def log_ticket_creation_to_itat(
     
     comment = f"Заявка создана через MAX бот. Описание: {description_preview or 'Не указано'}"
     
+    # Use staff_id=0 for user-created tickets (i-TAT API requires this parameter)
+    # 0 indicates "no staff member" or "system/user action"
     return await log_ticket_to_itat(
         session=session,
         ticket=ticket,
         status="Новое",
-        comment=comment
+        comment=comment,
+        staff_id=0
     )
 
 

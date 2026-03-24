@@ -27,6 +27,7 @@ from bots.max_bot.payloads import (
     EmployeeListPayload,
     EmployeeActionPayload,
     EmployeeRolePayload,
+    EmployeeRoleAddPayload,
     EmployeeConfirmPayload,
     BackupManagerPayload,
     TransferTicketPayload,
@@ -384,19 +385,19 @@ async def handle_employee_name_input(
                 [
                     KeyboardButton(
                         text="👨‍💼 Менеджер",
-                        payload=EmployeeRolePayload(role="manager").pack()
+                        payload=EmployeeRoleAddPayload(role="manager").pack()
                     )
                 ],
                 [
                     KeyboardButton(
                         text="👨‍💻 Техподдержка",
-                        payload=EmployeeRolePayload(role="technical_support").pack()
+                        payload=EmployeeRoleAddPayload(role="technical_support").pack()
                     )
                 ],
                 [
                     KeyboardButton(
                         text="🔧 Администратор",
-                        payload=EmployeeRolePayload(role="administrator").pack()
+                        payload=EmployeeRoleAddPayload(role="administrator").pack()
                     )
                 ],
                 [
@@ -432,7 +433,7 @@ async def handle_employee_name_input(
 
 async def handle_employee_role_selection(
     event: MessageCallback,
-    payload: EmployeeRolePayload,
+    payload: EmployeeRoleAddPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
@@ -447,10 +448,13 @@ async def handle_employee_role_selection(
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
     role = payload.role
     
+    logger.info(f"handle_employee_role_selection called: role={role}, chat_id={chat_id}, max_user_id={max_user_id}")
+    
     try:
         # Verify user is administrator
         admin = await is_admin(session, max_user_id)
         if not admin:
+            logger.warning(f"Non-admin user tried to select role: max_user_id={max_user_id}")
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ У вас нет доступа к управлению сотрудниками.",

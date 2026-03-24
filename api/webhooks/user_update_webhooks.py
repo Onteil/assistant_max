@@ -17,6 +17,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.schemas.user_update_schemas import (
@@ -470,8 +471,24 @@ async def user_update_webhook(
                             organization_name=None,  # Will be populated by bot when user requests organization data
                         )
                         session.add(organization)
-                        await session.flush()  # Get organization into session
-                        logger.info(f"Created organization {org_update.inn} without name (will be fetched later)")
+                        try:
+                            await session.flush()  # Get organization into session
+                            logger.info(f"Created organization {org_update.inn} without name (will be fetched later)")
+                        except IntegrityError as integrity_err:
+                            # Race condition: organization was created by another transaction
+                            # Rollback this flush and re-fetch the organization
+                            await session.rollback()
+                            logger.warning(
+                                f"Organization {org_update.inn} was created by another transaction. "
+                                f"Re-fetching from database."
+                            )
+                            # Re-fetch organization
+                            result_org = await session.execute(stmt_org)
+                            organization = result_org.scalar_one_or_none()
+                            if not organization:
+                                # Still not found - this shouldn't happen, but handle it
+                                logger.error(f"Organization {org_update.inn} still not found after race condition")
+                                raise
                     
                     # Check if user-organization link exists
                     stmt_link = select(user_organizations).where(

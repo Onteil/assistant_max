@@ -72,6 +72,7 @@ from bots.max_bot.payloads import (
     EmployeeListPayload,
     EmployeeActionPayload,
     EmployeeRolePayload,
+    EmployeeRoleAddPayload,
     EmployeeConfirmPayload,
     BackupManagerPayload,
     TransferTicketPayload,
@@ -550,25 +551,11 @@ def create_user_router() -> Router:
     # Employee actions (view/edit/deactivate)
     user_router.message_callback(EmployeeActionPayload.filter())(handle_employee_action)
     
-    # Employee role selection - routes to add or edit based on FSM state
-    async def route_employee_role_payload(
-        event: MessageCallback,
-        payload: EmployeeRolePayload,
-        context: MemoryContext,
-        session: AsyncSession,
-        messenger_adapter: MAXMessengerAdapter
-    ):
-        """Route EmployeeRolePayload to appropriate handler based on context."""
-        # Check if we're in adding flow (FSM state set) or editing flow (no FSM state)
-        current_state = await context.get_state()
-        if current_state == EmployeeManagementStates.adding_employee_role:
-            # Adding new employee
-            await handle_employee_role_selection(event, payload, context, session, messenger_adapter)
-        else:
-            # Editing existing employee role
-            await handle_employee_role_change(event, payload, context, session, messenger_adapter)
+    # Employee role selection for adding new employee
+    user_router.message_callback(EmployeeRoleAddPayload.filter())(handle_employee_role_selection)
     
-    user_router.message_callback(EmployeeRolePayload.filter())(route_employee_role_payload)
+    # Employee role selection for editing existing employee
+    user_router.message_callback(EmployeeRolePayload.filter())(handle_employee_role_change)
     
     # Employee text input handlers
     

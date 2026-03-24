@@ -388,8 +388,14 @@ async def handle_admin_menu_action(
             # Import manager keyboard
             from bots.max_bot.keyboards.staff.manager_kb import get_manager_menu_keyboard
             from bots.max_bot.handlers.staff.manager import get_employee_menu_text
+            from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
             
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin_role)
+            # Get active and new tickets counts
+            active_tickets = await get_employee_active_tickets(session, admin.max_user_id, ticket_type_filter=None)
+            active_tickets_count = len(active_tickets)
+            new_tickets_count = await get_employee_new_tickets_count(session, admin.max_user_id, ticket_type_filter=None)
+            
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin_role, new_tickets_count=new_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode
@@ -399,7 +405,9 @@ async def handle_admin_menu_action(
                 role=admin.staff_role.value,
                 full_name=admin.full_name,
                 position=admin.position,
-                work_mode=work_mode.value if work_mode else None
+                work_mode=work_mode.value if work_mode else None,
+                active_tickets_count=active_tickets_count,
+                new_tickets_count=new_tickets_count
             )
             
             await messenger_adapter.send_message(

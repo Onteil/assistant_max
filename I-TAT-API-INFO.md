@@ -185,3 +185,48 @@ api_response = await itat_client.check_inn(
    - `[MOCK] Registering user: user_id=..., phone=...`
 
 4. Убедиться, что регистрация завершается успешно со статусом `PENDING`
+
+
+---
+
+## Изменения в API (2026-03-24)
+
+### POST /tickets/log - staff_id теперь обязателен
+
+**Проблема:** API начал возвращать ошибку 400 с сообщением "Отсутствует обязательный параметр: staff_id"
+
+**Решение:** Параметр `staff_id` теперь обязателен для всех вызовов `/tickets/log`
+
+**Использование:**
+- Для действий сотрудников: передавайте реальный `staff_id`
+- Для действий пользователя/системы: передавайте `staff_id = 0`
+
+**Примеры:**
+
+```python
+# Создание заявки пользователем
+await api_client.log_ticket(
+    ticket_id="TKT_12345",
+    messenger="max",
+    user_id=123456789,
+    staff_id=0,  # ← Обязательно! 0 = действие пользователя
+    ticket_type="Техподдержка",
+    status="Новое",
+    comment="Заявка создана через MAX бот"
+)
+
+# Назначение заявки на сотрудника
+await api_client.log_ticket(
+    ticket_id="TKT_12345",
+    messenger="max",
+    user_id=123456789,
+    staff_id=987654321,  # ← ID сотрудника
+    ticket_type="Техподдержка",
+    status="В работе",
+    comment="Назначено на менеджера"
+)
+```
+
+**Обновленные файлы:**
+- `bots/max_bot/utils/itat_logging.py` - добавлен `staff_id=0` для пользовательских действий
+- `docs/api/I-TAT-API-REFERENCE.md` - обновлена документация

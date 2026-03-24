@@ -541,8 +541,26 @@ async def add_user_organization(
         if not organization:
             organization = Organization(inn=inn)
             session.add(organization)
-            await session.flush()
-            logger.info(f"Organization created: inn={inn}")
+            try:
+                await session.flush()
+                logger.info(f"Organization created: inn={inn}")
+            except IntegrityError as integrity_err:
+                # Race condition: organization was created by another transaction (e.g., webhook)
+                # Rollback this flush and re-fetch the organization
+                await session.rollback()
+                logger.warning(
+                    f"Organization {inn} was created by another transaction (likely webhook). "
+                    f"Re-fetching from database."
+                )
+                # Re-fetch organization
+                result = await session.execute(
+                    select(Organization).where(Organization.inn == inn)
+                )
+                organization = result.scalar_one_or_none()
+                if not organization:
+                    # Still not found - this shouldn't happen, but handle it
+                    logger.error(f"Organization {inn} still not found after race condition")
+                    raise
         
         # Check if association already exists
         result = await session.execute(

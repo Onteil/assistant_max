@@ -553,9 +553,9 @@ async def cmd_manager(
         # Get new tickets count (status = NEW)
         new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
         
-        # Generate menu keyboard based on employee role
+        # Generate menu keyboard based on employee role with new tickets count
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
-        keyboard = get_manager_menu_keyboard(is_admin=is_admin)
+        keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
         
         # Generate role-specific menu text with tickets counts
         menu_text = get_employee_menu_text(
@@ -1172,7 +1172,14 @@ async def handle_tickets_back(
         if action == "menu":
             # Return to manager menu
             is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin)
+            
+            # Get active and new tickets counts
+            from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
+            active_tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter=None)
+            active_tickets_count = len(active_tickets)
+            new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
+            
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode
@@ -1182,7 +1189,9 @@ async def handle_tickets_back(
                 role=employee.staff_role.value,
                 full_name=employee.full_name,
                 position=employee.position,
-                work_mode=work_mode.value if work_mode else None
+                work_mode=work_mode.value if work_mode else None,
+                active_tickets_count=active_tickets_count,
+                new_tickets_count=new_tickets_count
             )
             
             await messenger_adapter.send_message(
@@ -1825,7 +1834,14 @@ async def handle_archive_back(
             
             # Return to manager menu
             is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin)
+            
+            # Get active and new tickets counts
+            from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
+            active_tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter=None)
+            active_tickets_count = len(active_tickets)
+            new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
+            
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode
@@ -1835,7 +1851,9 @@ async def handle_archive_back(
                 role=employee.staff_role.value,
                 full_name=employee.full_name,
                 position=employee.position,
-                work_mode=work_mode.value if work_mode else None
+                work_mode=work_mode.value if work_mode else None,
+                active_tickets_count=active_tickets_count,
+                new_tickets_count=new_tickets_count
             )
             
             await messenger_adapter.send_message(

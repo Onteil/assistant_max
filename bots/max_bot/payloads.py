@@ -854,14 +854,23 @@ class EmployeeActionPayload(CallbackPayload, prefix='emp_action'):
 
 
 class EmployeeRolePayload(CallbackPayload, prefix='emp_role'):
-    """Payload for employee role selection.
+    """Payload for employee role selection when editing existing employee.
     
     Fields:
-        role: Role type - "ADMINISTRATOR", "MANAGER", "SUPPORT"
-        employee_id: ID of the employee (optional - not used when adding new employee)
+        role: Role type - "ADMINISTRATOR", "MANAGER", "technical_support"
+        employee_id: ID of the employee
     """
     role: str
-    employee_id: int | None = None
+    employee_id: int
+
+
+class EmployeeRoleAddPayload(CallbackPayload, prefix='emp_role_add'):
+    """Payload for employee role selection when adding new employee.
+    
+    Fields:
+        role: Role type - "ADMINISTRATOR", "MANAGER", "technical_support"
+    """
+    role: str
 
 
 class EmployeeConfirmPayload(CallbackPayload, prefix='emp_confirm'):
