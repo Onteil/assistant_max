@@ -432,16 +432,15 @@ async def _process_invoice_ticket(
             
             # Build keyboard with "К заявке" button
             from bots.max_bot.payloads import ManagerViewTicketPayload
-            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            from maxapi.types.attachments.buttons import CallbackButton
             from maxapi.types.attachments.attachment import ButtonsPayload
             
             buttons = [[
-                KeyboardButton(
+                CallbackButton(
                     text="📋 К заявке",
                     payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
                 )
             ]]
-            keyboard = Keyboard(buttons=buttons, inline=True)
             
             for admin in admins:
                 try:
@@ -465,7 +464,7 @@ async def _process_invoice_ticket(
                         await max_bot.send_message(
                             chat_id=chat_id,
                             text=admin_message,
-                            attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                            attachments=[ButtonsPayload(buttons=buttons).pack()]
                         )
                         stats["notifications_sent"] += 1
                         any_sent = True
@@ -525,16 +524,15 @@ async def _process_renewal_ticket(
 
         # Build keyboard with "К заявке" button
         from bots.max_bot.payloads import ManagerViewTicketPayload
-        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from maxapi.types.attachments.buttons import CallbackButton
         from maxapi.types.attachments.attachment import ButtonsPayload
         
         buttons = [[
-            KeyboardButton(
+            CallbackButton(
                 text="📋 К заявке",
                 payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
             )
         ]]
-        keyboard = Keyboard(buttons=buttons, inline=True)
 
         for admin in admins:
             try:
@@ -548,7 +546,7 @@ async def _process_renewal_ticket(
                         await max_bot.send_message(
                             chat_id=chat_id,
                             text=admin_message,
-                            attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                            attachments=[ButtonsPayload(buttons=buttons).pack()]
                         )
                         stats["notifications_sent"] += 1
                         any_sent = True
@@ -632,16 +630,15 @@ async def _process_support_ticket(
 
     # Build keyboard with "К заявке" button
     from bots.max_bot.payloads import ManagerViewTicketPayload
-    from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+    from maxapi.types.attachments.buttons import CallbackButton
     from maxapi.types.attachments.attachment import ButtonsPayload
     
     buttons = [[
-        KeyboardButton(
+        CallbackButton(
             text="📋 К заявке",
             payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
         )
     ]]
-    keyboard = Keyboard(buttons=buttons, inline=True)
 
     # Notify all admins
     admins = await get_active_admins(session)
@@ -659,7 +656,7 @@ async def _process_support_ticket(
                     await max_bot.send_message(
                         chat_id=chat_id,
                         text=notification_text,
-                        attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                        attachments=[ButtonsPayload(buttons=buttons).pack()]
                     )
                     stats["notifications_sent"] += 1
                     notified_chat_ids.append(chat_id)
@@ -686,7 +683,7 @@ async def _process_support_ticket(
                 await max_bot.send_message(
                     chat_id=int(duty_channel),
                     text=notification_text,
-                    attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                    attachments=[ButtonsPayload(buttons=buttons).pack()]
                 )
                 stats["notifications_sent"] += 1
                 notified_chat_ids.append(int(duty_channel))

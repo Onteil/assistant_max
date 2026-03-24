@@ -631,28 +631,24 @@ async def send_staff_notification(
             message_text += f"\n⏱ <b>Ожидаемое время ответа:</b> {routing_info['expected_response_time']}"
         
         # Build keyboard with "К заявке" button for MAX bot
-        keyboard = None
         if is_max_bot:
             from bots.max_bot.payloads import ManagerViewTicketPayload
-            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            from maxapi.types.attachments.buttons import CallbackButton
+            from maxapi.types.attachments.attachment import ButtonsPayload
             
             buttons = [[
-                KeyboardButton(
+                CallbackButton(
                     text="📋 К заявке",
                     payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
                 )
             ]]
-            keyboard = Keyboard(buttons=buttons, inline=True)
-        
-        # Send notification using the correct chat_id
-        if is_max_bot and keyboard:
-            # MAX bot with keyboard
-            from maxapi.types.attachments.attachment import ButtonsPayload
+            
+            # Send notification with keyboard
             await bot.send_message(
                 chat_id=chat_id,
                 text=message_text,
                 parse_mode=ParseMode.HTML,
-                attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                attachments=[ButtonsPayload(buttons=buttons).pack()]
             )
         else:
             # Telegram bot or MAX without keyboard

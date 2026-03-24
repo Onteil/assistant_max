@@ -409,7 +409,7 @@ async def user_update_webhook(
                     existing_key = result_key.scalar_one_or_none()
                     
                     if existing_key:
-                        # Update owner if key exists
+                        # Update owner if key exists and belongs to different user
                         if existing_key.user_id != user.id:
                             logger.warning(
                                 f"GS_Key {key_update.key_number} already exists for user {existing_key.user_id}. "
@@ -418,6 +418,12 @@ async def user_update_webhook(
                             existing_key.user_id = user.id
                             existing_key.conflict_status = KeyConflictStatus.NONE
                             updates_applied["gs_keys_added"] += 1
+                        else:
+                            # Key already belongs to this user - skip
+                            logger.info(
+                                f"GS_Key {key_update.key_number} already belongs to user {user.id}. "
+                                f"Skipping duplicate add operation."
+                            )
                     else:
                         # Create new key
                         new_key = GS_Key(
@@ -564,7 +570,10 @@ async def user_update_webhook(
         )
         
     except HTTPException as http_exc:
-        # Notify admins about HTTP errors (validation, not found, etc.)
+        # Rollback transaction on HTTP errors
+        await session.rollback()
+        
+        # Notify admins about HTTP errors (validation, not found, etc.) with fresh session
         try:
             from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
             
@@ -572,13 +581,15 @@ async def user_update_webhook(
             error_details = http_exc.detail
             payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
             
-            await notify_admins_webhook_error(
-                session=session,
-                webhook_name="user_update",
-                error_type=error_type,
-                error_details=error_details,
-                payload_summary=payload_summary
-            )
+            # Use a fresh session for notification since current session is rolled back
+            async with get_session() as notification_session:
+                await notify_admins_webhook_error(
+                    session=notification_session,
+                    webhook_name="user_update",
+                    error_type=error_type,
+                    error_details=error_details,
+                    payload_summary=payload_summary
+                )
         except Exception as notify_error:
             logger.error(f"Failed to send webhook error notification: {notify_error}")
         
@@ -586,7 +597,10 @@ async def user_update_webhook(
         raise
         
     except Exception as e:
-        # Unexpected error - notify admins
+        # Rollback transaction on error
+        await session.rollback()
+        
+        # Unexpected error - notify admins with fresh session
         try:
             from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
             
@@ -594,13 +608,15 @@ async def user_update_webhook(
             error_details = str(e)
             payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
             
-            await notify_admins_webhook_error(
-                session=session,
-                webhook_name="user_update",
-                error_type=error_type,
-                error_details=error_details,
-                payload_summary=payload_summary
-            )
+            # Use a fresh session for notification since current session is rolled back
+            async with get_session() as notification_session:
+                await notify_admins_webhook_error(
+                    session=notification_session,
+                    webhook_name="user_update",
+                    error_type=error_type,
+                    error_details=error_details,
+                    payload_summary=payload_summary
+                )
         except Exception as notify_error:
             logger.error(f"Failed to send webhook error notification: {notify_error}")
         

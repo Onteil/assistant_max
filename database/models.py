@@ -63,6 +63,7 @@ class TicketType(enum.Enum):
     TECHNICAL_SUPPORT = "technical_support"
     RENEWAL = "renewal"
     PHONE_CHANGE = "phone_change"
+    KEY_CONFLICT = "key_conflict"
 
 
 class TicketStatus(enum.Enum):

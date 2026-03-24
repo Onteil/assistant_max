@@ -389,7 +389,13 @@ async def handle_employee_name_input(
                 ],
                 [
                     KeyboardButton(
-                        text="👨‍💻 Администратор",
+                        text="👨‍💻 Техподдержка",
+                        payload=EmployeeRolePayload(role="technical_support").pack()
+                    )
+                ],
+                [
+                    KeyboardButton(
+                        text="🔧 Администратор",
                         payload=EmployeeRolePayload(role="administrator").pack()
                     )
                 ],
@@ -477,6 +483,9 @@ async def handle_employee_role_selection(
         if role == "manager":
             staff_role = StaffRole.MANAGER
             role_display = "Менеджер"
+        elif role == "technical_support":
+            staff_role = StaffRole.TECHNICAL_SUPPORT
+            role_display = "Техподдержка"
         elif role == "administrator":
             staff_role = StaffRole.ADMINISTRATOR
             role_display = "Администратор"
@@ -687,11 +696,25 @@ async def handle_list_employees(
             f"📋 <b>Список сотрудников</b> (стр. {page + 1}/{total_pages})\n"
         ]
         
+        # Role display names
+        role_names = {
+            StaffRole.TECHNICAL_SUPPORT: "Техподдержка",
+            StaffRole.MANAGER: "Менеджер",
+            StaffRole.ADMINISTRATOR: "Администратор"
+        }
+        
         for emp in page_employees:
-            role_emoji = "👨‍💼" if emp.staff_role == StaffRole.MANAGER else "👨‍💻"
+            role_emoji = {
+                StaffRole.MANAGER: "👨‍💼",
+                StaffRole.TECHNICAL_SUPPORT: "👨‍💻",
+                StaffRole.ADMINISTRATOR: "🔧"
+            }.get(emp.staff_role, "👤")
+            
+            role_display = role_names.get(emp.staff_role, emp.staff_role.value)
+            
             lines.append(
                 f"{role_emoji} <b>{emp.full_name}</b>\n"
-                f"   ID: <code>{emp.max_user_id or 'N/A'}</code> | {emp.staff_role.value}"
+                f"   ID: <code>{emp.max_user_id or 'N/A'}</code> | {role_display}"
             )
         
         list_text = "\n".join(lines)
