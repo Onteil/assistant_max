@@ -88,6 +88,7 @@ class EmployeeManagementStates(StatesGroup):
 
     adding_employee_id = State()  # Administrator entering MAX user ID
     adding_employee_name = State()  # Administrator entering employee full name
+    adding_employee_position = State()  # Administrator entering employee position/signature
     adding_employee_role = State()  # Administrator selecting employee role
     editing_employee_name = State()  # Administrator editing employee name
     editing_employee_signature = State()  # Administrator editing employee signature

@@ -377,6 +377,70 @@ async def handle_employee_name_input(
         await context.update_data(employee_name=full_name)
         
         # Set next state
+        await context.set_state(EmployeeManagementStates.adding_employee_position)
+        
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ Имя принято: <b>{full_name}</b>\n\n"
+                "Теперь введите <b>подпись</b> сотрудника:\n\n"
+                "<i>Например: Ведущий специалист отдела продаж</i>"
+            ),
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"Administrator {max_user_id} entered employee name: {full_name}")
+        
+    except Exception as e:
+        logger.error(f"Error handling employee name input: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка. Попробуйте позже.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_employee_position_input(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle employee position/signature input.
+    
+    Prompts for role selection.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    text = event.message.body.text
+    
+    try:
+        # Verify user is administrator
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к управлению сотрудниками.",
+                parse_mode="HTML"
+            )
+            await context.clear()
+            return
+        
+        # Validate position
+        position = text.strip()
+        if len(position) < 3:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Подпись слишком короткая. Введите подпись (минимум 3 символа):",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Store position in FSM
+        await context.update_data(employee_position=position)
+        
+        # Set next state
         await context.set_state(EmployeeManagementStates.adding_employee_role)
         
         # Show role selection keyboard
@@ -413,14 +477,22 @@ async def handle_employee_name_input(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=(
-                f"✅ Имя принято: <b>{full_name}</b>\n\n"
+                f"✅ Подпись принята: <b>{position}</b>\n\n"
                 "Выберите роль сотрудника:"
             ),
             keyboard=keyboard,
             parse_mode="HTML"
         )
         
-        logger.info(f"Administrator {max_user_id} entered employee name: {full_name}")
+        logger.info(f"Administrator {max_user_id} entered employee position: {position}")
+        
+    except Exception as e:
+        logger.error(f"Error handling employee position input: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка. Попробуйте позже.",
+            parse_mode="HTML"
+        )
         
     except Exception as e:
         logger.error(f"Error handling employee name input: {e}", exc_info=True)
@@ -473,8 +545,9 @@ async def handle_employee_role_selection(
         data = await context.get_data()
         employee_max_id = data.get('employee_max_id')
         employee_name = data.get('employee_name')
+        employee_position = data.get('employee_position')
         
-        if not employee_max_id or not employee_name:
+        if not employee_max_id or not employee_name or not employee_position:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ Данные не найдены. Начните процесс заново.",
@@ -504,7 +577,11 @@ async def handle_employee_role_selection(
         # Create employee record
         new_employee = Staff_Member(
             max_user_id=employee_max_id,
+        # Create employee record
+        new_employee = Staff_Member(
+            max_user_id=employee_max_id,
             full_name=employee_name,
+            position=employee_position,
             staff_role=staff_role,
             is_active=True,
             created_at=datetime.utcnow()
@@ -521,7 +598,7 @@ async def handle_employee_role_selection(
                 user_id=employee_max_id,
                 action="upsert",
                 role=staff_role.value,
-                position=None,  # No position set during creation
+                position=employee_position,
                 is_active=True
             )
             logger.info(f"i-TAT API staff creation successful: {api_response}")
@@ -591,6 +668,7 @@ async def handle_employee_role_selection(
             "✅ <b>Сотрудник успешно добавлен!</b>\n\n"
             f"<b>MAX ID:</b> <code>{employee_max_id}</code>\n"
             f"<b>Имя:</b> {employee_name}\n"
+            f"<b>Подпись:</b> {employee_position}\n"
             f"<b>Роль:</b> {role_display}\n\n"
             "Сотрудник может начать работу в системе."
         )

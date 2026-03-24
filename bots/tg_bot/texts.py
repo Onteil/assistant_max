@@ -619,10 +619,10 @@ RENEWAL_STATUS_NONE = """
 RENEWAL_TICKET_CREATED = """
 ✅ Запрос на продление создан!
 
-Номер заявки: #{ticket_id}
-Ваш {manager_position}: {manager_name}
+📄 Номер заявки: #{ticket_id}
+👨‍💼 Ваш менеджер {manager_name}, {manager_position}
 
-Менеджер получил уведомление и свяжется с вами в ближайшее время.
+⏰ Сотрудник получил уведомление и свяжется с вами в ближайшее время.
 """
 
 RENEWAL_ERROR_NO_MANAGER = """

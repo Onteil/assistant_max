@@ -212,6 +212,7 @@ from .staff.employees import (
     handle_add_employee_start,
     handle_employee_id_input,
     handle_employee_name_input,
+    handle_employee_position_input,
     handle_employee_role_selection,
     handle_list_employees,
     handle_employee_list_pagination,
@@ -568,6 +569,11 @@ def create_user_router() -> Router:
         F.message.body.text,
         EmployeeManagementStates.adding_employee_name
     )(handle_employee_name_input)
+    
+    user_router.message_created(
+        F.message.body.text,
+        EmployeeManagementStates.adding_employee_position
+    )(handle_employee_position_input)
     
     # Employee name edit input
     user_router.message_created(
