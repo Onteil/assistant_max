@@ -630,12 +630,37 @@ async def send_staff_notification(
         if routing_info and routing_info.get("expected_response_time"):
             message_text += f"\n⏱ <b>Ожидаемое время ответа:</b> {routing_info['expected_response_time']}"
         
+        # Build keyboard with "К заявке" button for MAX bot
+        keyboard = None
+        if is_max_bot:
+            from bots.max_bot.payloads import ManagerViewTicketPayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            
+            buttons = [[
+                KeyboardButton(
+                    text="📋 К заявке",
+                    payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+                )
+            ]]
+            keyboard = Keyboard(buttons=buttons, inline=True)
+        
         # Send notification using the correct chat_id
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode=ParseMode.HTML
-        )
+        if is_max_bot and keyboard:
+            # MAX bot with keyboard
+            from maxapi.types.attachments.attachment import ButtonsPayload
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode=ParseMode.HTML,
+                attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+            )
+        else:
+            # Telegram bot or MAX without keyboard
+            await bot.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode=ParseMode.HTML
+            )
         
         logger.info(
             f"Staff notification sent: ticket_id={ticket.id}, staff_id={staff_id}, "

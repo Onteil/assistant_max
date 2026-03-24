@@ -64,7 +64,7 @@ class ITatAPIClient:
 
     # ========== Блок: Заглушки API ==========
 
-    async def _mock_check_key_conflict(self, grand_key: str, user_id: int) -> dict[str, Any]:
+    async def _mock_check_key_conflict(self, grand_key: str, user_id: int | None = None) -> dict[str, Any]:
         """Заглушка для проверки конфликта ключа"""
         logger.info(f"[MOCK] Checking key conflict: key={grand_key}, user={user_id}")
         
@@ -193,7 +193,7 @@ class ITatAPIClient:
 
     # ========== Заглушки для новых методов ==========
 
-    async def _mock_check_inn(self, messenger: str, user_id: int, inn: str) -> dict[str, Any]:
+    async def _mock_check_inn(self, messenger: str, user_id: int | None, inn: str) -> dict[str, Any]:
         """Заглушка для проверки ИНН"""
         logger.info(f"[MOCK] Checking INN: inn={inn}, user={user_id}, messenger={messenger}")
         return {"status": "ok", "message": "ИНН доступен"}
@@ -531,7 +531,7 @@ class ITatAPIClient:
 
         Args:
             grand_key: Protection key number (format: "MG123456" or "00202_12345")
-            user_id: User ID from messenger (Telegram/MAX)
+            user_id: User ID from messenger (Telegram/MAX) - optional
             telegram_id: (Deprecated) Use user_id instead. Kept for backward compatibility.
 
         Returns:
@@ -557,15 +557,14 @@ class ITatAPIClient:
         if telegram_id is not None and user_id is None:
             user_id = telegram_id
         
-        if user_id is None:
-            raise ValueError("user_id is required")
-        
         # Использование заглушки
         if self.use_mock:
             return await self._mock_check_key_conflict(grand_key, user_id)
         
         endpoint = f"{self.base_url}/assets/check_key"
-        payload = {"grand_key": grand_key, "user_id": user_id}
+        payload = {"grand_key": grand_key}
+        if user_id is not None:
+            payload["user_id"] = user_id
 
         logger.info(f"Checking key conflict: key={grand_key}, user={user_id}")
         return await self._make_request("POST", endpoint, json=payload)
@@ -857,16 +856,16 @@ class ITatAPIClient:
     async def check_inn(
         self,
         messenger: str,
-        user_id: int,
-        inn: str
+        inn: str,
+        user_id: int | None = None
     ) -> dict[str, Any]:
         """
         Check INN availability and validation.
 
         Args:
             messenger: Messenger type ("telegram" or "max")
-            user_id: User ID from messenger
             inn: Organization INN to check
+            user_id: User ID from messenger - optional
 
         Returns:
             {
@@ -885,9 +884,10 @@ class ITatAPIClient:
         endpoint = f"{self.base_url}/assets/check_inn"
         payload = {
             "messenger": messenger,
-            "user_id": user_id,
             "inn": inn
         }
+        if user_id is not None:
+            payload["user_id"] = user_id
 
         logger.info(f"Checking INN: inn={inn}, user={user_id}, messenger={messenger}")
         return await self._make_request("POST", endpoint, json=payload)

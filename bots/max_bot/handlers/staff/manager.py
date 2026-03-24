@@ -27,6 +27,7 @@ from bots.max_bot.payloads import (
     ManagerArchiveTicketPayload,
     ManagerArchiveBackPayload,
     ManagerTicketActionPayload,
+    ManagerViewTicketPayload,
     ManagerToggleFocusPayload,
     ManagerEmployeeSelectPayload,
     ManagerTicketHistoryPayload,
@@ -254,7 +255,14 @@ async def is_staff_member(session: AsyncSession, max_user_id: int) -> Staff_Memb
         return None
 
 
-def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: str | None = None) -> str:
+def get_employee_menu_text(
+    role: str, 
+    full_name: str, 
+    position: str, 
+    work_mode: str | None = None,
+    active_tickets_count: int = 0,
+    new_tickets_count: int = 0
+) -> str:
     """
     Generate role-specific menu text.
     
@@ -263,6 +271,8 @@ def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: 
         full_name: Employee full name
         position: Employee position/title
         work_mode: Current work mode (optional)
+        active_tickets_count: Total number of active tickets (optional)
+        new_tickets_count: Number of new (not taken into work) tickets (optional)
     
     Returns:
         Formatted menu text
@@ -294,9 +304,18 @@ def get_employee_menu_text(role: str, full_name: str, position: str, work_mode: 
         work_mode_text = work_mode_display.get(work_mode, work_mode)
         text += f"<b>Режим работы:</b> {work_mode_text}\n"
     
+    text += f"\n<b>Доступные функции:</b>\n"
+    
+    # Show active tickets count with new tickets count
+    if active_tickets_count > 0 or new_tickets_count > 0:
+        if new_tickets_count > 0:
+            text += f"📥 <b>Активные заявки ({new_tickets_count})</b> — просмотр и обработка текущих обращений\n"
+        else:
+            text += f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
+    else:
+        text += f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
+    
     text += (
-        f"\n<b>Доступные функции:</b>\n"
-        f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
         f"🗃️ <b>Архив обращений</b> — поиск по завершенным заявкам\n"
         f"⚙️ <b>Настройки</b> — управление профилем и подписью\n"
     )
@@ -484,7 +503,7 @@ async def cmd_manager(
     Handle /manager command - display manager main menu.
     
     Shows inline menu with:
-    - Active tickets button
+    - Active tickets button (with new tickets count)
     - Archive search button
     - Admin panel button (if administrator role)
     
@@ -524,19 +543,31 @@ async def cmd_manager(
         from services.calendar_service import get_current_work_mode
         work_mode = await get_current_work_mode(session)
         
+        # Get active and new tickets counts
+        from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
+        
+        # Get all active tickets (no filter)
+        active_tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter=None)
+        active_tickets_count = len(active_tickets)
+        
+        # Get new tickets count (status = NEW)
+        new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
+        
         # Generate menu keyboard based on employee role
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
         keyboard = get_manager_menu_keyboard(is_admin=is_admin)
         
-        # Generate role-specific menu text
+        # Generate role-specific menu text with tickets counts
         menu_text = get_employee_menu_text(
             role=employee.staff_role.value,
             full_name=employee.full_name,
             position=employee.position,
-            work_mode=work_mode.value if work_mode else None
+            work_mode=work_mode.value if work_mode else None,
+            active_tickets_count=active_tickets_count,
+            new_tickets_count=new_tickets_count
         )
         
-        logger.info(f"Sending manager menu to MAX user {max_user_id}")
+        logger.info(f"Sending manager menu to MAX user {max_user_id} (active={active_tickets_count}, new={new_tickets_count})")
         
         await messenger_adapter.send_message(
             chat_id=chat_id,
@@ -976,6 +1007,104 @@ async def handle_ticket_select(
     
     except Exception as e:
         logger.error(f"Error handling ticket select: error={e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при загрузке заявки.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_view_ticket_from_notification(
+    event: MessageCallback,
+    payload: ManagerViewTicketPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "К заявке" button click from ticket notification.
+    
+    Shows detailed ticket card with action buttons WITHOUT automatically taking it into work.
+    This allows staff to view ticket details before deciding to take it.
+    
+    Uses replace_message pattern.
+    
+    Args:
+        event: MessageCallback event
+        payload: ManagerViewTicketPayload with ticket_id
+        context: FSM context
+        session: Database session
+        messenger_adapter: Messenger adapter
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    ticket_id = payload.ticket_id
+    
+    logger.info(f"View ticket from notification: max_user_id={max_user_id}, ticket_id={ticket_id}")
+    
+    try:
+        # Answer callback
+        await event.answer()
+        
+        # Verify user is staff member
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Get ticket from database with all relationships
+        from sqlalchemy.orm import selectinload
+        stmt = select(Ticket).where(Ticket.id == ticket_id).options(
+            selectinload(Ticket.user),
+            selectinload(Ticket.organization),
+            selectinload(Ticket.gs_keys)
+        )
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Delete old notification message
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old notification message: {e}")
+        
+        # Check if focus mode is enabled
+        current_state = await context.get_state()
+        from bots.max_bot.states import EmployeeStates
+        is_focus_enabled = (current_state == EmployeeStates.in_focus)
+        
+        # Format detailed ticket card
+        ticket_card = format_ticket_card_detailed(ticket)
+        
+        # Build action keyboard based on ticket status and focus state
+        keyboard = get_ticket_action_keyboard(ticket, is_focus_enabled)
+        
+        # Send ticket details with action buttons
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ticket_card,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(f"Employee {max_user_id} viewed ticket {ticket_id} from notification")
+    
+    except Exception as e:
+        logger.error(f"Error handling view ticket from notification: error={e}", exc_info=True)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при загрузке заявки.",

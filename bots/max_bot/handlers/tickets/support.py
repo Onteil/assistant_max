@@ -28,6 +28,7 @@ from bots.max_bot.keyboards.tickets.support_kb import (
     get_renewal_keyboard,
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+from bots.max_bot.payloads import RenewalActionPayload
 from bots.max_bot.states import SupportStates
 from bots.max_bot.texts import (
     ERROR_GENERAL,
@@ -204,21 +205,24 @@ async def cmd_support(
 
 async def handle_renewal_callback(
     event: MessageCallback,
+    payload: RenewalActionPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Handle renewal callback - create RENEWAL ticket if no active ticket exists.
+    Handle renewal callback - create RENEWAL ticket or cancel.
+    
+    Actions:
+    - "renew": Create RENEWAL ticket if no active ticket exists
+    - "cancel": Cancel and return to main menu
     
     Checks for existing active RENEWAL tickets to prevent duplicates.
     Creates RENEWAL ticket and notifies assigned manager.
     
-    Note: payload parameter removed because maxapi doesn't inject it for this handler.
-    We parse the payload manually if needed.
-    
     Args:
         event: Callback event from MAX
+        payload: RenewalActionPayload with action type
         context: FSM context for state management
         session: Database session
         messenger_adapter: Messenger adapter for sending messages
@@ -230,7 +234,7 @@ async def handle_renewal_callback(
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
     
-    logger.info(f"Renewal callback: max_user_id={max_user_id}, chat_id={chat_id}, message_id={message_id}")
+    logger.info(f"Renewal callback: max_user_id={max_user_id}, chat_id={chat_id}, action={payload.action}, message_id={message_id}")
     
     try:
         # Answer callback
@@ -243,6 +247,57 @@ async def handle_renewal_callback(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
+        # Handle cancel action
+        if payload.action == "cancel":
+            logger.info(f"User cancelled renewal offer: max_user_id={max_user_id}")
+            
+            # Get user from database to show main menu
+            user = await get_user_by_max_id(session, max_user_id)
+            
+            if not user:
+                logger.error(f"User not found for renewal cancel: max_user_id={max_user_id}")
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=ERROR_GENERAL,
+                    parse_mode="HTML"
+                )
+                return
+            
+            # Show main menu
+            from services.ticket_service import get_user_active_tickets_count
+            from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+            from database.models import RegistrationStatus
+            
+            if user.registration_status == RegistrationStatus.ACTIVE:
+                active_tickets_count = await get_user_active_tickets_count(session, user.id)
+                keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+                
+                welcome_text = (
+                    "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
+                    "Здесь вы можете:\n\n"
+                    "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
+                    "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
+                    "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
+                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                    "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
+                    "Выберите нужное действие:"
+                )
+                
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=welcome_text,
+                    keyboard=keyboard,
+                    parse_mode="HTML"
+                )
+            else:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=FLOW_CANCELLED,
+                    parse_mode="HTML"
+                )
+            return
+        
+        # Handle renew action
         # Get user from database
         user = await get_user_by_max_id(session, max_user_id)
         
@@ -751,7 +806,7 @@ async def cancel_support_flow(
                 "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
                 "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
                 "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                "🗄 <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
+                "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
                 "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
                 "Выберите нужное действие:"
             )

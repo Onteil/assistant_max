@@ -96,9 +96,9 @@ async def get_employee_active_tickets(
     ordered by created_at ascending (oldest first).
 
     Filtering logic:
-    - ADMINISTRATOR role: sees ALL active tickets
-    - TECHNICAL_SUPPORT role with 'technical_support' filter: sees ALL TECHNICAL_SUPPORT tickets
-    - Other roles: sees only tickets assigned to them
+    - ADMINISTRATOR role: sees ALL active tickets (with optional type filter)
+    - TECHNICAL_SUPPORT role: sees ALL TECHNICAL_SUPPORT tickets (regardless of filter)
+    - Other roles (MANAGER, DUTY_ENGINEER): see only tickets assigned to them (with optional type filter)
 
     Args:
         session: Database session
@@ -135,27 +135,31 @@ async def get_employee_active_tickets(
         # ADMINISTRATOR sees all tickets
         if staff_member.staff_role == StaffRole.ADMINISTRATOR:
             logger.info(f"Administrator {employee_id} viewing all active tickets")
-        # TECHNICAL_SUPPORT with technical_support filter sees all TECHNICAL_SUPPORT tickets
-        elif (staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT and
-              ticket_type_filter == "technical_support"):
-            logger.info(f"Technical support {employee_id} viewing all TECHNICAL_SUPPORT tickets")
+            # Add type filter if specified
+            if ticket_type_filter:
+                type_map = {
+                    "invoice": TicketType.INVOICE,
+                    "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "renewal": TicketType.RENEWAL
+                }
+                if ticket_type_filter in type_map:
+                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+        # TECHNICAL_SUPPORT sees all TECHNICAL_SUPPORT tickets (with or without filter)
+        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
+            logger.info(f"Technical support {employee_id} viewing TECHNICAL_SUPPORT tickets (filter={ticket_type_filter})")
             conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
         # Other roles see only assigned tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
-
-        # Add type filter if specified (and not already added above)
-        if ticket_type_filter and not (
-            staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT and
-            ticket_type_filter == "technical_support"
-        ):
-            type_map = {
-                "invoice": TicketType.INVOICE,
-                "technical_support": TicketType.TECHNICAL_SUPPORT,
-                "renewal": TicketType.RENEWAL
-            }
-            if ticket_type_filter in type_map:
-                conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+            # Add type filter if specified
+            if ticket_type_filter:
+                type_map = {
+                    "invoice": TicketType.INVOICE,
+                    "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "renewal": TicketType.RENEWAL
+                }
+                if ticket_type_filter in type_map:
+                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
 
         # Query tickets
         stmt = (
@@ -1727,6 +1731,95 @@ async def get_active_tickets_keyboard(
             exc_info=True
         )
         raise
+
+
+async def get_employee_new_tickets_count(
+    session: AsyncSession,
+    employee_id: int,
+    ticket_type_filter: str | None = None
+) -> int:
+    """
+    Get count of NEW (not taken into work) tickets for employee.
+
+    Filtering logic (same as get_employee_active_tickets):
+    - ADMINISTRATOR role: counts ALL NEW tickets (with optional type filter)
+    - TECHNICAL_SUPPORT role: counts ALL NEW TECHNICAL_SUPPORT tickets (regardless of filter)
+    - Other roles (MANAGER, DUTY_ENGINEER): count only NEW tickets assigned to them (with optional type filter)
+
+    Args:
+        session: Database session
+        employee_id: MAX user ID of the employee
+        ticket_type_filter: Optional filter ('invoice', 'technical_support', 'renewal', or None for all)
+
+    Returns:
+        Count of NEW tickets
+
+    Requirements: Manager Interface - Show new tickets count
+    """
+    try:
+        # First, get the staff member record to get their internal ID and role
+        staff_stmt = select(Staff_Member).where(
+            Staff_Member.max_user_id == employee_id,
+            Staff_Member.is_active == True
+        )
+        staff_result = await session.execute(staff_stmt)
+        staff_member = staff_result.scalar_one_or_none()
+
+        if not staff_member:
+            logger.warning(f"No active staff member found for max_user_id {employee_id}")
+            return 0
+
+        # Build query conditions based on role
+        conditions = [
+            Ticket.ticket_status == TicketStatus.NEW
+        ]
+
+        # ADMINISTRATOR sees all NEW tickets
+        if staff_member.staff_role == StaffRole.ADMINISTRATOR:
+            # Add type filter if specified
+            if ticket_type_filter:
+                type_map = {
+                    "invoice": TicketType.INVOICE,
+                    "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "renewal": TicketType.RENEWAL
+                }
+                if ticket_type_filter in type_map:
+                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+        # TECHNICAL_SUPPORT sees all NEW TECHNICAL_SUPPORT tickets
+        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
+            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+        # Other roles see only assigned NEW tickets
+        else:
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
+            # Add type filter if specified
+            if ticket_type_filter:
+                type_map = {
+                    "invoice": TicketType.INVOICE,
+                    "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "renewal": TicketType.RENEWAL
+                }
+                if ticket_type_filter in type_map:
+                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+
+        # Count tickets
+        from sqlalchemy import func
+        stmt = (
+            select(func.count(Ticket.id))
+            .where(and_(*conditions))
+        )
+
+        result = await session.execute(stmt)
+        count = result.scalar_one()
+
+        logger.info(
+            f"Retrieved {count} NEW tickets for employee {employee_id} "
+            f"(staff_id={staff_member.id}, role={staff_member.staff_role.value}, filter={ticket_type_filter})"
+        )
+        return count
+
+    except Exception as e:
+        logger.error(f"Error counting NEW tickets for employee {employee_id}: {e}", exc_info=True)
+        return 0
 
 
 async def format_active_tickets_header(

@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.states import EmployeeManagementStates
 from bots.max_bot.payloads import (
     AdminMenuPayload,
     EmployeeMenuPayload,
@@ -206,7 +207,6 @@ async def handle_add_employee_start(
                 logger.warning(f"Failed to delete old message: {e}")
         
         # Set FSM state
-        from bots.max_bot.states import EmployeeManagementStates
         await context.set_state(EmployeeManagementStates.adding_employee_id)
         
         # Prompt for MAX user ID
@@ -312,7 +312,6 @@ async def handle_employee_id_input(
         await context.update_data(employee_max_id=employee_max_id)
         
         # Set next state
-        from bots.max_bot.states import EmployeeManagementStates
         await context.set_state(EmployeeManagementStates.adding_employee_name)
         
         await messenger_adapter.send_message(
@@ -377,7 +376,6 @@ async def handle_employee_name_input(
         await context.update_data(employee_name=full_name)
         
         # Set next state
-        from bots.max_bot.states import EmployeeManagementStates
         await context.set_state(EmployeeManagementStates.adding_employee_role)
         
         # Show role selection keyboard
@@ -1198,7 +1196,6 @@ async def handle_edit_name_start(
         await context.update_data(editing_employee_id=payload.employee_id, old_name=employee.full_name)
         
         # Set FSM state to wait for new name
-        from bots.max_bot.states import EmployeeManagementStates
         await context.set_state(EmployeeManagementStates.editing_employee_name)
         
         # Create cancel keyboard
@@ -2143,7 +2140,6 @@ async def handle_edit_signature_start(
         await context.update_data(editing_employee_id=payload.employee_id, old_signature=employee.position)
         
         # Set FSM state to wait for new signature
-        from bots.max_bot.states import EmployeeManagementStates
         await context.set_state(EmployeeManagementStates.editing_employee_signature)
         
         # Create cancel keyboard

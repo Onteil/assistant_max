@@ -563,6 +563,18 @@ class ManagerTicketActionPayload(CallbackPayload, prefix='mgr_ticket_action'):
     ticket_id: int
 
 
+class ManagerViewTicketPayload(CallbackPayload, prefix='mgr_view_ticket'):
+    """Payload for "К заявке" button in ticket notifications.
+    
+    Used when staff member clicks "К заявке" button in notification message
+    to view ticket details without automatically taking it into work.
+    
+    Fields:
+        ticket_id: ID of the ticket to view
+    """
+    ticket_id: int
+
+
 class ManagerToggleFocusPayload(CallbackPayload, prefix='mgr_toggle_focus'):
     """Payload for toggling focus mode on/off.
     
@@ -846,10 +858,10 @@ class EmployeeRolePayload(CallbackPayload, prefix='emp_role'):
     
     Fields:
         role: Role type - "ADMINISTRATOR", "MANAGER", "SUPPORT"
-        employee_id: ID of the employee
+        employee_id: ID of the employee (optional - not used when adding new employee)
     """
     role: str
-    employee_id: int
+    employee_id: int | None = None
 
 
 class EmployeeConfirmPayload(CallbackPayload, prefix='emp_confirm'):

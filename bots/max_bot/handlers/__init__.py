@@ -53,6 +53,7 @@ from bots.max_bot.payloads import (
     MainMenuActionPayload,
     ManagerMenuActionPayload,
     ManagerTicketSelectPayload,
+    ManagerViewTicketPayload,
     ManagerTicketsFilterPayload,
     ManagerTicketsPaginationPayload,
     ManagerTicketsBackPayload,
@@ -155,6 +156,7 @@ from .staff.manager import (
     handle_tickets_filter,
     handle_tickets_pagination,
     handle_ticket_select,
+    handle_view_ticket_from_notification,
     handle_tickets_back,
     handle_archive_filter,
     handle_archive_pagination,
@@ -479,6 +481,7 @@ def create_user_router() -> Router:
     user_router.message_callback(ManagerTicketsFilterPayload.filter())(handle_tickets_filter)
     user_router.message_callback(ManagerTicketsPaginationPayload.filter())(handle_tickets_pagination)
     user_router.message_callback(ManagerTicketSelectPayload.filter())(handle_ticket_select)
+    user_router.message_callback(ManagerViewTicketPayload.filter())(handle_view_ticket_from_notification)
     user_router.message_callback(ManagerTicketsBackPayload.filter())(handle_tickets_back)
     
     # Manager ticket action handlers

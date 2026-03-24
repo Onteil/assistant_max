@@ -430,6 +430,19 @@ async def _process_invoice_ticket(
                 f"Необходимо назначить менеджера для обработки заявки."
             )
             
+            # Build keyboard with "К заявке" button
+            from bots.max_bot.payloads import ManagerViewTicketPayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            from maxapi.types.attachments.attachment import ButtonsPayload
+            
+            buttons = [[
+                KeyboardButton(
+                    text="📋 К заявке",
+                    payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+                )
+            ]]
+            keyboard = Keyboard(buttons=buttons, inline=True)
+            
             for admin in admins:
                 try:
                     # Send via MAX only
@@ -448,10 +461,11 @@ async def _process_invoice_ticket(
                             )
                             continue
                         
-                        # Send via MAX
+                        # Send via MAX with keyboard
                         await max_bot.send_message(
                             chat_id=chat_id,
-                            text=admin_message
+                            text=admin_message,
+                            attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
                         )
                         stats["notifications_sent"] += 1
                         any_sent = True
@@ -509,6 +523,19 @@ async def _process_renewal_ticket(
             f"Необходимо назначить менеджера для обработки заявки."
         )
 
+        # Build keyboard with "К заявке" button
+        from bots.max_bot.payloads import ManagerViewTicketPayload
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from maxapi.types.attachments.attachment import ButtonsPayload
+        
+        buttons = [[
+            KeyboardButton(
+                text="📋 К заявке",
+                payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+            )
+        ]]
+        keyboard = Keyboard(buttons=buttons, inline=True)
+
         for admin in admins:
             try:
                 if admin.max_user_id and max_bot:
@@ -518,7 +545,11 @@ async def _process_renewal_ticket(
                     result_chat = await session.execute(stmt_chat)
                     chat_id = result_chat.scalar_one_or_none()
                     if chat_id:
-                        await max_bot.send_message(chat_id=chat_id, text=admin_message)
+                        await max_bot.send_message(
+                            chat_id=chat_id,
+                            text=admin_message,
+                            attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                        )
                         stats["notifications_sent"] += 1
                         any_sent = True
                         logger.info(
@@ -599,6 +630,19 @@ async def _process_support_ticket(
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )
 
+    # Build keyboard with "К заявке" button
+    from bots.max_bot.payloads import ManagerViewTicketPayload
+    from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+    from maxapi.types.attachments.attachment import ButtonsPayload
+    
+    buttons = [[
+        KeyboardButton(
+            text="📋 К заявке",
+            payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+        )
+    ]]
+    keyboard = Keyboard(buttons=buttons, inline=True)
+
     # Notify all admins
     admins = await get_active_admins(session)
     notified_chat_ids = []
@@ -612,7 +656,11 @@ async def _process_support_ticket(
                 chat_id = result_chat.scalar_one_or_none()
 
                 if chat_id:
-                    await max_bot.send_message(chat_id=chat_id, text=notification_text)
+                    await max_bot.send_message(
+                        chat_id=chat_id,
+                        text=notification_text,
+                        attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
+                    )
                     stats["notifications_sent"] += 1
                     notified_chat_ids.append(chat_id)
                     logger.info(
@@ -637,7 +685,8 @@ async def _process_support_ticket(
             try:
                 await max_bot.send_message(
                     chat_id=int(duty_channel),
-                    text=notification_text
+                    text=notification_text,
+                    attachments=[ButtonsPayload(buttons=keyboard.buttons).pack()]
                 )
                 stats["notifications_sent"] += 1
                 notified_chat_ids.append(int(duty_channel))

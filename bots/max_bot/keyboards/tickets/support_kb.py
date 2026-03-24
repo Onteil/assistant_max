@@ -38,7 +38,7 @@ def get_renewal_keyboard() -> Keyboard:
         )],
         [KeyboardButton(
             text="❌ Отмена",
-            payload=KeyContextActionPayload(action="cancel").pack()
+            payload=RenewalActionPayload(action="cancel").pack()
         )]
     ]
     
