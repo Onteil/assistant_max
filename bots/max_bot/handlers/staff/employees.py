@@ -577,9 +577,6 @@ async def handle_employee_role_selection(
         # Create employee record
         new_employee = Staff_Member(
             max_user_id=employee_max_id,
-        # Create employee record
-        new_employee = Staff_Member(
-            max_user_id=employee_max_id,
             full_name=employee_name,
             position=employee_position,
             staff_role=staff_role,
