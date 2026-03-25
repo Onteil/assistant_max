@@ -330,7 +330,8 @@ def get_employee_menu_text(
 
 def format_active_tickets_header(
     tickets_count: int,
-    current_filter: str = "all"
+    current_filter: str = "all",
+    staff_role: StaffRole | None = None
 ) -> str:
     """
     Format header text for active tickets list.
@@ -338,35 +339,40 @@ def format_active_tickets_header(
     Args:
         tickets_count: Number of tickets
         current_filter: Current filter type
+        staff_role: Staff role (TECHNICAL_SUPPORT and DUTY_ENGINEER skip filter line)
     
     Returns:
         Formatted header text
     """
+    tech_only_roles = {StaffRole.TECHNICAL_SUPPORT, StaffRole.DUTY_ENGINEER}
+    show_filter = staff_role not in tech_only_roles
+
     filter_names = {
         "all": "Все заявки",
         "invoice": "Счета",
         "technical_support": "Техподдержка",
         "renewal": "Продление"
     }
-    
     filter_text = filter_names.get(current_filter, "Все заявки")
-    
+
     if tickets_count == 0:
-        return f"📥 <b>Активные заявки</b>\n\n<b>Фильтр:</b> {filter_text}\n\n<i>Нет активных заявок</i>"
-    
-    return (
-        f"📥 <b>Активные заявки</b>\n\n"
-        f"<b>Фильтр:</b> {filter_text}\n"
-        f"<b>Всего:</b> {tickets_count}\n\n"
-        f"Выберите заявку:"
-    )
+        base = f"📥 <b>Активные заявки</b>\n\n"
+        if show_filter:
+            base += f"<b>Фильтр:</b> {filter_text}\n\n"
+        return base + "<i>Нет активных заявок</i>"
+
+    base = f"📥 <b>Активные заявки</b>\n\n"
+    if show_filter:
+        base += f"<b>Фильтр:</b> {filter_text}\n"
+    return base + f"<b>Всего:</b> {tickets_count}\n\nВыберите заявку:"
 
 
 def get_active_tickets_keyboard(
     tickets: list[Ticket],
     current_filter: str = "all",
     current_page: int = 0,
-    items_per_page: int = 5
+    items_per_page: int = 5,
+    staff_role: StaffRole | None = None
 ) -> Keyboard:
     """
     Build keyboard for active tickets list with filters and pagination.
@@ -376,36 +382,39 @@ def get_active_tickets_keyboard(
         current_filter: Current filter type
         current_page: Current page number (0-indexed)
         items_per_page: Number of tickets per page
+        staff_role: Staff role (TECHNICAL_SUPPORT and DUTY_ENGINEER skip filter buttons)
     
     Returns:
-        Keyboard with ticket buttons, filters, pagination, and navigation
+        Keyboard with ticket buttons, filters (if applicable), pagination, and navigation
     """
     buttons = []
-    
-    # Filter buttons row
-    filter_row = []
-    filters = [
-        ("Все", "all"),
-        ("💰 Счета", "invoice"),
-        ("🆘 Техподдержка", "technical_support"),
-        ("🔄 Продление", "renewal")
-    ]
-    
-    for text, filter_type in filters:
-        # Add checkmark to active filter
-        if filter_type == current_filter:
-            text = f"✅ {text}"
+    tech_only_roles = {StaffRole.TECHNICAL_SUPPORT, StaffRole.DUTY_ENGINEER}
+
+    # Filter buttons row — hidden for tech-only roles
+    if staff_role not in tech_only_roles:
+        filter_row = []
+        filters = [
+            ("Все", "all"),
+            ("💰 Счета", "invoice"),
+            ("🆘 Техподдержка", "technical_support"),
+            ("🔄 Продление", "renewal")
+        ]
         
-        filter_row.append(
-            KeyboardButton(
-                text=text,
-                payload=ManagerTicketsFilterPayload(filter_type=filter_type).pack()
+        for text, filter_type in filters:
+            # Add checkmark to active filter
+            if filter_type == current_filter:
+                text = f"✅ {text}"
+            
+            filter_row.append(
+                KeyboardButton(
+                    text=text,
+                    payload=ManagerTicketsFilterPayload(filter_type=filter_type).pack()
+                )
             )
-        )
-    
-    # Split filter row into 2 rows (2 buttons each)
-    buttons.append(filter_row[:2])
-    buttons.append(filter_row[2:])
+        
+        # Split filter row into 2 rows (2 buttons each)
+        buttons.append(filter_row[:2])
+        buttons.append(filter_row[2:])
     
     # Ticket buttons (paginated)
     total_count = len(tickets)
@@ -736,6 +745,9 @@ async def show_active_tickets(
     """
     Show active tickets list with filters and pagination.
     
+    For TECHNICAL_SUPPORT and DUTY_ENGINEER roles, filters are hidden and
+    only technical_support tickets are shown regardless of current_filter.
+    
     Args:
         chat_id: Chat ID for sending messages
         max_user_id: MAX user ID of the employee
@@ -748,8 +760,6 @@ async def show_active_tickets(
     logger.info(f"Showing active tickets: max_user_id={max_user_id}, filter={current_filter}, page={current_page}")
     
     try:
-        # Get employee's Telegram ID for service function
-        # (employee_service uses tg_user_id, need to adapt)
         stmt = select(Staff_Member).where(
             Staff_Member.max_user_id == max_user_id,
             Staff_Member.is_active == True
@@ -765,6 +775,13 @@ async def show_active_tickets(
             )
             return
         
+        staff_role = employee.staff_role
+        tech_only_roles = {StaffRole.TECHNICAL_SUPPORT, StaffRole.DUTY_ENGINEER}
+
+        # Force technical_support filter for tech-only roles
+        if staff_role in tech_only_roles:
+            current_filter = "technical_support"
+
         # Get filtered tickets
         ticket_type_filter = None if current_filter == "all" else current_filter
         tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter)
@@ -778,14 +795,16 @@ async def show_active_tickets(
         # Format header text
         header_text = format_active_tickets_header(
             tickets_count=len(tickets),
-            current_filter=current_filter
+            current_filter=current_filter,
+            staff_role=staff_role
         )
         
         # Generate keyboard
         keyboard = get_active_tickets_keyboard(
             tickets=tickets,
             current_filter=current_filter,
-            current_page=current_page
+            current_page=current_page,
+            staff_role=staff_role
         )
         
         # Send message

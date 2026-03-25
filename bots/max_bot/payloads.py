@@ -1068,3 +1068,16 @@ class PhoneChangePayload(CallbackPayload, prefix='phone_change'):
     """
     action: str
     ticket_id: int | None = None
+
+
+# ============================================================================
+# Done / No More Questions Payload
+# ============================================================================
+
+class DonePayload(CallbackPayload, prefix='done'):
+    """Payload for "Done" button after ticket creation.
+
+    Used when client clicks "✅ Готово" to indicate they have no more questions.
+    Sends a friendly farewell message.
+    """
+    pass

@@ -8,7 +8,7 @@ Migrated from Telegram bot to MAX messenger.
 """
 
 from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-from bots.max_bot.payloads import MainMenuActionPayload
+from bots.max_bot.payloads import MainMenuActionPayload, DonePayload
 from bots.max_bot.texts import (
     MENU_ARCHIVE,
     MENU_INVOICE,
@@ -18,7 +18,7 @@ from bots.max_bot.texts import (
 )
 
 
-async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
+async def get_main_menu_inline_keyboard(active_tickets_count: int = 0, show_done_button: bool = False):
     """
     Создает inline клавиатуру главного меню с всеми доступными функциями.
     
@@ -27,6 +27,7 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
     
     Args:
         active_tickets_count: Количество активных заявок клиента
+        show_done_button: Показывать кнопку "✅ Готово" вверху клавиатуры
     
     Returns:
         Keyboard с inline кнопками главного меню
@@ -49,7 +50,7 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
             KeyboardButton(text="👤 Мой профиль", payload=MainMenuActionPayload(action="profile").pack())
         ]
     ]
-    
+
     # Если есть активные заявки, добавить кнопку с количеством
     if active_tickets_count > 0:
         buttons.insert(1, [
@@ -58,7 +59,13 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0):
                 payload=MainMenuActionPayload(action="active_tickets").pack()
             )
         ])
-    
+
+    # Кнопка "Готово" — добавляется первой, если запрошена
+    if show_done_button:
+        buttons.insert(0, [
+            KeyboardButton(text="✅ Готово", payload=DonePayload().pack())
+        ])
+
     return Keyboard(
         buttons=buttons,
         inline=True

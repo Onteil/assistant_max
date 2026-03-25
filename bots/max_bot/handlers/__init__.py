@@ -51,6 +51,7 @@ from bots.max_bot.payloads import (
     ProfileDeleteKeyPayload,
     ProfileConfirmDeleteKeyPayload,
     MainMenuActionPayload,
+    DonePayload,
     ManagerMenuActionPayload,
     ManagerTicketSelectPayload,
     ManagerViewTicketPayload,
@@ -149,7 +150,7 @@ from .user.commands import (
     cmd_me,
     handle_main_menu,
 )
-from .user.main_menu_callbacks import handle_main_menu_callback
+from .user.main_menu_callbacks import handle_main_menu_callback, handle_done_callback
 from .user.renewal import show_subscription_status
 from .staff.manager import (
     cmd_manager,
@@ -473,6 +474,9 @@ def create_user_router() -> Router:
     # Note: MainMenuActionPayload.filter() ensures we ONLY match callbacks with single 'action' field
     # This prevents catching invoice/support callbacks which have additional fields (inn, page, key_id, etc.)
     user_router.message_callback(MainMenuActionPayload.filter())(handle_main_menu_callback)
+
+    # Handle "✅ Готово" button after ticket creation
+    user_router.message_callback(DonePayload.filter())(handle_done_callback)
     
     # ========== Manager Menu Callback Handlers ==========
     

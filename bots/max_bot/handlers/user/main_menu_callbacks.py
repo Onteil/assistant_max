@@ -19,7 +19,7 @@ from maxapi.types import MessageCallback
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
-from bots.max_bot.payloads import MainMenuActionPayload
+from bots.max_bot.payloads import MainMenuActionPayload, DonePayload
 
 logger = logging.getLogger(__name__)
 
@@ -216,3 +216,58 @@ async def show_active_tickets_list(
             text="❌ Произошла ошибка при загрузке обращений.",
             parse_mode="HTML"
         )
+
+
+async def handle_done_callback(
+    event: MessageCallback,
+    payload: DonePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "✅ Готово" button click after ticket creation.
+
+    Deletes the old message with buttons (replace_message pattern),
+    then sends a friendly farewell message with /start hint.
+
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification
+    - Uses replace_message pattern: delete old message, send new one
+    - DonePayload.filter() ensures only this button triggers the handler
+
+    Args:
+        event: MessageCallback event from maxapi
+        payload: DonePayload (auto-parsed, no fields)
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Done callback: user={event.callback.user.user_id}, message_id={message_id}")
+
+    try:
+        await event.answer()
+    except Exception as e:
+        logger.warning(f"Failed to answer done callback: {e}")
+
+    # Delete old message with buttons (replace_message pattern)
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    farewell_text = (
+        "👍 <b>Хорошо, рад был помочь!</b>\n\n"
+        "Если понадоблюсь — всегда здесь. 😊\n\n"
+        "Напишите <b>/start</b>, чтобы открыть меню сметчика и создать новое обращение."
+    )
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=farewell_text,
+        parse_mode="HTML"
+    )

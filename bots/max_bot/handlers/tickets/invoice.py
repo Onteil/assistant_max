@@ -2412,7 +2412,7 @@ async def create_invoice_ticket(
         from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
         
         active_tickets_count = await get_user_active_tickets_count(session, user.id)
-        keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+        keyboard = await get_main_menu_inline_keyboard(active_tickets_count, show_done_button=True)
         
         main_menu_text = (
             "У Вас остались вопросы?\n\n"
