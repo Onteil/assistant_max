@@ -22,6 +22,7 @@ from bots.max_bot.payloads import (
     ReplyToManagerPayload,
     TicketSelectPayload,
     TicketsPaginationPayload,
+    TicketsFilterPayload,
     TicketHistoryPayload,
     TicketHistoryBackPayload,
 )
@@ -30,6 +31,25 @@ from services.ticket_service import get_ticket_by_id, get_user_active_tickets
 from services.user_service import get_user_by_max_id
 
 logger = logging.getLogger(__name__)
+
+_FILTER_NAMES = {
+    "all": "Все заявки",
+    "invoice": "Счёт",
+    "support": "ТП",
+    "consultation": "Консультация",
+    "renewal": "Продление",
+}
+
+
+def _build_header(total: int, filtered: int, active_filter: str) -> str:
+    """Build header text for active tickets list."""
+    filter_name = _FILTER_NAMES.get(active_filter, active_filter)
+    count_str = f"{filtered}" if active_filter != "all" else f"{total}"
+    return (
+        f"📥 <b>Активные обращения</b>\n\n"
+        f"Фильтр: {filter_name} | Всего: {count_str}\n\n"
+        f"Выберите обращение для продолжения общения:"
+    )
 
 
 async def handle_select_ticket_callback(
@@ -195,30 +215,16 @@ async def handle_tickets_pagination_callback(
 ) -> None:
     """
     Handle pagination for active tickets list.
-    
-    Updates the message with tickets from the requested page.
-    
-    maxapi Pattern Notes:
-    - Uses event.callback.user.user_id for user identification in callbacks
-    - Uses TicketsPaginationPayload for type-safe payload parsing
-    - Payload automatically parsed by CallbackPayload.filter() decorator
-    
-    Args:
-        event: MessageCallback event from maxapi
-        payload: TicketsPaginationPayload with page field (auto-parsed)
-        session: AsyncSession for database operations
-        messenger_adapter: MAXMessengerAdapter for sending messages
-    
-    Requirements: AC-1.3, TR-2
+
+    Updates the message with tickets from the requested page, preserving active filter.
+    Uses replace_message pattern (delete old + send new).
     """
     chat_id = event.message.recipient.chat_id
-    # In callback events, user_id comes from event.callback.user, not event.message.sender
-
     max_user_id = event.callback.user.user_id
     page = payload.page
-    
+    active_filter = getattr(payload, 'filter', 'all') or 'all'
+
     try:
-        # Get user
         user = await get_user_by_max_id(session, max_user_id)
         if not user:
             await messenger_adapter.send_message(
@@ -227,55 +233,105 @@ async def handle_tickets_pagination_callback(
                 parse_mode="HTML"
             )
             return
-        
-        # Get active tickets
+
         tickets = await get_user_active_tickets(session, user.id)
-        
+
         if not tickets:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ У вас нет активных обращений",
                 parse_mode="HTML"
             )
-            logger.info(f"Client {user.id} has no active tickets")
             return
-        
-        # Generate keyboard with pagination
-        keyboard = await get_active_tickets_keyboard(tickets, page=page)
-        
-        # Update message with new page
-        header_text = (
-            f"📥 <b>Активные обращения ({len(tickets)})</b>\n\n"
-            f"В этом меню вы можете переключаться между заявками. "
-            f"При нажатии на заявку включается режим доставки сообщений назначенному менеджеру.\n\n"
-            f"Выберите обращение для продолжения общения:"
-        )
-        
-        # Get message ID for editing
+
+        from bots.max_bot.keyboards.user.active_tickets_kb import filter_tickets
+        filtered = filter_tickets(tickets, active_filter)
+
+        keyboard = await get_active_tickets_keyboard(tickets, page=page, active_filter=active_filter)
+
+        header_text = _build_header(len(tickets), len(filtered), active_filter)
+
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-        
         if message_id:
-            await messenger_adapter.edit_message(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=header_text,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-        else:
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=header_text,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-        
-        logger.info(f"Client {user.id} navigated to page {page + 1} of active tickets")
-    
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=header_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Client {user.id} navigated to page {page + 1}, filter={active_filter}")
+
     except Exception as e:
         logger.error(
-            f"Error handling tickets pagination: page={page}, "
-            f"user={max_user_id}, error={e}",
+            f"Error handling tickets pagination: page={page}, user={max_user_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка. Попробуйте позже.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_tickets_filter_callback(
+    event: MessageCallback,
+    payload: TicketsFilterPayload,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle filter button click in active tickets list.
+
+    Reloads the list with the selected ticket type filter applied.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    active_filter = payload.filter or 'all'
+
+    try:
+        user = await get_user_by_max_id(session, max_user_id)
+        if not user:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден",
+                parse_mode="HTML"
+            )
+            return
+
+        tickets = await get_user_active_tickets(session, user.id)
+
+        from bots.max_bot.keyboards.user.active_tickets_kb import filter_tickets
+        filtered = filter_tickets(tickets, active_filter)
+
+        keyboard = await get_active_tickets_keyboard(tickets, page=0, active_filter=active_filter)
+        header_text = _build_header(len(tickets), len(filtered), active_filter)
+
+        message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=header_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
+        logger.info(f"Client {user.id} applied filter={active_filter}, found {len(filtered)} tickets")
+
+    except Exception as e:
+        logger.error(
+            f"Error handling tickets filter: filter={active_filter}, user={max_user_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
@@ -334,20 +390,10 @@ async def handle_close_active_tickets(
             active_tickets_count = await get_user_active_tickets_count(session, user.id)
             keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
             
-            main_menu_text = (
-                "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                "Здесь вы можете:\n\n"
-                "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                "Выберите нужное действие:"
-            )
-            
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=main_menu_text,
+                text=MAIN_MENU_WELCOME_TEXT,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )

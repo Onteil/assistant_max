@@ -103,6 +103,7 @@ def format_ticket_card_detailed(ticket: Ticket) -> str:
     type_names = {
         TicketType.INVOICE: "💰 Счет",
         TicketType.TECHNICAL_SUPPORT: "🆘 Техподдержка",
+        TicketType.CONSULTATION: "💬 Консультация",
         TicketType.RENEWAL: "🔄 Продление"
     }
     type_name = type_names.get(ticket.ticket_type, "📋 Заявка")
@@ -349,9 +350,10 @@ def format_active_tickets_header(
 
     filter_names = {
         "all": "Все заявки",
-        "invoice": "Счета",
-        "technical_support": "Техподдержка",
-        "renewal": "Продление"
+        "invoice": "Счёт",
+        "technical_support": "ТП",
+        "consultation": "Консультация",
+        "renewal": "Продление",
     }
     filter_text = filter_names.get(current_filter, "Все заявки")
 
@@ -372,18 +374,21 @@ def get_active_tickets_keyboard(
     current_filter: str = "all",
     current_page: int = 0,
     items_per_page: int = 5,
-    staff_role: StaffRole | None = None
+    staff_role: StaffRole | None = None,
+    all_tickets: list[Ticket] | None = None
 ) -> Keyboard:
     """
     Build keyboard for active tickets list with filters and pagination.
-    
+
     Args:
-        tickets: List of Ticket objects
+        tickets: Filtered list of Ticket objects (for current page display)
         current_filter: Current filter type
         current_page: Current page number (0-indexed)
         items_per_page: Number of tickets per page
         staff_role: Staff role (TECHNICAL_SUPPORT and DUTY_ENGINEER skip filter buttons)
-    
+        all_tickets: Full unfiltered list — used to determine which filter buttons to show.
+                     If None, falls back to tickets.
+
     Returns:
         Keyboard with ticket buttons, filters (if applicable), pagination, and navigation
     """
@@ -392,29 +397,43 @@ def get_active_tickets_keyboard(
 
     # Filter buttons row — hidden for tech-only roles
     if staff_role not in tech_only_roles:
-        filter_row = []
-        filters = [
-            ("Все", "all"),
-            ("💰 Счета", "invoice"),
-            ("🆘 Техподдержка", "technical_support"),
-            ("🔄 Продление", "renewal")
-        ]
-        
-        for text, filter_type in filters:
-            # Add checkmark to active filter
-            if filter_type == current_filter:
-                text = f"✅ {text}"
-            
-            filter_row.append(
-                KeyboardButton(
-                    text=text,
-                    payload=ManagerTicketsFilterPayload(filter_type=filter_type).pack()
-                )
+        # Determine which ticket types are present across ALL tickets
+        source = all_tickets if all_tickets is not None else tickets
+        present_types: set[str] = set()
+        _type_map = {
+            TicketType.INVOICE: "invoice",
+            TicketType.TECHNICAL_SUPPORT: "technical_support",
+            TicketType.CONSULTATION: "consultation",
+            TicketType.RENEWAL: "renewal",
+        }
+        for t in source:
+            fkey = _type_map.get(t.ticket_type)
+            if fkey:
+                present_types.add(fkey)
+
+        def _make_filter_btn(text: str, filter_type: str) -> KeyboardButton:
+            label = f"[{text}]" if filter_type == current_filter else text
+            return KeyboardButton(
+                text=label,
+                payload=ManagerTicketsFilterPayload(filter_type=filter_type).pack()
             )
-        
-        # Split filter row into 2 rows (2 buttons each)
-        buttons.append(filter_row[:2])
-        buttons.append(filter_row[2:])
+
+        # Row 1: Все (always), Счёт (if present), ТП (if present)
+        row1 = [_make_filter_btn("Все", "all")]
+        if "invoice" in present_types:
+            row1.append(_make_filter_btn("💰 Счёт", "invoice"))
+        if "technical_support" in present_types:
+            row1.append(_make_filter_btn("🆘 ТП", "technical_support"))
+        buttons.append(row1)
+
+        # Row 2: Консультация (if present), Продление (if present)
+        row2 = []
+        if "consultation" in present_types:
+            row2.append(_make_filter_btn("💬 Консультация", "consultation"))
+        if "renewal" in present_types:
+            row2.append(_make_filter_btn("🔄 Продление", "renewal"))
+        if row2:
+            buttons.append(row2)
     
     # Ticket buttons (paginated)
     total_count = len(tickets)
@@ -430,12 +449,14 @@ def get_active_tickets_keyboard(
         type_emoji = {
             TicketType.INVOICE: "💰",
             TicketType.TECHNICAL_SUPPORT: "🆘",
+            TicketType.CONSULTATION: "💬",
             TicketType.RENEWAL: "🔄"
         }.get(ticket.ticket_type, "📋")
         
         type_name = {
             TicketType.INVOICE: "Счет",
             TicketType.TECHNICAL_SUPPORT: "ТП",
+            TicketType.CONSULTATION: "Консультация",
             TicketType.RENEWAL: "Продление"
         }.get(ticket.ticket_type, "Заявка")
         
@@ -462,7 +483,16 @@ def get_active_tickets_keyboard(
     # Pagination row (if needed)
     if total_count > items_per_page:
         pagination_row = []
-        
+
+        # First page
+        if current_page > 1:
+            pagination_row.append(
+                KeyboardButton(
+                    text="⏮️",
+                    payload=ManagerTicketsPaginationPayload(page=0).pack()
+                )
+            )
+
         if current_page > 0:
             pagination_row.append(
                 KeyboardButton(
@@ -470,14 +500,14 @@ def get_active_tickets_keyboard(
                     payload=ManagerTicketsPaginationPayload(page=current_page - 1).pack()
                 )
             )
-        
+
         pagination_row.append(
             KeyboardButton(
                 text=f"{current_page + 1}/{total_pages}",
                 payload=ManagerTicketsBackPayload(action="noop").pack()
             )
         )
-        
+
         if current_page < total_pages - 1:
             pagination_row.append(
                 KeyboardButton(
@@ -485,7 +515,16 @@ def get_active_tickets_keyboard(
                     payload=ManagerTicketsPaginationPayload(page=current_page + 1).pack()
                 )
             )
-        
+
+        # Last page
+        if current_page < total_pages - 2:
+            pagination_row.append(
+                KeyboardButton(
+                    text="⏭️",
+                    payload=ManagerTicketsPaginationPayload(page=total_pages - 1).pack()
+                )
+            )
+
         buttons.append(pagination_row)
     
     # Navigation row
@@ -782,29 +821,31 @@ async def show_active_tickets(
         if staff_role in tech_only_roles:
             current_filter = "technical_support"
 
-        # Get filtered tickets
+        # Get all tickets (for filter visibility) and filtered tickets (for display)
+        all_tickets = await get_employee_active_tickets(session, employee.max_user_id, None)
         ticket_type_filter = None if current_filter == "all" else current_filter
-        tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter)
-        
+        tickets = all_tickets if ticket_type_filter is None else await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter)
+
         # Save filter to context
         await context.update_data(
             manager_active_filter=current_filter,
             manager_active_page=current_page
         )
-        
+
         # Format header text
         header_text = format_active_tickets_header(
             tickets_count=len(tickets),
             current_filter=current_filter,
             staff_role=staff_role
         )
-        
+
         # Generate keyboard
         keyboard = get_active_tickets_keyboard(
             tickets=tickets,
             current_filter=current_filter,
             current_page=current_page,
-            staff_role=staff_role
+            staff_role=staff_role,
+            all_tickets=all_tickets,
         )
         
         # Send message
@@ -1249,33 +1290,37 @@ async def handle_tickets_back(
 
 def format_archive_header(
     tickets_count: int,
-    current_filter: str = "day"
+    current_filter: str = "day",
+    current_type_filter: str = "all"
 ) -> str:
-    """
-    Format header text for archive list.
-    
-    Args:
-        tickets_count: Number of archived tickets
-        current_filter: Current filter type
-    
-    Returns:
-        Formatted header text
-    """
+    """Format header text for archive list."""
     filter_names = {
         "day": "День",
         "week": "Неделя",
         "month": "Месяц",
-        "custom": "Произвольный"
+        "custom": "Произвольный",
     }
-    
+    type_names = {
+        "all": "Все типы",
+        "invoice": "Счёт",
+        "technical_support": "ТП",
+        "consultation": "Консультация",
+        "renewal": "Продление",
+    }
+
     filter_text = filter_names.get(current_filter, "День")
-    
+    type_text = type_names.get(current_type_filter, "Все типы")
+
     if tickets_count == 0:
-        return f"🗃️ <b>Архив обращений</b>\n\n<b>Фильтр:</b> {filter_text}\n\n<i>Нет закрытых заявок</i>"
-    
+        return (
+            f"🗃️ <b>Архив обращений</b>\n\n"
+            f"<b>Период:</b> {filter_text} | <b>Тип:</b> {type_text}\n\n"
+            f"<i>Нет закрытых заявок</i>"
+        )
+
     return (
         f"🗃️ <b>Архив обращений</b>\n\n"
-        f"<b>Фильтр:</b> {filter_text}\n"
+        f"<b>Период:</b> {filter_text} | <b>Тип:</b> {type_text}\n"
         f"<b>Найдено:</b> {tickets_count}\n\n"
         f"Выберите заявку:"
     )
@@ -1285,124 +1330,148 @@ def get_archive_keyboard(
     tickets: list[Ticket],
     current_filter: str = "day",
     current_page: int = 0,
-    items_per_page: int = 5
+    items_per_page: int = 5,
+    all_tickets: list[Ticket] | None = None,
+    current_type_filter: str = "all",
 ) -> Keyboard:
     """
-    Build keyboard for archive list with filters and pagination.
-    
+    Build keyboard for archive list with period filters, type filters, and pagination.
+
     Args:
-        tickets: List of archived Ticket objects
-        current_filter: Current filter type
+        tickets: Already-filtered list for display
+        current_filter: Current time period filter
         current_page: Current page number (0-indexed)
         items_per_page: Number of tickets per page
-    
-    Returns:
-        Keyboard with filters, ticket buttons, pagination, and navigation
+        all_tickets: Full unfiltered list — used to determine which type filter buttons to show
+        current_type_filter: Current ticket-type filter
     """
+    from bots.max_bot.payloads import ManagerArchiveTypeFilterPayload
+
     buttons = []
-    
-    # Filter buttons row (4 buttons: Day, Week, Month, Custom Search)
-    filter_row = []
-    filters = [
-        ("День", "day"),
-        ("Неделя", "week"),
-        ("Месяц", "month"),
-        ("🔍", "custom")
-    ]
-    
-    for text, filter_type in filters:
-        # Add checkmark to active filter (except custom search)
-        if filter_type == current_filter and filter_type != "custom":
-            text = f"✅ {text}"
-        
-        filter_row.append(
-            KeyboardButton(
-                text=text,
-                payload=ManagerArchiveFilterPayload(filter_type=filter_type).pack()
-            )
+
+    # --- Row 1: Period filters (День / Неделя / Месяц / 🔍) ---
+    period_row = []
+    for text, filter_type in [("День", "day"), ("Неделя", "week"), ("Месяц", "month"), ("🔍", "custom")]:
+        label = f"[{text}]" if filter_type == current_filter and filter_type != "custom" else text
+        period_row.append(KeyboardButton(
+            text=label,
+            payload=ManagerArchiveFilterPayload(filter_type=filter_type).pack()
+        ))
+    buttons.append(period_row)
+
+    # --- Rows 2-3: Type filters (only types present in all_tickets) ---
+    source = all_tickets if all_tickets is not None else tickets
+    present_types: set[str] = set()
+    _type_map = {
+        TicketType.INVOICE: "invoice",
+        TicketType.TECHNICAL_SUPPORT: "technical_support",
+        TicketType.CONSULTATION: "consultation",
+        TicketType.RENEWAL: "renewal",
+    }
+    for t in source:
+        fkey = _type_map.get(t.ticket_type)
+        if fkey:
+            present_types.add(fkey)
+
+    def _type_btn(label: str, ttype: str) -> KeyboardButton:
+        text = f"[{label}]" if ttype == current_type_filter else label
+        return KeyboardButton(
+            text=text,
+            payload=ManagerArchiveTypeFilterPayload(ticket_type=ttype).pack()
         )
-    
-    buttons.append(filter_row)
-    
-    # Ticket buttons (paginated)
+
+    # Row 2: Все (always) + Счёт + ТП
+    row2 = [_type_btn("Все", "all")]
+    if "invoice" in present_types:
+        row2.append(_type_btn("💰 Счёт", "invoice"))
+    if "technical_support" in present_types:
+        row2.append(_type_btn("🆘 ТП", "technical_support"))
+    buttons.append(row2)
+
+    # Row 3: Консультация + Продление (only if present)
+    row3 = []
+    if "consultation" in present_types:
+        row3.append(_type_btn("💬 Консультация", "consultation"))
+    if "renewal" in present_types:
+        row3.append(_type_btn("🔄 Продление", "renewal"))
+    if row3:
+        buttons.append(row3)
+
+    # --- Ticket buttons (paginated) ---
     total_count = len(tickets)
     total_pages = (total_count + items_per_page - 1) // items_per_page if total_count > 0 else 1
     current_page = max(0, min(current_page, total_pages - 1))
-    
+
     start_idx = current_page * items_per_page
     end_idx = start_idx + items_per_page
-    page_tickets = tickets[start_idx:end_idx]
-    
-    for ticket in page_tickets:
-        # Format ticket button text
+
+    for ticket in tickets[start_idx:end_idx]:
         type_emoji = {
             TicketType.INVOICE: "💰",
             TicketType.TECHNICAL_SUPPORT: "🆘",
-            TicketType.RENEWAL: "🔄"
+            TicketType.CONSULTATION: "💬",
+            TicketType.RENEWAL: "🔄",
         }.get(ticket.ticket_type, "📋")
-        
+
         type_name = {
             TicketType.INVOICE: "Счет",
             TicketType.TECHNICAL_SUPPORT: "ТП",
-            TicketType.RENEWAL: "Продление"
+            TicketType.CONSULTATION: "Консультация",
+            TicketType.RENEWAL: "Продление",
         }.get(ticket.ticket_type, "Заявка")
-        
+
         status_emoji = {
             TicketStatus.CLOSED: "✅",
-            TicketStatus.CANCELLED: "❌"
+            TicketStatus.CANCELLED: "❌",
         }.get(ticket.ticket_status, "")
-        
-        # Format created date and time
-        created_datetime = ""
-        if ticket.created_at:
-            created_datetime = ticket.created_at.strftime("%d.%m %H:%M")
-        
+
+        created_datetime = ticket.created_at.strftime("%d.%m %H:%M") if ticket.created_at else ""
         button_text = f"{status_emoji} {type_emoji} {type_name} #{ticket.id} ({created_datetime})"
-        
-        buttons.append([
-            KeyboardButton(
-                text=button_text,
-                payload=ManagerArchiveTicketPayload(ticket_id=ticket.id).pack()
-            )
-        ])
-    
-    # Pagination row (if needed)
+
+        buttons.append([KeyboardButton(
+            text=button_text,
+            payload=ManagerArchiveTicketPayload(ticket_id=ticket.id).pack()
+        )])
+
+    # --- Pagination ---
     if total_count > items_per_page:
         pagination_row = []
-        
+
+        if current_page > 1:
+            pagination_row.append(KeyboardButton(
+                text="⏮️",
+                payload=ManagerArchivePaginationPayload(page=0).pack()
+            ))
         if current_page > 0:
-            pagination_row.append(
-                KeyboardButton(
-                    text="⬅️",
-                    payload=ManagerArchivePaginationPayload(page=current_page - 1).pack()
-                )
-            )
-        
-        pagination_row.append(
-            KeyboardButton(
-                text=f"{current_page + 1}/{total_pages}",
-                payload=ManagerArchiveBackPayload(action="noop").pack()
-            )
-        )
-        
+            pagination_row.append(KeyboardButton(
+                text="⬅️",
+                payload=ManagerArchivePaginationPayload(page=current_page - 1).pack()
+            ))
+
+        pagination_row.append(KeyboardButton(
+            text=f"{current_page + 1}/{total_pages}",
+            payload=ManagerArchiveBackPayload(action="noop").pack()
+        ))
+
         if current_page < total_pages - 1:
-            pagination_row.append(
-                KeyboardButton(
-                    text="➡️",
-                    payload=ManagerArchivePaginationPayload(page=current_page + 1).pack()
-                )
-            )
-        
+            pagination_row.append(KeyboardButton(
+                text="➡️",
+                payload=ManagerArchivePaginationPayload(page=current_page + 1).pack()
+            ))
+        if current_page < total_pages - 2:
+            pagination_row.append(KeyboardButton(
+                text="⏭️",
+                payload=ManagerArchivePaginationPayload(page=total_pages - 1).pack()
+            ))
+
         buttons.append(pagination_row)
-    
-    # Navigation row
-    buttons.append([
-        KeyboardButton(
-            text="🏠 В меню",
-            payload=ManagerArchiveBackPayload(action="menu").pack()
-        )
-    ])
-    
+
+    # --- Navigation ---
+    buttons.append([KeyboardButton(
+        text="🏠 В меню",
+        payload=ManagerArchiveBackPayload(action="menu").pack()
+    )])
+
     return Keyboard(buttons=buttons, inline=True)
 
 
@@ -1414,74 +1483,71 @@ async def show_archive(
     context: MemoryContext,
     current_filter: str = "day",
     current_page: int = 0,
-    search_criteria: str | None = None
+    search_criteria: str | None = None,
+    current_type_filter: str = "all",
 ) -> None:
-    """
-    Show archive list with filters and pagination.
-    
-    Args:
-        chat_id: Chat ID for sending messages
-        max_user_id: MAX user ID of the employee
-        session: Database session
-        messenger_adapter: Messenger adapter for sending messages
-        context: FSM context
-        current_filter: Current filter type
-        current_page: Current page number
-        search_criteria: Custom search criteria (if filter is "custom")
-    """
+    """Show archive list with period filters, type filters, and pagination."""
     from services.employee_service import get_closed_tickets_by_filter, search_closed_tickets
-    
-    logger.info(f"Showing archive: max_user_id={max_user_id}, filter={current_filter}, page={current_page}")
-    
+
+    logger.info(f"Showing archive: max_user_id={max_user_id}, filter={current_filter}, type={current_type_filter}, page={current_page}")
+
     try:
-        # Get archived tickets based on filter
+        # Get all tickets for the period (for type filter visibility)
         if current_filter == "custom" and search_criteria:
-            tickets = await search_closed_tickets(session, search_criteria)
+            all_period_tickets = await search_closed_tickets(session, search_criteria)
         else:
-            tickets = await get_closed_tickets_by_filter(session, current_filter)
-        
-        # Save filter to context
+            all_period_tickets = await get_closed_tickets_by_filter(session, current_filter)
+
+        # Apply type filter
+        if current_type_filter != "all":
+            _tmap = {
+                "invoice": TicketType.INVOICE,
+                "technical_support": TicketType.TECHNICAL_SUPPORT,
+                "consultation": TicketType.CONSULTATION,
+                "renewal": TicketType.RENEWAL,
+            }
+            ttype = _tmap.get(current_type_filter)
+            tickets = [t for t in all_period_tickets if t.ticket_type == ttype] if ttype else all_period_tickets
+        else:
+            tickets = all_period_tickets
+
+        # Save state to context
         await context.update_data(
             manager_archive_filter=current_filter,
             manager_archive_page=current_page,
-            manager_archive_search=search_criteria
+            manager_archive_search=search_criteria,
+            manager_archive_type_filter=current_type_filter,
         )
-        
-        # Format header text
+
+        # Format header
         header_text = format_archive_header(
             tickets_count=len(tickets),
-            current_filter=current_filter
+            current_filter=current_filter,
+            current_type_filter=current_type_filter,
         )
-        
-        # Add search criteria to header if custom search
         if current_filter == "custom" and search_criteria:
             header_text += f"\n<b>Запрос:</b> <code>{search_criteria}</code>\n"
-        
+
         # Generate keyboard
         keyboard = get_archive_keyboard(
             tickets=tickets,
             current_filter=current_filter,
-            current_page=current_page
+            current_page=current_page,
+            all_tickets=all_period_tickets,
+            current_type_filter=current_type_filter,
         )
-        
-        # Send message
+
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=header_text,
             keyboard=keyboard,
             parse_mode="HTML"
         )
-        
-        logger.info(
-            f"Employee {max_user_id} viewed {len(tickets)} archived tickets "
-            f"(filter={current_filter}, page={current_page})"
-        )
-    
+
+        logger.info(f"Employee {max_user_id} viewed {len(tickets)} archived tickets (filter={current_filter}, type={current_type_filter}, page={current_page})")
+
     except Exception as e:
-        logger.error(
-            f"Error showing archive: max_user_id={max_user_id}, error={e}",
-            exc_info=True
-        )
+        logger.error(f"Error showing archive: max_user_id={max_user_id}, error={e}", exc_info=True)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при загрузке архива.\nПожалуйста, попробуйте позже.",
@@ -1577,6 +1643,53 @@ async def handle_archive_filter(
         )
 
 
+async def handle_archive_type_filter(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """Handle ticket-type filter selection in archive. Uses replace_message pattern."""
+    from bots.max_bot.payloads import ManagerArchiveTypeFilterPayload
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    # Parse payload manually since it's injected via filter
+    raw_payload = event.callback.payload
+    try:
+        parsed = ManagerArchiveTypeFilterPayload.unpack(raw_payload)
+        new_type_filter = parsed.ticket_type
+    except Exception:
+        new_type_filter = "all"
+
+    logger.info(f"Archive type filter: max_user_id={max_user_id}, type={new_type_filter}")
+
+    try:
+        await event.answer()
+
+        data = await context.get_data()
+        current_filter = data.get("manager_archive_filter", "day")
+        search_criteria = data.get("manager_archive_search")
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        await show_archive(chat_id, max_user_id, session, messenger_adapter, context, current_filter, 0, search_criteria, new_type_filter)
+
+    except Exception as e:
+        logger.error(f"Error handling archive type filter: error={e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при фильтрации архива.",
+            parse_mode="HTML"
+        )
+
+
 async def handle_archive_pagination(
     event: MessageCallback,
     payload: ManagerArchivePaginationPayload,
@@ -1612,16 +1725,17 @@ async def handle_archive_pagination(
         data = await context.get_data()
         current_filter = data.get("manager_archive_filter", "day")
         search_criteria = data.get("manager_archive_search")
-        
+        current_type_filter = data.get("manager_archive_type_filter", "all")
+
         # Delete old message
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
+
         # Show archive with new page
-        await show_archive(chat_id, max_user_id, session, messenger_adapter, context, current_filter, page, search_criteria)
+        await show_archive(chat_id, max_user_id, session, messenger_adapter, context, current_filter, page, search_criteria, current_type_filter)
     
     except Exception as e:
         logger.error(f"Error handling archive pagination: error={e}", exc_info=True)
@@ -3142,4 +3256,227 @@ async def handle_manager_ticket_history_back(
             chat_id=chat_id,
             text="❌ Произошла ошибка.",
             parse_mode="HTML"
+        )
+
+
+# ========== Client Message Notification Action Handlers ==========
+
+
+async def handle_take_from_message_notification(
+    event: MessageCallback,
+    payload: "ManagerTakeFromMessagePayload",
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle "Взять в работу" button click from a client message notification.
+
+    Takes the ticket into work and enters focus mode so the manager can
+    reply directly by typing in chat — no extra menus needed.
+
+    Uses replace_message pattern.
+    """
+    from bots.max_bot.payloads import ManagerTakeFromMessagePayload
+    from bots.max_bot.states import EmployeeStates
+    from services.ticket_service import take_ticket_into_work as take_ticket_service
+    from sqlalchemy.orm import selectinload
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, "mid") else None
+    ticket_id = payload.ticket_id
+
+    logger.info(
+        f"Take ticket from message notification: max_user_id={max_user_id}, ticket_id={ticket_id}"
+    )
+
+    try:
+        await event.answer()
+
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Delete notification message
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete notification message: {e}")
+
+        # Take ticket into work
+        await take_ticket_service(session, ticket_id, max_user_id, messenger="max")
+
+        # Reload ticket with relationships
+        stmt = (
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys),
+            )
+        )
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+
+        if not ticket:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Enter focus mode
+        focused_client_id = (
+            ticket.user.max_user_id if ticket.user.max_user_id else ticket.user.tg_user_id
+        )
+        await context.set_state(EmployeeStates.in_focus)
+        await context.update_data(
+            focused_ticket_id=ticket_id,
+            focused_client_id=focused_client_id,
+        )
+
+        ticket_card = format_ticket_card_detailed(ticket)
+        keyboard = get_ticket_action_keyboard(ticket, is_focus_enabled=True)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ <b>Заявка взята в работу. Режим общения включён.</b>\n\n"
+                f"Просто пишите сообщения — они будут автоматически отправляться клиенту.\n\n"
+                f"{ticket_card}"
+            ),
+            keyboard=keyboard,
+            parse_mode="HTML",
+        )
+
+        logger.info(
+            f"Employee {max_user_id} took ticket {ticket_id} into work from message notification"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error taking ticket from message notification: ticket_id={ticket_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при взятии заявки в работу.",
+            parse_mode="HTML",
+        )
+
+
+async def handle_focus_from_message_notification(
+    event: MessageCallback,
+    payload: "ManagerFocusFromMessagePayload",
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle "Общение с клиентом" button click from a client message notification.
+
+    Enters focus mode for an already in-progress ticket so the manager can
+    reply directly by typing in chat — no extra menus needed.
+
+    Uses replace_message pattern.
+    """
+    from bots.max_bot.payloads import ManagerFocusFromMessagePayload
+    from bots.max_bot.states import EmployeeStates
+    from sqlalchemy.orm import selectinload
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, "mid") else None
+    ticket_id = payload.ticket_id
+
+    logger.info(
+        f"Focus from message notification: max_user_id={max_user_id}, ticket_id={ticket_id}"
+    )
+
+    try:
+        await event.answer()
+
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Delete notification message
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete notification message: {e}")
+
+        # Load ticket with relationships
+        stmt = (
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys),
+            )
+        )
+        result = await session.execute(stmt)
+        ticket = result.scalar_one_or_none()
+
+        if not ticket:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Enter focus mode
+        focused_client_id = (
+            ticket.user.max_user_id if ticket.user.max_user_id else ticket.user.tg_user_id
+        )
+        await context.set_state(EmployeeStates.in_focus)
+        await context.update_data(
+            focused_ticket_id=ticket_id,
+            focused_client_id=focused_client_id,
+        )
+
+        ticket_card = format_ticket_card_detailed(ticket)
+        keyboard = get_ticket_action_keyboard(ticket, is_focus_enabled=True)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"💬 <b>Режим общения включён.</b>\n\n"
+                f"Просто пишите сообщения — они будут автоматически отправляться клиенту.\n\n"
+                f"{ticket_card}"
+            ),
+            keyboard=keyboard,
+            parse_mode="HTML",
+        )
+
+        logger.info(
+            f"Employee {max_user_id} entered focus mode for ticket {ticket_id} from message notification"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error entering focus from message notification: ticket_id={ticket_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при включении режима общения.",
+            parse_mode="HTML",
         )

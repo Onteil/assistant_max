@@ -85,6 +85,7 @@ async def handle_main_menu_callback(
     # Import handlers to avoid circular imports
     from bots.max_bot.handlers.tickets.invoice import cmd_invoice
     from bots.max_bot.handlers.tickets.support import cmd_support
+    from bots.max_bot.handlers.tickets.consultation import cmd_consultation
     from bots.max_bot.handlers.user.profile import cmd_profile
     from bots.max_bot.handlers.user.archive import show_archive_list
     from bots.max_bot.handlers.user.renewal import show_subscription_status
@@ -97,6 +98,10 @@ async def handle_main_menu_callback(
         elif action == "support":
             # Route to support handler
             await cmd_support(event, context, session, messenger_adapter)
+        
+        elif action == "consultation":
+            # Route to consultation handler
+            await cmd_consultation(event, context, session, messenger_adapter)
         
         elif action == "renewal":
             # Route to renewal handler - show subscription status
@@ -186,14 +191,13 @@ async def show_active_tickets_list(
             logger.info(f"Client {user.id} has no active tickets")
             return
         
-        # Generate keyboard with pagination
-        keyboard = await get_active_tickets_keyboard(tickets, page=0)
+        # Generate keyboard with pagination and default filter
+        keyboard = await get_active_tickets_keyboard(tickets, page=0, active_filter="all")
         
         # Send message with ticket list
         header_text = (
-            f"📥 <b>Активные обращения ({len(tickets)})</b>\n\n"
-            f"В этом меню вы можете переключаться между заявками. "
-            f"При нажатии на заявку включается режим доставки сообщений назначенному менеджеру.\n\n"
+            f"📥 <b>Активные обращения</b>\n\n"
+            f"Фильтр: Все заявки | Всего: {len(tickets)}\n\n"
             f"Выберите обращение для продолжения общения:"
         )
         

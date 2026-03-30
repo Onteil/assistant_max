@@ -88,7 +88,7 @@ def get_organization_keyboard(organizations: list, page: int = 0) -> Keyboard:
     
     # Кнопка "Пропустить"
     buttons.append([KeyboardButton(
-        text="⏭️ Пропустить",
+        text="⏭️️ Пропустить",
         payload=OrganizationActionPayload(action="skip").pack()
     )])
     
@@ -184,7 +184,7 @@ def get_key_selection_keyboard(
     # Кнопка "Пропустить" (если нет выбранных ключей)
     if not selected_key_ids:
         buttons.append([KeyboardButton(
-            text="⏭️ Пропустить",
+            text="⏭️️ Пропустить",
             payload=KeyActionPayload(action="skip").pack()
         )])
     
@@ -283,7 +283,7 @@ def get_description_input_keyboard() -> Keyboard:
     """
     buttons = [
         [KeyboardButton(
-            text="⏭️ Пропустить",
+            text="⏭️️ Пропустить",
             payload=KeyActionPayload(action="skip_description").pack()
         )],
         [

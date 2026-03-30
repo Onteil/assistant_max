@@ -21,7 +21,7 @@ def start_worker():
     print("Запуск Celery Worker")
     print("─" * 5)
     print()
-    print("Очереди: nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications, work_mode_monitor")
+    print("Очереди: nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications, work_mode_monitor, api_retries")
     print("Pool: solo (для Windows)")
     print(f"Python: {sys.executable}")
     print(f"PYTHONPATH: {project_root}")
@@ -48,7 +48,7 @@ def start_worker():
             "worker",
             "-l", "info",
             "--pool=solo",  # Для Windows
-            "-Q", "escalations,nps_surveys,renewal_reminders,broadcasts,ticket_notifications,work_mode_monitor"
+            "-Q", "escalations,nps_surveys,renewal_reminders,broadcasts,ticket_notifications,work_mode_monitor,api_retries"
         ])
     except KeyboardInterrupt:
         print("\n\n✅ Worker остановлен")

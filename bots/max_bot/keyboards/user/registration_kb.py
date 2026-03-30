@@ -49,7 +49,7 @@ def get_skip_keyboard() -> Keyboard:
     """
     return Keyboard(
         buttons=[
-            [KeyboardButton(text="⏭️ Пропустить", payload=RegistrationSkipPayload().pack())],
+            [KeyboardButton(text="⏭️️ Пропустить", payload=RegistrationSkipPayload().pack())],
             [KeyboardButton(text="❌ Отмена", payload=RegistrationCancelPayload().pack())]
         ],
         inline=True

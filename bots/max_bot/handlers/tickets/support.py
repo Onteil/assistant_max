@@ -64,6 +64,7 @@ from database.models import (
 )
 from services.calendar_service import get_current_work_mode
 from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
     add_user_key,
@@ -272,20 +273,10 @@ async def handle_renewal_callback(
                 active_tickets_count = await get_user_active_tickets_count(session, user.id)
                 keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
                 
-                welcome_text = (
-                    "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                    "Здесь вы можете:\n\n"
-                    "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                    "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                    "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                    "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                    "Выберите нужное действие:"
-                )
-                
+                from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=welcome_text,
+                    text=MAIN_MENU_WELCOME_TEXT,
                     keyboard=keyboard,
                     parse_mode="HTML"
                 )
@@ -459,6 +450,70 @@ async def create_renewal_ticket(
                 exc_info=True
             )
         
+        # Also create a TECHNICAL_SUPPORT ticket so the tech specialist is notified
+        # alongside the renewal request to the manager (restored behaviour per tester request)
+        support_ticket = None
+        try:
+            from services.ticket_service import check_support_staff_availability
+            has_support_staff = await check_support_staff_availability(session)
+            
+            support_assigned_staff_id = None
+            if work_mode == WorkMode.REGULAR:
+                if not has_support_staff:
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    if admins:
+                        support_assigned_staff_id = admins[0].id
+            elif work_mode == WorkMode.EXTENDED:
+                from services.ticket_service import _get_duty_engineer
+                duty_engineer = await _get_duty_engineer(session)
+                if duty_engineer:
+                    support_assigned_staff_id = duty_engineer.id
+                else:
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    if admins:
+                        support_assigned_staff_id = admins[0].id
+            # NON_WORKING: support_assigned_staff_id stays None (queued)
+            
+            support_ticket_data = {
+                "ticket_type": TicketType.TECHNICAL_SUPPORT,
+                "user_id": user_id,
+                "assigned_staff_id": support_assigned_staff_id,
+                "description": "Запрос техподдержки (создан вместе с заявкой на продление подписки)"
+            }
+            support_ticket = await create_ticket(session, support_ticket_data)
+            await session.commit()
+            
+            logger.info(
+                f"Support ticket created alongside renewal: support_ticket_id={support_ticket.id}, "
+                f"renewal_ticket_id={ticket.id}, user_id={user_id}"
+            )
+            
+            try:
+                await log_ticket_creation_to_itat(session, support_ticket)
+            except Exception as e:
+                logger.error(
+                    f"Failed to log support ticket to I-TAT API: ticket_id={support_ticket.id}, error={e}",
+                    exc_info=True
+                )
+            
+            if work_mode != WorkMode.NON_WORKING:
+                try:
+                    from celery_app.escalation_tasks import schedule_technical_support_monitoring
+                    await schedule_technical_support_monitoring(ticket_id=support_ticket.id)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to schedule monitoring for support ticket {support_ticket.id}: {e}",
+                        exc_info=True
+                    )
+        except Exception as e:
+            logger.error(
+                f"Failed to create support ticket alongside renewal: user_id={user_id}, error={e}",
+                exc_info=True
+            )
+            # Don't fail the whole flow — renewal ticket was already created
+        
         # Get manager name and position for user message
         manager_name = "Менеджер"
         manager_position = "Менеджер"
@@ -561,6 +616,64 @@ async def create_renewal_ticket(
                 f"Renewal ticket queued for next working period: ticket_id={ticket.id}, "
                 f"staff_id={assigned_staff_id}, work_mode={work_mode.value}"
             )
+        
+        # Notify support staff about the TECHNICAL_SUPPORT ticket (if created)
+        if support_ticket and is_working:
+            try:
+                from database.models import Staff_Member, StaffRole
+                from sqlalchemy import select, and_
+                
+                stmt = select(Staff_Member).where(
+                    and_(
+                        Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
+                        Staff_Member.is_active == True,
+                        Staff_Member.max_user_id.isnot(None)
+                    )
+                )
+                result = await session.execute(stmt)
+                support_staff = result.scalars().all()
+                
+                if support_staff:
+                    for staff in support_staff:
+                        try:
+                            await send_staff_notification(
+                                bot=max_bot,
+                                staff_id=staff.id,
+                                ticket=support_ticket,
+                                routing_info={"expected_response_time": "в течение рабочего дня"},
+                                session=session
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to notify support staff about renewal support ticket: "
+                                f"ticket_id={support_ticket.id}, staff_id={staff.id}, error={e}",
+                                exc_info=True
+                            )
+                else:
+                    # No support staff — notify admins
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    for admin in admins:
+                        try:
+                            await send_staff_notification(
+                                bot=max_bot,
+                                staff_id=admin.id,
+                                ticket=support_ticket,
+                                routing_info={"expected_response_time": "в течение рабочего дня"},
+                                session=session
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to notify admin about renewal support ticket: "
+                                f"ticket_id={support_ticket.id}, admin_id={admin.id}, error={e}",
+                                exc_info=True
+                            )
+            except Exception as e:
+                logger.error(
+                    f"Failed to send support staff notifications for renewal support ticket: "
+                    f"ticket_id={support_ticket.id}, error={e}",
+                    exc_info=True
+                )
     
     except Exception as e:
         logger.error(
@@ -800,20 +913,10 @@ async def cancel_support_flow(
             # Show main menu with inline keyboard
             keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
             
-            welcome_text = (
-                "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                "Здесь вы можете:\n\n"
-                "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                "Выберите нужное действие:"
-            )
-            
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=welcome_text,
+                text=MAIN_MENU_WELCOME_TEXT,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -1251,31 +1354,22 @@ async def process_new_key_for_support(
         
         # Update user assets via i-TAT API (only if no conflict)
         if conflict_status == KeyConflictStatus.NONE:
-            try:
-                itat_client = get_itat_client()
-                assets_response = await itat_client.update_user_assets(
+            assets_response = await call_itat_with_retry(
+                session=session,
+                operation="update_user_assets",
+                payload=dict(
                     messenger="max",
                     user_id=user.max_user_id,
                     asset_type="grand_key",
                     action="add",
-                    value=normalized_key
-                )
+                    value=normalized_key,
+                ),
+                user_id=user.id,
+            )
+            if assets_response is not None:
                 logger.info(f"Assets update result: {assets_response}")
-            except Exception as api_error:
-                logger.error(f"Assets update API error: {api_error}", exc_info=True)
-                # Show error to testers for debugging
-                error_type = type(api_error).__name__
-                error_msg = str(api_error)
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ <b>Ошибка добавления ключа через i-TAT API</b>\n\n"
-                         f"<b>Метод:</b> POST /user/assets/update\n"
-                         f"<b>Тип ошибки:</b> {error_type}\n"
-                         f"<b>Детали:</b> {error_msg}\n\n"
-                         f"<i>Ключ добавлен локально, но не синхронизирован с 1С.</i>",
-                    parse_mode="HTML"
-                )
-                # Continue even if API fails - local data is already saved
+            else:
+                logger.warning(f"update_user_assets queued for retry: user_id={user.id}, key={normalized_key}")
         
         await session.commit()
         

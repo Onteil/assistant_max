@@ -17,8 +17,10 @@ from maxapi.context import MemoryContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.payloads import NPSRatingPayload, NPSSkipFeedbackPayload
 from bots.max_bot.states import NPSStates
+from constants import MAX_BOT_TOKEN
 from database.models import SurveyType, User
 from services.nps_handler import (
     handle_rating_response,
@@ -83,28 +85,25 @@ async def send_nps_survey(
         # Build inline keyboard with rating buttons (0-10)
         builder = InlineKeyboardBuilder()
         
-        # Add rating buttons in rows of 4
         # Row 1: 0-3
         builder.row(
-            CallbackButton(text="0", payload=f"nps_rating:{survey_type.value}:0:{trigger_event_id}"),
-            CallbackButton(text="1", payload=f"nps_rating:{survey_type.value}:1:{trigger_event_id}"),
-            CallbackButton(text="2", payload=f"nps_rating:{survey_type.value}:2:{trigger_event_id}"),
-            CallbackButton(text="3", payload=f"nps_rating:{survey_type.value}:3:{trigger_event_id}")
+            CallbackButton(text="0", payload=NPSRatingPayload(survey_type=survey_type.value, rating=0, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="1", payload=NPSRatingPayload(survey_type=survey_type.value, rating=1, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="2", payload=NPSRatingPayload(survey_type=survey_type.value, rating=2, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="3", payload=NPSRatingPayload(survey_type=survey_type.value, rating=3, trigger_event_id=trigger_event_id).pack()),
         )
-        
         # Row 2: 4-7
         builder.row(
-            CallbackButton(text="4", payload=f"nps_rating:{survey_type.value}:4:{trigger_event_id}"),
-            CallbackButton(text="5", payload=f"nps_rating:{survey_type.value}:5:{trigger_event_id}"),
-            CallbackButton(text="6", payload=f"nps_rating:{survey_type.value}:6:{trigger_event_id}"),
-            CallbackButton(text="7", payload=f"nps_rating:{survey_type.value}:7:{trigger_event_id}")
+            CallbackButton(text="4", payload=NPSRatingPayload(survey_type=survey_type.value, rating=4, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="5", payload=NPSRatingPayload(survey_type=survey_type.value, rating=5, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="6", payload=NPSRatingPayload(survey_type=survey_type.value, rating=6, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="7", payload=NPSRatingPayload(survey_type=survey_type.value, rating=7, trigger_event_id=trigger_event_id).pack()),
         )
-        
         # Row 3: 8-10
         builder.row(
-            CallbackButton(text="8", payload=f"nps_rating:{survey_type.value}:8:{trigger_event_id}"),
-            CallbackButton(text="9", payload=f"nps_rating:{survey_type.value}:9:{trigger_event_id}"),
-            CallbackButton(text="10", payload=f"nps_rating:{survey_type.value}:10:{trigger_event_id}")
+            CallbackButton(text="8", payload=NPSRatingPayload(survey_type=survey_type.value, rating=8, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="9", payload=NPSRatingPayload(survey_type=survey_type.value, rating=9, trigger_event_id=trigger_event_id).pack()),
+            CallbackButton(text="10", payload=NPSRatingPayload(survey_type=survey_type.value, rating=10, trigger_event_id=trigger_event_id).pack()),
         )
         
         keyboard = builder.as_markup()
@@ -131,75 +130,45 @@ async def send_nps_survey(
         return False
 
 
-@router.message_callback(F.callback.payload.startswith("nps_rating:"))
+@router.message_callback(NPSRatingPayload.filter())
 async def handle_nps_rating_callback(
     event: MessageCallback,
+    payload: NPSRatingPayload,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
     context: MemoryContext
 ) -> None:
     """
     Handle NPS rating button press.
-    
-    Parses callback data, stores response in database, and:
-    - For ratings 0-7: Asks for feedback comment
-    - For ratings 8-10: Shows thank you with review links (2GIS, Yandex)
-    
-    Callback data format: "nps_rating:{survey_type}:{rating}:{trigger_event_id}"
-    
-    Args:
-        event: MessageCallback from inline button press
-        session: Database session (injected by middleware)
-        messenger_adapter: MAX messenger adapter (injected by middleware)
-        context: FSM context for state management
+
+    For ratings 0-7: Asks for feedback comment.
+    For ratings 8-10: Shows thank you with review links (2GIS, Yandex).
     """
     try:
         chat_id = event.message.recipient.chat_id
         max_user_id = event.callback.user.user_id
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-        
-        # Parse callback data
-        # Format: "nps_rating:{survey_type}:{rating}:{trigger_event_id}"
-        parts = event.callback.payload.split(":")
-        
-        if len(parts) != 4:
-            logger.error(f"Invalid callback data format: {event.callback.payload}")
-            return
-        
-        survey_type_str = parts[1]
-        rating_str = parts[2]
-        trigger_event_id_str = parts[3]
-        
+
+        survey_type_str = payload.survey_type
+        rating = payload.rating
+        trigger_event_id = payload.trigger_event_id
+
         # Convert survey type string to enum
         try:
             survey_type = SurveyType(survey_type_str)
         except ValueError:
             logger.error(f"Invalid survey type: {survey_type_str}")
             return
-        
-        # Convert rating to integer
-        try:
-            rating = int(rating_str)
-        except ValueError:
-            logger.error(f"Invalid rating value: {rating_str}")
-            return
-        
-        # Convert trigger_event_id to integer
-        try:
-            trigger_event_id = int(trigger_event_id_str)
-        except ValueError:
-            logger.error(f"Invalid trigger_event_id: {trigger_event_id_str}")
-            return
-        
+
         # Get user's internal database ID from MAX user ID
         stmt = select(User).where(User.max_user_id == max_user_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
-        
+
         if not user:
             logger.error(f"User not found for max_user_id: {max_user_id}")
             return
-        
+
         # Store rating response in database
         success, message = await handle_rating_response(
             session=session,
@@ -208,116 +177,93 @@ async def handle_nps_rating_callback(
             survey_type=survey_type,
             trigger_event_id=trigger_event_id
         )
-        
+
         if not success:
             logger.error(f"Failed to store NPS response: {message}")
             return
-        
+
         logger.info(
-            f"NPS response stored in database: "
-            f"user_id={user.id}, rating={rating}, survey_type={survey_type.value}"
+            f"NPS response stored: user_id={user.id}, rating={rating}, "
+            f"survey_type={survey_type.value}"
         )
-        
+
         # Delete old message with buttons (replace_message pattern)
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
-                logger.warning(f"Failed to delete old message: {e}")
-        
-        # Different flow based on rating
+                logger.warning(f"Failed to delete old NPS message: {e}")
+
         if rating <= 7:
-            # Low rating (0-7): Ask for feedback
+            # Low rating: ask for feedback
             await context.set_state(NPSStates.waiting_for_feedback)
             await context.update_data(
                 rating=rating,
                 survey_type=survey_type.value,
                 trigger_event_id=trigger_event_id
             )
-            
-            feedback_text = (
-                f"Спасибо за вашу оценку: {rating}\n\n"
-                f"Нам очень важно ваше мнение! 🙏\n"
-                f"Пожалуйста, напишите, что мы можем улучшить?"
-            )
-            
-            # Build keyboard with "Skip" button
-            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-            
+
             skip_keyboard = Keyboard(
-                buttons=[
-                    [KeyboardButton(
-                        text="⏭️ Пропустить",
-                        payload=f"nps_skip_feedback:{survey_type.value}:{rating}:{trigger_event_id}"
-                    )]
-                ],
+                buttons=[[KeyboardButton(
+                    text="⏭️️ Пропустить",
+                    payload=NPSSkipFeedbackPayload(
+                        survey_type=survey_type.value,
+                        rating=rating,
+                        trigger_event_id=trigger_event_id
+                    ).pack()
+                )]],
                 inline=True
             )
-            
+
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=feedback_text,
+                text=(
+                    f"Спасибо за вашу оценку: {rating}\n\n"
+                    f"Нам очень важно ваше мнение! 🙏\n"
+                    f"Пожалуйста, напишите, что мы можем улучшить?"
+                ),
                 keyboard=skip_keyboard,
                 parse_mode="HTML"
             )
-            
+
             logger.info(f"Requested feedback for low rating: user_id={user.id}, rating={rating}")
-            
+
         else:
-            # High rating (8-10): Show thank you with review links
+            # High rating: show thank you with review links
             thank_you_text = format_thank_you_message()
-            
-            # Build keyboard with review links
-            builder = InlineKeyboardBuilder()
-            builder.row(
+            review_builder = InlineKeyboardBuilder()
+            review_builder.row(
                 LinkButton(
                     text="⭐ Оставить отзыв на 2ГИС",
                     url="https://2gis.ru/nabchelny/branches/4081924033218712/firm/70000001047304265/52.449828%2C55.738183/tab/reviews?m=52.448955%2C55.72034%2F12.71"
                 )
             )
-            builder.row(
+            review_builder.row(
                 LinkButton(
                     text="⭐ Оставить отзыв на Яндекс",
                     url="https://yandex.com/maps/org/i_tat/1247186021/reviews/?ll=49.160695%2C55.789136&tab=reviews&z=13.88"
                 )
             )
-            
-            confirmation_text = (
-                f"Спасибо за высокую оценку: {rating}! 🎉\n\n"
-                f"{thank_you_text}\n\n"
-                f"Если вам не сложно, оставьте, пожалуйста, отзыв на одной из площадок. "
-                f"Это очень поможет нам! 💙"
-            )
-            
-            keyboard_attachment = builder.as_markup()
-            
-            # Send message with keyboard using bot directly (not messenger_adapter)
-            from maxapi import Bot as MAXBot
-            from constants import MAX_BOT_TOKEN
-            
-            bot = MAXBot(token=MAX_BOT_TOKEN)
+
+            bot_instance = Bot(token=MAX_BOT_TOKEN)
             try:
-                await bot.send_message(
+                await bot_instance.send_message(
                     chat_id=chat_id,
-                    text=confirmation_text,
-                    attachments=[keyboard_attachment]
+                    text=(
+                        f"Спасибо за высокую оценку: {rating}! 🎉\n\n"
+                        f"{thank_you_text}\n\n"
+                        f"Если вам не сложно, оставьте, пожалуйста, отзыв на одной из площадок. "
+                        f"Это очень поможет нам! 💙"
+                    ),
+                    attachments=[review_builder.as_markup()]
                 )
             finally:
-                await bot.session.close()
-            
+                await bot_instance.session.close()
+
             logger.info(f"Sent review request for high rating: user_id={user.id}, rating={rating}")
-        
-        logger.info(
-            f"NPS rating processed successfully: user_id={user.id}, "
-            f"max_user_id={max_user_id}, rating={rating}, "
-            f"survey_type={survey_type.value}"
-        )
-        
+
     except Exception as e:
-        logger.error(
-            f"Unexpected error in NPS callback handler: {e}",
-            exc_info=True
-        )
+        logger.error(f"Unexpected error in NPS rating callback: {e}", exc_info=True)
 
 
 
@@ -446,79 +392,62 @@ async def handle_nps_feedback(
         await context.clear()
 
 
-@router.message_callback(F.callback.payload.startswith("nps_skip_feedback:"))
+@router.message_callback(NPSSkipFeedbackPayload.filter())
 async def handle_nps_skip_feedback(
     event: MessageCallback,
+    payload: NPSSkipFeedbackPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
     Handle "Skip" button press for feedback request.
-    
+
     Sends notification to staff without feedback comment.
-    
-    Callback data format: "nps_skip_feedback:{survey_type}:{rating}:{trigger_event_id}"
-    
-    Args:
-        event: MessageCallback from "Skip" button press
-        context: FSM context with rating data
-        session: Database session
-        messenger_adapter: MAX messenger adapter
     """
     try:
         chat_id = event.message.recipient.chat_id
         max_user_id = event.callback.user.user_id
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-        
-        # Parse callback data
-        parts = event.callback.payload.split(":")
-        
-        if len(parts) != 4:
-            logger.error(f"Invalid callback data format: {event.callback.payload}")
-            return
-        
-        survey_type_str = parts[1]
-        rating_str = parts[2]
-        trigger_event_id_str = parts[3]
-        
-        # Convert to proper types
+
+        survey_type_str = payload.survey_type
+        rating = payload.rating
+        trigger_event_id = payload.trigger_event_id
+
         try:
             survey_type = SurveyType(survey_type_str)
-            rating = int(rating_str)
-            trigger_event_id = int(trigger_event_id_str)
         except (ValueError, KeyError) as e:
-            logger.error(f"Invalid callback data values: {e}")
+            logger.error(f"Invalid payload values: {e}")
             return
-        
+
         # Get user from database
         stmt = select(User).where(User.max_user_id == max_user_id)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
-        
+
         if not user:
             logger.error(f"User not found for max_user_id: {max_user_id}")
             await context.clear()
             return
-        
+
         # Delete old message with "Skip" button
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
+
         # Clear FSM state
         await context.clear()
-        
-        # Send notification to staff about low rating WITHOUT feedback
+
+        # Notify staff about low rating WITHOUT feedback
         try:
             await notify_staff_about_low_rating(
                 session=session,
                 user=user,
                 rating=rating,
                 survey_type=survey_type,
-                feedback_comment=None,  # User skipped feedback
+                feedback_comment=None,
                 trigger_event_id=trigger_event_id
             )
         except Exception as e:
@@ -527,25 +456,16 @@ async def handle_nps_skip_feedback(
                 f"user_id={user.id}, rating={rating}, error={e}",
                 exc_info=True
             )
-        
-        # Send thank you message
+
         thank_you_text = format_thank_you_message()
-        confirmation_text = (
-            f"Спасибо за вашу оценку! 🙏\n\n"
-            f"{thank_you_text}"
-        )
-        
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=confirmation_text,
+            text=f"Спасибо за вашу оценку! 🙏\n\n{thank_you_text}",
             parse_mode="HTML"
         )
-        
+
         logger.info(f"NPS feedback skipped: user_id={user.id}, rating={rating}")
-        
+
     except Exception as e:
-        logger.error(
-            f"Unexpected error in NPS skip feedback handler: {e}",
-            exc_info=True
-        )
+        logger.error(f"Unexpected error in NPS skip feedback handler: {e}", exc_info=True)
         await context.clear()

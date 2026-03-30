@@ -40,20 +40,20 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0, show_done
             KeyboardButton(text="💰 Получить счёт", payload=MainMenuActionPayload(action="invoice").pack()),
             KeyboardButton(text="🆘 Техподдержка", payload=MainMenuActionPayload(action="support").pack())
         ],
-        # Второй ряд: Продление и Архив
+        # Второй ряд: Сметная консультация
         [
-            # KeyboardButton(text="🔄 Продление", payload=MainMenuActionPayload(action="renewal").pack()),
-            KeyboardButton(text="🗃️ Архив обращений", payload=MainMenuActionPayload(action="archive").pack())
+            KeyboardButton(text="💬 Сметная консультация", payload=MainMenuActionPayload(action="consultation").pack())
         ],
-        # Третий ряд: Профиль
+        # Последний ряд: Профиль и Архив
         [
-            KeyboardButton(text="👤 Мой профиль", payload=MainMenuActionPayload(action="profile").pack())
-        ]
+            KeyboardButton(text="👤 Мой профиль", payload=MainMenuActionPayload(action="profile").pack()),
+            KeyboardButton(text="🗃️ Архив", payload=MainMenuActionPayload(action="archive").pack())
+        ],
     ]
 
     # Если есть активные заявки, добавить кнопку с количеством
     if active_tickets_count > 0:
-        buttons.insert(1, [
+        buttons.insert(2, [
             KeyboardButton(
                 text=f"📥 Активные обращения ({active_tickets_count})",
                 payload=MainMenuActionPayload(action="active_tickets").pack()

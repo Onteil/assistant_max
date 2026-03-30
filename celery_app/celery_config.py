@@ -32,7 +32,8 @@ app = Celery(
         "celery_app.renewal_tasks",
         "celery_app.broadcast_tasks",
         "celery_app.ticket_notification_tasks",
-        "celery_app.work_mode_monitor_tasks"
+        "celery_app.work_mode_monitor_tasks",
+        "celery_app.retry_tasks",
     ],  # Автоматически импортирует escalation_tasks.py, nps_tasks.py, renewal_tasks.py, broadcast_tasks.py, ticket_notification_tasks.py и work_mode_monitor_tasks.py
 )
 
@@ -77,6 +78,11 @@ app.conf.beat_schedule = {
         "task": "celery_app.work_mode_monitor_tasks.check_work_mode_transition",
         "schedule": crontab(minute="*/2"),  # Run every 5 minutes to detect work mode changes
         "options": {"queue": "work_mode_monitor"},
+    },
+    "process-api-retry-queue": {
+        "task": "celery_app.retry_tasks.process_api_retry_queue",
+        "schedule": crontab(minute="*/5"),  # Run every 5 minutes
+        "options": {"queue": "api_retries"},
     },
 }
 

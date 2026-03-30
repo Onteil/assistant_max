@@ -292,7 +292,7 @@ async def initialize_admins() -> None:
             existing_user = await check_existing_user(session, max_user_id, tg_user_id, phone_number)
             
             if existing_user:
-                logger.info(f"  ⏭️  User record already exists (ID: {existing_user.id})")
+                logger.info(f"  ⏭️️  User record already exists (ID: {existing_user.id})")
                 user = existing_user
             else:
                 # Create user record
@@ -314,7 +314,7 @@ async def initialize_admins() -> None:
             existing_staff = await check_existing_admin(session, max_user_id, tg_user_id)
             
             if existing_staff:
-                logger.info(f"  ⏭️  Staff member already exists (ID: {existing_staff.id}, Role: {existing_staff.staff_role.value})")
+                logger.info(f"  ⏭️️  Staff member already exists (ID: {existing_staff.id}, Role: {existing_staff.staff_role.value})")
                 
                 # Update if needed
                 updated = False

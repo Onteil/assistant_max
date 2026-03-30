@@ -81,7 +81,7 @@ def fix_file(filepath: str):
         path.write_text(content, encoding='utf-8')
         print(f"✅ Fixed {filepath}")
     else:
-        print(f"⏭️  No changes needed in {filepath}")
+        print(f"⏭️️  No changes needed in {filepath}")
 
 def main():
     print("Fixing terminology in MAX bot handlers...")

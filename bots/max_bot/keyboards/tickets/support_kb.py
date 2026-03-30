@@ -161,7 +161,7 @@ def get_problem_description_keyboard() -> Keyboard:
     """
     buttons = [
         [KeyboardButton(
-            text="⏭️ Пропустить",
+            text="⏭️️ Пропустить",
             payload=KeyContextActionPayload(action="skip_description").pack()
         )],
         [KeyboardButton(

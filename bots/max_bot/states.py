@@ -45,6 +45,16 @@ class SupportStates(StatesGroup):
     adding_new_key = State()
 
 
+class ConsultationStates(StatesGroup):
+    """States for consultation request flow."""
+
+    selecting_organization = State()
+    adding_new_inn = State()
+    selecting_keys = State()
+    adding_new_key = State()
+    entering_description = State()
+
+
 class ProfileStates(StatesGroup):
     """States for profile management."""
 

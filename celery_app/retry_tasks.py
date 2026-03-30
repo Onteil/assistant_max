@@ -1,0 +1,141 @@
+"""
+Celery tasks for processing the i-TAT API retry queue.
+
+Periodically picks up pending retry records and re-executes the failed
+API calls. Notifies admins when retries are exhausted.
+
+Requirements: 25.3, 34.1-34.5
+"""
+
+import asyncio
+import logging
+import os
+import sys
+from typing import Any
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from celery import shared_task
+from celery.utils.log import get_task_logger
+
+logger = get_task_logger(__name__)
+
+
+@shared_task(
+    name="celery_app.retry_tasks.process_api_retry_queue",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    queue="api_retries",
+)
+def process_api_retry_queue(self) -> dict[str, Any]:
+    """
+    Process all pending i-TAT API retry records that are due.
+
+    Runs every 5 minutes via Celery Beat. For each due record:
+    - Calls the original API method with the stored payload
+    - Marks success or schedules next retry with exponential backoff
+    - After MAX_RETRY_ATTEMPTS, marks as failed and notifies admins
+
+    Returns:
+        Dict with processing statistics
+    """
+    loop = None
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(_process_api_retry_queue_async())
+        logger.info(
+            f"process_api_retry_queue completed: "
+            f"processed={result['processed']}, "
+            f"succeeded={result['succeeded']}, "
+            f"failed={result['failed']}, "
+            f"exhausted={result['exhausted']}"
+        )
+        return result
+
+    except Exception as exc:
+        logger.error(f"process_api_retry_queue task error: {exc}", exc_info=True)
+        try:
+            raise self.retry(exc=exc, countdown=60 * (2 ** self.request.retries))
+        except self.MaxRetriesExceededError:
+            logger.error("Max retries exceeded for process_api_retry_queue task itself")
+            return {"status": "error", "message": str(exc)}
+
+    finally:
+        if loop is not None:
+            try:
+                from constants import engine
+                loop.run_until_complete(engine.dispose())
+                loop.close()
+            except Exception as e:
+                logger.warning(f"Error closing event loop: {e}")
+
+
+async def _process_api_retry_queue_async() -> dict[str, Any]:
+    """
+    Async implementation of the retry queue processor.
+
+    Returns:
+        Dict with keys: processed, succeeded, failed, exhausted
+    """
+    from constants import AsyncSessionLocal
+    from services.i_tat_service import get_itat_client
+    from services.retry_service import (
+        MAX_RETRY_ATTEMPTS,
+        RetryStatus,
+        _escalate_failed_retry,
+        get_pending_retries,
+        process_retry,
+    )
+
+    stats = {"processed": 0, "succeeded": 0, "failed": 0, "exhausted": 0}
+
+    async with AsyncSessionLocal() as session:
+        pending = await get_pending_retries(session)
+
+        if not pending:
+            logger.debug("No pending retries to process")
+            return stats
+
+        logger.info(f"Processing {len(pending)} pending retry records")
+
+        api_client = get_itat_client()
+
+        try:
+            for retry_record in pending:
+                stats["processed"] += 1
+                try:
+                    success = await process_retry(session, retry_record, api_client)
+
+                    if success:
+                        stats["succeeded"] += 1
+                        logger.info(
+                            f"Retry succeeded: id={retry_record.id}, "
+                            f"operation={retry_record.operation}"
+                        )
+                    else:
+                        stats["failed"] += 1
+                        # Refresh record from DB to get updated status
+                        await session.refresh(retry_record)
+                        # Check if this attempt exhausted all retries
+                        if retry_record.status == RetryStatus.FAILED:
+                            stats["exhausted"] += 1
+                            await _escalate_failed_retry(session, retry_record)
+
+                except Exception as e:
+                    stats["failed"] += 1
+                    logger.error(
+                        f"Unexpected error processing retry id={retry_record.id}: {e}",
+                        exc_info=True,
+                    )
+
+            await session.commit()
+
+        finally:
+            await api_client.close()
+
+    return stats

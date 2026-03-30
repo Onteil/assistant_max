@@ -528,7 +528,8 @@ async def get_active_admins(
                 Staff_Member.is_active == True,
                 or_(
                     Staff_Member.tg_user_id.isnot(None),
-                    Staff_Member.max_user_id.isnot(None)
+                    Staff_Member.max_user_id.isnot(None),
+                    Staff_Member.max_chat_id.isnot(None)
                 )
             )
         )

@@ -411,6 +411,8 @@ async def get_client_closed_tickets_by_filter(
             query = query.where(Ticket.ticket_type == TicketType.INVOICE)
         elif filter_type == "technical_support":
             query = query.where(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+        elif filter_type == "consultation":
+            query = query.where(Ticket.ticket_type == TicketType.CONSULTATION)
         elif filter_type == "renewal":
             query = query.where(Ticket.ticket_type == TicketType.RENEWAL)
         # 'all' - no additional filter
@@ -453,9 +455,10 @@ async def format_client_archive_header(
     """
     filter_text_map = {
         "all": "Все типы",
-        "invoice": "💰 Счета",
-        "technical_support": "🔧 Техподдержка",
-        "renewal": "🔄 Продление"
+        "invoice": "💰 Счёт",
+        "technical_support": "🆘 ТП",
+        "consultation": "💬 Консультация",
+        "renewal": "🔄 Продление",
     }
     
     filter_text = filter_text_map.get(current_filter, "Все типы")
@@ -661,6 +664,7 @@ async def format_client_archived_ticket_details(
         ticket_type_map = {
             "invoice": "💰 Счет",
             "technical_support": "🔧 Техническая поддержка",
+            "consultation": "💬 Консультация",
             "renewal": "🔄 Продление подписки"
         }
         ticket_type_str = ticket_type_map.get(ticket.ticket_type.value, str(ticket.ticket_type.value))
@@ -781,20 +785,17 @@ async def format_client_archived_ticket_details(
 async def get_client_archive_keyboard_max(
     tickets: list[Ticket],
     current_filter: str = "all",
-    current_page: int = 0
+    current_page: int = 0,
+    all_tickets: list[Ticket] | None = None,
 ):
     """
     Generate inline keyboard for client archive list (MAX messenger version).
-    
-    Uses CallbackPayload classes for type-safe payload handling.
-    
+
     Args:
-        tickets: List of closed tickets (already filtered)
-        current_filter: Current filter type ('all', 'invoice', 'technical_support', 'renewal')
+        tickets: List of closed tickets (already filtered by type)
+        current_filter: Current filter type
         current_page: Current page number (0-indexed)
-    
-    Returns:
-        Keyboard with filters, ticket list, and pagination
+        all_tickets: Full unfiltered list — used to determine which filter buttons to show
     """
     try:
         from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
@@ -805,128 +806,109 @@ async def get_client_archive_keyboard_max(
             ArchiveClosePayload
         )
         from database.models import TicketType
-        
+
         buttons = []
-        
-        # Filter buttons row (3 buttons without "All")
-        filter_buttons = []
-        
-        # Invoice filter
-        invoice_text = "🟢 💰 Счёт" if current_filter == "invoice" else "💰 Счёт"
-        filter_buttons.append(
-            KeyboardButton(
-                text=invoice_text,
-                payload=ArchiveFilterPayload(filter_type="invoice").pack()
-            )
-        )
-        
-        # Technical Support filter
-        ts_text = "🟢 🔧 ТП" if current_filter == "technical_support" else "🔧 ТП"
-        filter_buttons.append(
-            KeyboardButton(
-                text=ts_text,
-                payload=ArchiveFilterPayload(filter_type="technical_support").pack()
-            )
-        )
-        
-        # Renewal filter
-        renewal_text = "🟢 🔄 Продление" if current_filter == "renewal" else "🔄 Продление"
-        filter_buttons.append(
-            KeyboardButton(
-                text=renewal_text,
-                payload=ArchiveFilterPayload(filter_type="renewal").pack()
-            )
-        )
-        
-        buttons.append(filter_buttons)
-        
-        # Pagination: 5 tickets per page
+
+        # Determine which types are present in all tickets
+        source = all_tickets if all_tickets is not None else tickets
+        _type_map = {
+            TicketType.INVOICE: "invoice",
+            TicketType.TECHNICAL_SUPPORT: "technical_support",
+            TicketType.CONSULTATION: "consultation",
+            TicketType.RENEWAL: "renewal",
+        }
+        present_types: set[str] = set()
+        for t in source:
+            fkey = _type_map.get(t.ticket_type)
+            if fkey:
+                present_types.add(fkey)
+
+        def _filter_btn(label: str, ftype: str) -> KeyboardButton:
+            text = f"[{label}]" if ftype == current_filter else label
+            return KeyboardButton(text=text, payload=ArchiveFilterPayload(filter_type=ftype).pack())
+
+        # Row 1: Все (always) + Счёт + ТП
+        row1 = [_filter_btn("Все", "all")]
+        if "invoice" in present_types:
+            row1.append(_filter_btn("💰 Счёт", "invoice"))
+        if "technical_support" in present_types:
+            row1.append(_filter_btn("🆘 ТП", "technical_support"))
+        buttons.append(row1)
+
+        # Row 2: Консультация + Продление (only if present)
+        row2 = []
+        if "consultation" in present_types:
+            row2.append(_filter_btn("💬 Консультация", "consultation"))
+        if "renewal" in present_types:
+            row2.append(_filter_btn("🔄 Продление", "renewal"))
+        if row2:
+            buttons.append(row2)
+
+        # Pagination
         TICKETS_PER_PAGE = 5
+        total_pages = max(1, (len(tickets) + TICKETS_PER_PAGE - 1) // TICKETS_PER_PAGE)
+        current_page = max(0, min(current_page, total_pages - 1))
         start_idx = current_page * TICKETS_PER_PAGE
         end_idx = start_idx + TICKETS_PER_PAGE
-        page_tickets = tickets[start_idx:end_idx]
-        
+
         # Ticket type emoji and name mapping
         ticket_type_info = {
-            TicketType.INVOICE: ("💰", "Получение счета"),
-            TicketType.TECHNICAL_SUPPORT: ("🔧", "Техподдержка"),
-            TicketType.RENEWAL: ("🔄", "Продление")
+            TicketType.INVOICE: ("💰", "Счёт"),
+            TicketType.TECHNICAL_SUPPORT: ("🆘", "ТП"),
+            TicketType.CONSULTATION: ("💬", "Консультация"),
+            TicketType.RENEWAL: ("🔄", "Продление"),
         }
-        
-        # Ticket buttons (5 rows)
-        for ticket in page_tickets:
-            # Get ticket type emoji and name
-            type_emoji, type_name = ticket_type_info.get(
-                ticket.ticket_type, 
-                ("📋", "Обращение")
-            )
-            
-            # Format date
-            date_str = ticket.closed_at.strftime("%d.%m") if ticket.closed_at else "Не указано"
-            
-            # Build ticket button text with type name
+
+        for ticket in tickets[start_idx:end_idx]:
+            type_emoji, type_name = ticket_type_info.get(ticket.ticket_type, ("📋", "Обращение"))
+            date_str = ticket.closed_at.strftime("%d.%m") if ticket.closed_at else "—"
             ticket_text = f"{type_emoji} {type_name} #{ticket.id} ({date_str})"
-            
-            # Single button per row
-            buttons.append([
-                KeyboardButton(
-                    text=ticket_text,
-                    payload=ViewArchivedTicketPayload(ticket_id=ticket.id).pack()
-                )
-            ])
-        
+            buttons.append([KeyboardButton(
+                text=ticket_text,
+                payload=ViewArchivedTicketPayload(ticket_id=ticket.id).pack()
+            )])
+
         # Pagination buttons
-        total_pages = (len(tickets) + TICKETS_PER_PAGE - 1) // TICKETS_PER_PAGE if tickets else 1
         if total_pages > 1:
             pagination_row = []
-            
+
+            if current_page > 1:
+                pagination_row.append(KeyboardButton(
+                    text="⏮️",
+                    payload=ArchivePaginationPayload(page=0, filter_type=current_filter).pack()
+                ))
             if current_page > 0:
-                pagination_row.append(
-                    KeyboardButton(
-                        text="◀️",
-                        payload=ArchivePaginationPayload(
-                            page=current_page - 1,
-                            filter_type=current_filter
-                        ).pack()
-                    )
-                )
-            
+                pagination_row.append(KeyboardButton(
+                    text="◀️",
+                    payload=ArchivePaginationPayload(page=current_page - 1, filter_type=current_filter).pack()
+                ))
+
+            pagination_row.append(KeyboardButton(
+                text=f"{current_page + 1}/{total_pages}",
+                payload=ArchivePaginationPayload(page=current_page, filter_type=current_filter).pack()
+            ))
+
             if current_page < total_pages - 1:
-                pagination_row.append(
-                    KeyboardButton(
-                        text="▶️",
-                        payload=ArchivePaginationPayload(
-                            page=current_page + 1,
-                            filter_type=current_filter
-                        ).pack()
-                    )
-                )
-            
-            if pagination_row:
-                buttons.append(pagination_row)
-        
-        # Back to main menu button
-        buttons.append([
-            KeyboardButton(
-                text="🏠 В меню",
-                payload=ArchiveClosePayload().pack()
-            )
-        ])
-        
-        keyboard = Keyboard(buttons=buttons, inline=True)
-        
-        logger.info(
-            f"Generated client archive keyboard (MAX): "
-            f"tickets_count={len(tickets)}, filter={current_filter}, "
-            f"page={current_page}"
-        )
-        
-        return keyboard
-        
+                pagination_row.append(KeyboardButton(
+                    text="▶️",
+                    payload=ArchivePaginationPayload(page=current_page + 1, filter_type=current_filter).pack()
+                ))
+            if current_page < total_pages - 2:
+                pagination_row.append(KeyboardButton(
+                    text="⏭️",
+                    payload=ArchivePaginationPayload(page=total_pages - 1, filter_type=current_filter).pack()
+                ))
+
+            buttons.append(pagination_row)
+
+        # Back to main menu
+        buttons.append([KeyboardButton(
+            text="🏠 В меню",
+            payload=ArchiveClosePayload().pack()
+        )])
+
+        return Keyboard(buttons=buttons, inline=True)
+
     except Exception as e:
-        logger.error(
-            f"Error generating client archive keyboard (MAX): "
-            f"filter={current_filter}, page={current_page}, error={e}",
-            exc_info=True
-        )
+        logger.error(f"Error generating client archive keyboard (MAX): filter={current_filter}, page={current_page}, error={e}", exc_info=True)
         raise

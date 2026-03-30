@@ -37,7 +37,12 @@ class TicketReassignmentWebhookPayload(BaseModel):
     @field_validator("ticket_ids")
     @classmethod
     def validate_ticket_ids_non_empty(cls, v: list[str]) -> list[str]:
-        """Validate that ticket_ids list is non-empty and contains valid IDs or 'all'."""
+        """Validate and normalize ticket_ids list.
+        
+        Strips non-numeric prefixes like 'TKT_' sent by 1C/CRM systems.
+        Examples: 'TKT_36' -> '36', 'TKT_37' -> '37', '36' -> '36'
+        """
+        import re
         if not v or len(v) == 0:
             raise ValueError("ticket_ids list must contain at least one ticket ID")
         
@@ -45,12 +50,16 @@ class TicketReassignmentWebhookPayload(BaseModel):
         if len(v) == 1 and v[0].strip().lower() == "all":
             return ["all"]
         
-        # Validate each ticket ID is non-empty
+        # Validate each ticket ID is non-empty and strip CRM prefixes
+        normalized = []
         for ticket_id in v:
             if not ticket_id or not ticket_id.strip():
                 raise ValueError("All ticket IDs must be non-empty strings")
+            tid = ticket_id.strip()
+            match = re.search(r'\d+$', tid)
+            normalized.append(match.group() if match else tid)
         
-        return [tid.strip() for tid in v]
+        return normalized
     
     @field_validator("messenger")
     @classmethod

@@ -36,9 +36,13 @@ from bots.max_bot.payloads import (
     ReplyToManagerPayload,
     TicketSelectPayload,
     TicketsPaginationPayload,
+    TicketsFilterPayload,
     ActiveTicketsClosePayload,
     TicketHistoryPayload,
     TicketHistoryBackPayload,
+    MessageTicketSelectPayload,
+    MessageTicketPaginationPayload,
+    MessageTicketCancelPayload,
     ArchiveFilterPayload,
     ArchivePaginationPayload,
     ViewArchivedTicketPayload,
@@ -62,11 +66,14 @@ from bots.max_bot.payloads import (
     ManagerArchivePaginationPayload,
     ManagerArchiveTicketPayload,
     ManagerArchiveBackPayload,
+    ManagerArchiveTypeFilterPayload,
     ManagerTicketActionPayload,
     ManagerToggleFocusPayload,
     ManagerEmployeeSelectPayload,
     ManagerTicketHistoryPayload,
     ManagerTicketHistoryBackPayload,
+    ManagerTakeFromMessagePayload,
+    ManagerFocusFromMessagePayload,
     AdminMenuPayload,
     AnalyticsPayload,
     EmployeeMenuPayload,
@@ -92,8 +99,14 @@ from bots.max_bot.payloads import (
     AdminCreationCancelPayload,
     BackupEscalationPayload,
     PhoneChangePayload,
+    ConsultationOrgSelectPayload,
+    ConsultationOrgPagePayload,
+    ConsultationOrgActionPayload,
+    ConsultationKeyTogglePayload,
+    ConsultationKeyPagePayload,
+    ConsultationKeyActionPayload,
 )
-from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates
+from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates
 
 from .common.callbacks import (
     process_back_navigation,
@@ -127,6 +140,20 @@ from .tickets.support import (
     process_new_key_for_support,
     cancel_support_flow,
 )
+from .tickets.consultation import (
+    cmd_consultation,
+    handle_consultation_org_select,
+    handle_consultation_org_page,
+    handle_consultation_org_action,
+    process_consultation_new_inn,
+    handle_consultation_key_toggle,
+    handle_consultation_key_page,
+    handle_consultation_key_action,
+    process_consultation_new_key,
+    process_consultation_description,
+    cancel_consultation_add_inn,
+    cancel_consultation_add_key,
+)
 from .user.archive import (
     handle_client_archive_button,
     handle_client_archive_filter,
@@ -137,12 +164,18 @@ from .user.archive import (
 from .user.active_tickets import (
     handle_select_ticket_callback,
     handle_tickets_pagination_callback,
+    handle_tickets_filter_callback,
     handle_close_active_tickets,
     handle_ticket_history,
     handle_ticket_history_back,
     handle_reply_to_manager_callback,
 )
 from .user.messages import route_client_message_to_ticket
+from .user.message_ticket_select import (
+    handle_message_ticket_select,
+    handle_message_ticket_pagination,
+    handle_message_ticket_cancel,
+)
 from .user.cancel import cmd_cancel, handle_cancel_button
 from .user.commands import (
     cmd_help,
@@ -162,6 +195,7 @@ from .staff.manager import (
     handle_tickets_back,
     handle_archive_filter,
     handle_archive_pagination,
+    handle_archive_type_filter,
     handle_archive_ticket_select,
     handle_archive_back,
     handle_archive_custom_search_input,
@@ -171,6 +205,8 @@ from .staff.manager import (
     handle_employee_selection,
     handle_manager_ticket_history,
     handle_manager_ticket_history_back,
+    handle_take_from_message_notification,
+    handle_focus_from_message_notification,
 )
 from .staff.admin_panel import (
     handle_admin_panel_action,
@@ -500,6 +536,10 @@ def create_user_router() -> Router:
     
     # Manager employee selection handler (for transfer)
     user_router.message_callback(ManagerEmployeeSelectPayload.filter())(handle_employee_selection)
+    
+    # Client message notification action handlers
+    user_router.message_callback(ManagerTakeFromMessagePayload.filter())(handle_take_from_message_notification)
+    user_router.message_callback(ManagerFocusFromMessagePayload.filter())(handle_focus_from_message_notification)
     
     # ========== Admin Panel Handlers ==========
     
@@ -898,6 +938,7 @@ def create_user_router() -> Router:
     
     # Manager archive handlers
     user_router.message_callback(ManagerArchiveFilterPayload.filter())(handle_archive_filter)
+    user_router.message_callback(ManagerArchiveTypeFilterPayload.filter())(handle_archive_type_filter)
     user_router.message_callback(ManagerArchivePaginationPayload.filter())(handle_archive_pagination)
     user_router.message_callback(ManagerArchiveTicketPayload.filter())(handle_archive_ticket_select)
     user_router.message_callback(ManagerArchiveBackPayload.filter())(handle_archive_back)
@@ -926,12 +967,16 @@ def create_user_router() -> Router:
     
     # ========== Active Tickets Callback Handlers ==========
     
+    user_router.message_callback(TicketsFilterPayload.filter())(handle_tickets_filter_callback)
     user_router.message_callback(TicketSelectPayload.filter())(handle_select_ticket_callback)
     user_router.message_callback(TicketsPaginationPayload.filter())(handle_tickets_pagination_callback)
     user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
     user_router.message_callback(TicketHistoryPayload.filter())(handle_ticket_history)
     user_router.message_callback(TicketHistoryBackPayload.filter())(handle_ticket_history_back)
     user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)
+    user_router.message_callback(MessageTicketSelectPayload.filter())(handle_message_ticket_select)
+    user_router.message_callback(MessageTicketPaginationPayload.filter())(handle_message_ticket_pagination)
+    user_router.message_callback(MessageTicketCancelPayload.filter())(handle_message_ticket_cancel)
 
     # ========== Profile Management Handlers ==========
     
@@ -1117,12 +1162,12 @@ def create_user_router() -> Router:
             if is_staff:
                 return
             
-            # Not staff and no active ticket - show helpful message to client
+            # Not staff and no active ticket - check active tickets count
             chat_id = event.message.recipient.chat_id
             max_user_id = event.message.sender.user_id
             
             logger.info(
-                f"Message from user {max_user_id} not routed (no active ticket) - showing help"
+                f"Message from user {max_user_id} not routed (no active ticket) - checking tickets"
             )
             
             # Check if user is registered
@@ -1140,24 +1185,54 @@ def create_user_router() -> Router:
                     parse_mode="HTML"
                 )
             else:
-                # Registered user but no active ticket
-                from services.ticket_service import get_user_active_tickets_count
-                active_tickets_count = await get_user_active_tickets_count(session, user.id)
+                from services.ticket_service import get_user_active_tickets
+                active_tickets = await get_user_active_tickets(session, user.id)
+                active_tickets_count = len(active_tickets)
                 
-                if active_tickets_count > 0:
-                    # User has active tickets but didn't select one
+                if active_tickets_count == 1:
+                    # Exactly one active ticket — auto-route immediately
+                    ticket = active_tickets[0]
+                    from bots.max_bot.handlers.user.messages import handle_client_message_to_ticket_max
+                    from database.models import TicketStatus
+                    await handle_client_message_to_ticket_max(
+                        event=event,
+                        session=session,
+                        ticket=ticket,
+                        messenger_adapter=messenger_adapter
+                    )
+                    from bots.max_bot.handlers.user.messages import get_message_type_name
+                    message_type_name = get_message_type_name(event)
                     await messenger_adapter.send_message(
                         chat_id=chat_id,
-                        text=(
-                            "💬 <b>Чтобы написать сообщение менеджеру:</b>\n\n"
-                            "1️⃣ Воспользуйтесь командой /start для вызова главного меню\n"
-                            "2️⃣ Выберите <b>\"📥 Активные обращения\"</b>\n"
-                            "3️⃣ Выберите нужную заявку\n"
-                            "4️⃣ Отправьте сообщение — оно будет доставлено менеджеру\n\n"
-                            f"У вас {active_tickets_count} активных обращений."
-                        ),
+                        text=f"✅ Ваше сообщение ({message_type_name}) отправлено менеджеру (Заявка #{ticket.id})",
                         parse_mode="HTML"
                     )
+                    logger.info(
+                        f"Auto-routed message to single active ticket: "
+                        f"user_id={max_user_id}, ticket_id={ticket.id}"
+                    )
+                
+                elif active_tickets_count > 1:
+                    # Multiple active tickets — store pending message metadata and show selection menu
+                    from bots.max_bot.keyboards.user.message_ticket_select_kb import get_message_ticket_select_keyboard
+                    from bots.max_bot.handlers.user.messages import extract_attachment_metadata
+                    from bots.max_bot.handlers.user.message_ticket_select import build_pending_data
+
+                    meta = extract_attachment_metadata(event)
+                    await context.update_data(**build_pending_data(meta))
+
+                    keyboard = await get_message_ticket_select_keyboard(active_tickets, page=0)
+                    await messenger_adapter.send_message(
+                        chat_id=chat_id,
+                        text="📋 <b>По какой заявке отправить сообщение?</b>",
+                        keyboard=keyboard,
+                        parse_mode="HTML"
+                    )
+                    logger.info(
+                        f"Showing ticket selection menu: user_id={max_user_id}, "
+                        f"tickets_count={active_tickets_count}"
+                    )
+                
                 else:
                     # User has no active tickets
                     await messenger_adapter.send_message(
@@ -1308,7 +1383,48 @@ def create_tickets_router() -> Router:
         SupportStates.adding_new_key
     )(process_new_key_for_support)
 
-    logger.info("Tickets router created with invoice and support handlers")
+    # ========== Consultation Flow Command ==========
+
+    logger.info(f"Registering /consultation handler: {cmd_consultation}")
+    tickets_router.message_created(Command("consultation"))(cmd_consultation)
+
+    # ========== Consultation Flow Callbacks ==========
+
+    tickets_router.message_callback(ConsultationOrgSelectPayload.filter())(handle_consultation_org_select)
+    tickets_router.message_callback(ConsultationOrgPagePayload.filter())(handle_consultation_org_page)
+    tickets_router.message_callback(ConsultationOrgActionPayload.filter())(handle_consultation_org_action)
+    tickets_router.message_callback(ConsultationKeyTogglePayload.filter())(handle_consultation_key_toggle)
+    tickets_router.message_callback(ConsultationKeyPagePayload.filter())(handle_consultation_key_page)
+    tickets_router.message_callback(ConsultationKeyActionPayload.filter())(handle_consultation_key_action)
+
+    # ========== Consultation Flow Message Handlers ==========
+
+    tickets_router.message_created(
+        F.message.body.text,
+        ConsultationStates.adding_new_inn
+    )(process_consultation_new_inn)
+
+    tickets_router.message_created(
+        F.message.body.text,
+        ConsultationStates.adding_new_key
+    )(process_consultation_new_key)
+
+    tickets_router.message_created(
+        ConsultationStates.entering_description
+    )(process_consultation_description)
+
+    # Cancel handlers for consultation add-new substeps (return to previous screen, not main menu)
+    tickets_router.message_callback(
+        RegistrationCancelPayload.filter(),
+        ConsultationStates.adding_new_inn
+    )(cancel_consultation_add_inn)
+
+    tickets_router.message_callback(
+        RegistrationCancelPayload.filter(),
+        ConsultationStates.adding_new_key
+    )(cancel_consultation_add_key)
+
+    logger.info("Tickets router created with invoice, support and consultation handlers")
     return tickets_router
 
 

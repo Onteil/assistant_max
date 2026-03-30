@@ -25,6 +25,33 @@ logger = logging.getLogger(__name__)
 USE_MOCK_API = os.getenv("USE_MOCK_ITAT_API", "false").lower() == "true"
 
 
+class RetryableAPIError(Exception):
+    """
+    Transient i-TAT API error that should be retried.
+
+    Raised for: connection errors, timeouts, 5xx server errors.
+    These are temporary failures where retrying may succeed.
+    """
+
+    def __init__(self, message: str, original_error: Exception | None = None):
+        super().__init__(message)
+        self.original_error = original_error
+
+
+class NonRetryableAPIError(Exception):
+    """
+    Permanent i-TAT API error that should NOT be retried.
+
+    Raised for: 4xx client errors (400, 404, 409, 422).
+    These indicate a logic/data problem — retrying won't help.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None, original_error: Exception | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.original_error = original_error
+
+
 class ITatAPIClient:
     """Клиент для работы с API 1С/CRM АЙТАТ"""
 
@@ -298,41 +325,62 @@ class ITatAPIClient:
                 response = await self.client.post(endpoint, **kwargs)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
-            
+
             response.raise_for_status()
-            
+
             # API использует стандартную кодировку, определяемую httpx автоматически
             return response.json()
-        
+
         except httpx.TimeoutException as e:
             logger.error(
                 f"API timeout: endpoint={endpoint}, method={method}",
                 exc_info=True
             )
-            raise
-        
-        except httpx.HTTPStatusError as e:
-            logger.error(
-                f"API HTTP error: endpoint={endpoint}, method={method}, "
-                f"status={e.response.status_code}, response={e.response.text}",
-                exc_info=True
-            )
-            raise
-        
+            raise RetryableAPIError(
+                f"Request timeout: {endpoint}", original_error=e
+            ) from e
+
         except httpx.ConnectError as e:
             logger.error(
                 f"API connection error: endpoint={endpoint}, method={method}",
                 exc_info=True
             )
+            raise RetryableAPIError(
+                f"Connection error: {endpoint}", original_error=e
+            ) from e
+
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            logger.error(
+                f"API HTTP error: endpoint={endpoint}, method={method}, "
+                f"status={status_code}, response={e.response.text}",
+                exc_info=True
+            )
+            # 5xx — server-side, transient → retryable
+            if status_code >= 500:
+                raise RetryableAPIError(
+                    f"Server error {status_code}: {endpoint}", original_error=e
+                ) from e
+            # 4xx — client-side, permanent → non-retryable
+            raise NonRetryableAPIError(
+                f"Client error {status_code}: {endpoint}",
+                status_code=status_code,
+                original_error=e
+            ) from e
+
+        except (RetryableAPIError, NonRetryableAPIError):
             raise
-        
+
         except Exception as e:
             logger.error(
                 f"Unexpected API error: endpoint={endpoint}, method={method}, "
                 f"error={e}",
                 exc_info=True
             )
-            raise
+            # Unknown errors treated as retryable (network stack issues, etc.)
+            raise RetryableAPIError(
+                f"Unexpected error: {type(e).__name__}: {e}", original_error=e
+            ) from e
 
     # ========== Блок: Системные методы ==========
 

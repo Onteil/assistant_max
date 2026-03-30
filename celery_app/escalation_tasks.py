@@ -59,6 +59,33 @@ from bots.tg_bot.utils.escalation_notifications import (
 logger = get_task_logger(__name__)
 
 
+async def _get_admin_max_chat_id(session: AsyncSession, admin: "Staff_Member") -> int | None:
+    """
+    Resolve MAX chat_id for a staff member using two fallback sources:
+    1. staff_members.max_chat_id (direct field)
+    2. max_messenger_data.max_chat_id looked up by max_user_id
+
+    Returns chat_id as int, or None if not found.
+    """
+    from database.models import MAX_Messenger_Data
+
+    # Priority 1: direct field on staff record
+    if admin.max_chat_id:
+        return int(admin.max_chat_id)
+
+    # Priority 2: lookup in MAX_Messenger_Data by max_user_id
+    if admin.max_user_id:
+        stmt = select(MAX_Messenger_Data.max_chat_id).where(
+            MAX_Messenger_Data.max_user_id == admin.max_user_id
+        )
+        result = await session.execute(stmt)
+        chat_id = result.scalar_one_or_none()
+        if chat_id is not None:
+            return int(chat_id)
+
+    return None
+
+
 # ========== Helper Functions ==========
 
 
@@ -527,6 +554,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация",
         TicketType.RENEWAL: "🔄 Продление"
     }
     
@@ -767,6 +795,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация",
         TicketType.RENEWAL: "🔄 Продление"
     }
     
@@ -1084,62 +1113,44 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
             
             for admin in admins:
                 try:
-                    # Send via MAX only
-                    if admin.max_user_id:
-                        # Get MAX chat_id from max_messenger_data table
-                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                            MAX_Messenger_Data.max_user_id == admin.max_user_id
-                        )
-                        result_chat = await session.execute(stmt_chat)
-                        chat_id = result_chat.scalar_one_or_none()
-                        
-                        if chat_id is None:
-                            logger.error(
-                                f"No MAX chat_id found for admin: admin_id={admin.id}, "
-                                f"max_user_id={admin.max_user_id}"
-                            )
-                            failed_count += 1
-                            failed_admins.append(admin.id)
-                            continue
-                        
-                        # Send via MAX
-                        try:
-                            await max_bot.send_message(
-                                chat_id=chat_id,
-                                text=notification_text
-                            )
-                            # Note: MAX doesn't support inline keyboards in the same way
-                            # Buttons would need to be sent separately or as attachment
-                            
-                            notified_count += 1
-                            logger.info(
-                                f"Admin notified via MAX: admin_id={admin.id}, "
-                                f"max_user_id={admin.max_user_id}, chat_id={chat_id}, "
-                                f"ticket_id={ticket_id}"
-                            )
-                        
-                        except MaxApiError as e:
-                            error_str = str(e).lower()
-                            if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
-                                logger.warning(
-                                    f"MAX bot blocked by admin: admin_id={admin.id}, "
-                                    f"max_user_id={admin.max_user_id}, chat_id={chat_id}"
-                                )
-                            else:
-                                logger.error(
-                                    f"MAX API error notifying admin: admin_id={admin.id}, "
-                                    f"error={e}"
-                                )
-                            failed_count += 1
-                            failed_admins.append(admin.id)
-                    
-                    else:
-                        logger.warning(
-                            f"Admin has no MAX messenger ID: admin_id={admin.id}"
+                    # Resolve chat_id: staff.max_chat_id first, then MAX_Messenger_Data
+                    chat_id = await _get_admin_max_chat_id(session, admin)
+
+                    if chat_id is None:
+                        logger.error(
+                            f"No MAX chat_id found for admin: admin_id={admin.id}, "
+                            f"max_user_id={admin.max_user_id}"
                         )
                         failed_count += 1
                         failed_admins.append(admin.id)
-                
+                        continue
+
+                    # Send via MAX
+                    try:
+                        await max_bot.send_message(
+                            chat_id=chat_id,
+                            text=notification_text
+                        )
+
+                        notified_count += 1
+                        logger.info(
+                            f"Admin notified via MAX: admin_id={admin.id}, "
+                            f"chat_id={chat_id}, ticket_id={ticket_id}"
+                        )
+
+                    except MaxApiError as e:
+                        error_str = str(e).lower()
+                        if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                            logger.warning(
+                                f"MAX bot blocked by admin: admin_id={admin.id}, chat_id={chat_id}"
+                            )
+                        else:
+                            logger.error(
+                                f"MAX API error notifying admin: admin_id={admin.id}, error={e}"
+                            )
+                        failed_count += 1
+                        failed_admins.append(admin.id)
+
                 except Exception as e:
                     failed_count += 1
                     failed_admins.append(admin.id)
@@ -1148,12 +1159,12 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                         f"ticket_id={ticket_id}, error={str(e)}"
                     )
                     # Continue notifying other admins (FR-1.3.4)
-        
+
         finally:
             # Close bot session
             if max_bot and max_bot.session:
                 await max_bot.session.close()
-        
+
         # Send to escalation channels based on ticket type (MAX only)
         channels_notified = []
         
@@ -1528,15 +1539,15 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 "ticket_id": ticket_id
             }
         
-        # Verify ticket type
-        if ticket.ticket_type != TicketType.TECHNICAL_SUPPORT:
+        # Verify ticket type — CONSULTATION uses the same monitoring as TECHNICAL_SUPPORT
+        if ticket.ticket_type not in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
             logger.warning(
-                f"Ticket is not TECHNICAL_SUPPORT: ticket_id={ticket_id}, "
+                f"Ticket is not TECHNICAL_SUPPORT or CONSULTATION: ticket_id={ticket_id}, "
                 f"type={ticket.ticket_type.value}"
             )
             return {
                 "status": "skipped",
-                "message": "Not a technical support ticket",
+                "message": "Not a technical support or consultation ticket",
                 "ticket_id": ticket_id
             }
         
@@ -1603,6 +1614,7 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
         ticket_type_names = {
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+            TicketType.CONSULTATION: "💬 Консультация",
             TicketType.RENEWAL: "🔄 Продление"
         }
         
@@ -1610,9 +1622,17 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
         user_name = ticket.user.full_name if ticket.user else "Неизвестно"
         user_phone = ticket.user.phone_number if ticket.user else "Не указано"
         
+        # Header and reason differ by ticket type
+        if ticket.ticket_type == TicketType.CONSULTATION:
+            header = f"⚠️ <b>Уведомление о заявке на консультацию #{ticket.id}</b>\n\n"
+            reason = "Заявка не была взята в работу сметным тех. специалистом в течение определенного времени"
+        else:
+            header = f"⚠️ <b>Уведомление о заявке техподдержки #{ticket.id}</b>\n\n"
+            reason = "Заявка не была взята в работу сотрудниками техподдержки в течение определенного времени"
+        
         notification_text = (
-            f"⚠️ <b>Уведомление о заявке техподдержки #{ticket.id}</b>\n\n"
-            f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки в течение 10 минут\n\n"
+            f"{header}"
+            f"📋 <b>Причина:</b> {reason}\n\n"
             f"<b>Тип:</b> {ticket_type}\n"
             f"<b>Клиент:</b> {user_name}\n"
             f"<b>Телефон:</b> {user_phone}\n"
@@ -1647,6 +1667,18 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
         # Initialize MAX bot
         max_bot = None
         
+        # Build "К заявке" button
+        from bots.max_bot.payloads import ManagerViewTicketPayload
+        from maxapi.types.attachments.buttons import CallbackButton
+        from maxapi.types.attachments.attachment import ButtonsPayload
+
+        view_ticket_buttons = [[
+            CallbackButton(
+                text="📋 К заявке",
+                payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+            )
+        ]]
+        
         try:
             from constants import MAX_BOT_TOKEN
             max_bot = MAXBot(
@@ -1656,60 +1688,45 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
             
             for admin in admins:
                 try:
-                    # Send via MAX only
-                    if admin.max_user_id:
-                        # Get MAX chat_id from max_messenger_data table
-                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                            MAX_Messenger_Data.max_user_id == admin.max_user_id
-                        )
-                        result_chat = await session.execute(stmt_chat)
-                        chat_id = result_chat.scalar_one_or_none()
-                        
-                        if chat_id is None:
-                            logger.error(
-                                f"No MAX chat_id found for admin: admin_id={admin.id}, "
-                                f"max_user_id={admin.max_user_id}"
-                            )
-                            failed_count += 1
-                            failed_admins.append(admin.id)
-                            continue
-                        
-                        # Send via MAX
-                        try:
-                            await max_bot.send_message(
-                                chat_id=chat_id,
-                                text=notification_text
-                            )
-                            
-                            notified_count += 1
-                            logger.info(
-                                f"Admin notified about technical support ticket: "
-                                f"admin_id={admin.id}, max_user_id={admin.max_user_id}, "
-                                f"chat_id={chat_id}, ticket_id={ticket_id}"
-                            )
-                        
-                        except MaxApiError as e:
-                            error_str = str(e).lower()
-                            if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
-                                logger.warning(
-                                    f"MAX bot blocked by admin: admin_id={admin.id}, "
-                                    f"max_user_id={admin.max_user_id}, chat_id={chat_id}"
-                                )
-                            else:
-                                logger.error(
-                                    f"MAX API error notifying admin: admin_id={admin.id}, "
-                                    f"error={e}"
-                                )
-                            failed_count += 1
-                            failed_admins.append(admin.id)
-                    
-                    else:
-                        logger.warning(
-                            f"Admin has no MAX messenger ID: admin_id={admin.id}"
+                    # Resolve chat_id: staff.max_chat_id first, then MAX_Messenger_Data
+                    chat_id = await _get_admin_max_chat_id(session, admin)
+
+                    if chat_id is None:
+                        logger.error(
+                            f"No MAX chat_id found for admin: admin_id={admin.id}, "
+                            f"max_user_id={admin.max_user_id}"
                         )
                         failed_count += 1
                         failed_admins.append(admin.id)
-                
+                        continue
+
+                    # Send via MAX
+                    try:
+                        await max_bot.send_message(
+                            chat_id=chat_id,
+                            text=notification_text,
+                            attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
+                        )
+
+                        notified_count += 1
+                        logger.info(
+                            f"Admin notified about technical support ticket: "
+                            f"admin_id={admin.id}, chat_id={chat_id}, ticket_id={ticket_id}"
+                        )
+
+                    except MaxApiError as e:
+                        error_str = str(e).lower()
+                        if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                            logger.warning(
+                                f"MAX bot blocked by admin: admin_id={admin.id}, chat_id={chat_id}"
+                            )
+                        else:
+                            logger.error(
+                                f"MAX API error notifying admin: admin_id={admin.id}, error={e}"
+                            )
+                        failed_count += 1
+                        failed_admins.append(admin.id)
+
                 except Exception as e:
                     failed_count += 1
                     failed_admins.append(admin.id)
@@ -1761,7 +1778,8 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                     try:
                         await max_bot.send_message(
                             chat_id=int(duty_channel),
-                            text=notification_text
+                            text=notification_text,
+                            attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
                         )
                         channels_notified.append("escalation_duty_channel (MAX)")
                         logger.info(

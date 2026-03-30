@@ -35,6 +35,7 @@ from bots.max_bot.payloads import (
     MainMenuActionPayload,
 )
 from database.models import Staff_Member, StaffRole, Action_Log, ActionType
+from services.itat_retry_helper import call_itat_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -587,33 +588,19 @@ async def handle_employee_role_selection(
         await session.flush()
         
         # Call i-TAT API to create staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee_max_id,
                 action="upsert",
                 role=staff_role.value,
                 position=employee_position,
-                is_active=True
-            )
-            logger.info(f"i-TAT API staff creation successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff creation error: {api_error}", exc_info=True)
-            # Show error to admin for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка создания сотрудника через i-TAT API</b>\n\n"
-                     f"<b>Метод:</b> POST /system/staff/update\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>Сотрудник создан локально, но не синхронизирован с 1С.</i>",
-                parse_mode="HTML"
-            )
-            # Continue with local creation even if API fails
+                is_active=True,
+            ),
+            user_id=None,  # Staff member, no FK to users table
+        )
         
         # Log action to audit
         from bots.max_bot.utils.audit_logger import log_staff_created
@@ -1003,6 +990,22 @@ async def handle_employee_action(
                 session=session,
                 messenger_adapter=messenger_adapter
             )
+        elif payload.action == "set_estimate_specialist":
+            await handle_set_estimate_specialist(
+                event=event,
+                payload=payload,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+        elif payload.action == "unset_estimate_specialist":
+            await handle_unset_estimate_specialist(
+                event=event,
+                payload=payload,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
         elif payload.action == "backup_config":
             # Route to backup manager config
             backup_payload = BackupManagerPayload(action="config", employee_id=payload.employee_id)
@@ -1105,6 +1108,7 @@ async def show_employee_details(
 
         # Add duty support status
         details_text += f"\n⚙️ <b>Дежурный аккаунт ТП:</b> {'✅ Да' if is_duty_support else '❌ Нет'}\n"
+        details_text += f"📐 <b>Сметный тех. специалист:</b> {'✅ Да' if employee.is_estimate_tech_specialist else '❌ Нет'}\n"
 
         # Add backup managers info
         if employee.backup_manager_1_id or employee.backup_manager_2_id:
@@ -1169,6 +1173,22 @@ async def show_employee_details(
                     KeyboardButton(
                         text="⚙️ Назначить дежурным ТП",
                         payload=EmployeeActionPayload(action="set_duty_support", employee_id=staff_id).pack()
+                    )
+                ])
+
+            # Estimate tech specialist button
+            if employee.is_estimate_tech_specialist:
+                buttons.append([
+                    KeyboardButton(
+                        text="📐 Снять флаг сметного специалиста",
+                        payload=EmployeeActionPayload(action="unset_estimate_specialist", employee_id=staff_id).pack()
+                    )
+                ])
+            else:
+                buttons.append([
+                    KeyboardButton(
+                        text="📐 Назначить сметным специалистом",
+                        payload=EmployeeActionPayload(action="set_estimate_specialist", employee_id=staff_id).pack()
                     )
                 ])
 
@@ -1415,34 +1435,20 @@ async def handle_employee_name_edit_input(
         old_name = employee.full_name
         employee.full_name = new_name
         
-        # Call i-TAT API to update staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        # Call i-TAT API to update staff name
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee.max_user_id,
                 action="upsert",
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=employee.position,
-                is_active=employee.is_active
-            )
-            logger.info(f"i-TAT API staff update successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff update error (name change): {api_error}", exc_info=True)
-            # Show error to admin for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка обновления имени сотрудника через i-TAT API</b>\n\n"
-                     f"<b>Метод:</b> POST /system/staff/update\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>Имя обновлено локально, но не синхронизировано с 1С.</i>",
-                parse_mode="HTML"
-            )
-            # Continue with local update even if API fails
+                is_active=employee.is_active,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         
@@ -1688,34 +1694,20 @@ async def handle_employee_role_change(
         new_role = StaffRole(payload.role)
         employee.staff_role = new_role
         
-        # Call i-TAT API to update staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        # Call i-TAT API to update staff role
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee.max_user_id,
                 action="upsert",
                 role=new_role.value,
                 position=employee.position,
-                is_active=employee.is_active
-            )
-            logger.info(f"i-TAT API staff update successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff update error (role change): {api_error}", exc_info=True)
-            # Show error to admin for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка обновления роли сотрудника через i-TAT API</b>\n\n"
-                     f"<b>Метод:</b> POST /system/staff/update\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>Роль обновлена локально, но не синхронизирована с 1С.</i>",
-                parse_mode="HTML"
-            )
-            # Continue with local update even if API fails
+                is_active=employee.is_active,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         
@@ -1977,19 +1969,17 @@ async def handle_confirm_deactivate(
         employee.is_active = False
         
         # Call i-TAT API to deactivate staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee.max_user_id,
                 action="deactivate",
-                is_active=False
-            )
-            logger.info(f"i-TAT API staff deactivation successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff deactivation error: {api_error}")
-            # Continue with local update even if API fails
+                is_active=False,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         
@@ -2120,21 +2110,19 @@ async def handle_activate_employee(
         employee.is_active = True
         
         # Call i-TAT API to activate staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee.max_user_id,
                 action="upsert",
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=employee.position,
-                is_active=True
-            )
-            logger.info(f"i-TAT API staff activation successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff activation error: {api_error}")
-            # Continue with local update even if API fails
+                is_active=True,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         
@@ -2352,22 +2340,20 @@ async def handle_employee_signature_edit_input(
         old_signature = employee.position
         employee.position = new_signature
         
-        # Call i-TAT API to update staff
-        from services.i_tat_service import get_itat_client
-        try:
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        # Call i-TAT API to update staff signature
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
                 user_id=employee.max_user_id,
                 action="upsert",
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=new_signature,
-                is_active=employee.is_active
-            )
-            logger.info(f"i-TAT API staff update successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff update error: {api_error}")
-            # Continue with local update even if API fails
+                is_active=employee.is_active,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         
@@ -2633,6 +2619,183 @@ async def handle_unset_duty_support(
             parse_mode="HTML"
         )
 
+
+async def handle_set_estimate_specialist(
+    event: MessageCallback,
+    payload: EmployeeActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Set as Estimate Tech Specialist" button press.
+
+    Sets is_estimate_tech_specialist=True on the employee.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к управлению сотрудниками.",
+                parse_mode="HTML"
+            )
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        stmt = select(Staff_Member).where(Staff_Member.id == payload.employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id, text="❌ Сотрудник не найден.", parse_mode="HTML"
+            )
+            return
+
+        if not employee.is_active:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Нельзя изменить флаг деактивированного сотрудника.",
+                parse_mode="HTML"
+            )
+            return
+
+        employee.is_estimate_tech_specialist = True
+        await session.commit()
+
+        action_log = Action_Log(
+            action_type=ActionType.STAFF_UPDATED,
+            staff_id=admin.id,
+            action_details={
+                "action": "set_estimate_specialist",
+                "employee_id": payload.employee_id,
+                "employee_name": employee.full_name
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"✅ Сотрудник <b>{employee.full_name}</b> назначен сметным тех. специалистом",
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"Administrator {max_user_id} set employee {payload.employee_id} as estimate specialist"
+        )
+
+    except Exception as e:
+        logger.error(f"Error setting estimate specialist: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при назначении.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_unset_estimate_specialist(
+    event: MessageCallback,
+    payload: EmployeeActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Unset Estimate Tech Specialist" button press.
+
+    Sets is_estimate_tech_specialist=False on the employee.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к управлению сотрудниками.",
+                parse_mode="HTML"
+            )
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        stmt = select(Staff_Member).where(Staff_Member.id == payload.employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id, text="❌ Сотрудник не найден.", parse_mode="HTML"
+            )
+            return
+
+        employee.is_estimate_tech_specialist = False
+        await session.commit()
+
+        action_log = Action_Log(
+            action_type=ActionType.STAFF_UPDATED,
+            staff_id=admin.id,
+            action_details={
+                "action": "unset_estimate_specialist",
+                "employee_id": payload.employee_id,
+                "employee_name": employee.full_name
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"✅ Флаг сметного специалиста снят с сотрудника <b>{employee.full_name}</b>",
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"Administrator {max_user_id} unset estimate specialist from employee {payload.employee_id}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error unsetting estimate specialist: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при снятии флага.",
+            parse_mode="HTML"
+        )
 
 
 # ========== Backup Managers ==========
@@ -3044,41 +3207,39 @@ async def handle_backup_manager_assignment(
             return
         
         # Call i-TAT API to update staff with reserves
-        from services.i_tat_service import get_itat_client
-        try:
-            # Collect current reserves
-            reserves = []
-            if employee.backup_manager_1_id:
-                backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
-                backup1_result = await session.execute(backup1_stmt)
-                backup1 = backup1_result.scalar_one_or_none()
-                if backup1 and backup1.max_user_id:
-                    reserves.append(backup1.max_user_id)
-            
-            if employee.backup_manager_2_id:
-                backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
-                backup2_result = await session.execute(backup2_stmt)
-                backup2 = backup2_result.scalar_one_or_none()
-                if backup2 and backup2.max_user_id:
-                    reserves.append(backup2.max_user_id)
-            
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        # Collect current reserves
+        reserves = []
+        if employee.backup_manager_1_id:
+            backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
+            backup1_result = await session.execute(backup1_stmt)
+            backup1 = backup1_result.scalar_one_or_none()
+            if backup1 and backup1.max_user_id:
+                reserves.append(backup1.max_user_id)
+
+        if employee.backup_manager_2_id:
+            backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
+            backup2_result = await session.execute(backup2_stmt)
+            backup2 = backup2_result.scalar_one_or_none()
+            if backup2 and backup2.max_user_id:
+                reserves.append(backup2.max_user_id)
+
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
-                user_id=employee.max_user_id,
+                user_id=employee.max_user_id,  # staff max_user_id
                 action="upsert",
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=employee.position,
                 is_active=employee.is_active,
-                reserves=reserves
-            )
-            logger.info(f"i-TAT API staff reserves update successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff reserves update error: {api_error}")
-            # Continue with local update even if API fails
-        
+                reserves=reserves,
+            ),
+            user_id=None,
+        )
+
         await session.commit()
-        
+
         # Log action
         action_log = Action_Log(
             action_type=ActionType.STAFF_UPDATED,
@@ -3088,8 +3249,8 @@ async def handle_backup_manager_assignment(
                 "employee_id": payload.employee_id,
                 "slot": payload.slot,
                 "backup_manager_id": payload.backup_id,
-                "backup_manager_name": backup_manager.full_name
-            }
+                "backup_manager_name": backup_manager.full_name,
+            },
         )
         session.add(action_log)
         await session.commit()
@@ -3185,38 +3346,36 @@ async def handle_backup_manager_removal(
             employee.backup_manager_2_id = None
         
         # Call i-TAT API to update staff with updated reserves
-        from services.i_tat_service import get_itat_client
-        try:
-            # Collect current reserves after removal
-            reserves = []
-            if employee.backup_manager_1_id:
-                backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
-                backup1_result = await session.execute(backup1_stmt)
-                backup1 = backup1_result.scalar_one_or_none()
-                if backup1 and backup1.max_user_id:
-                    reserves.append(backup1.max_user_id)
-            
-            if employee.backup_manager_2_id:
-                backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
-                backup2_result = await session.execute(backup2_stmt)
-                backup2 = backup2_result.scalar_one_or_none()
-                if backup2 and backup2.max_user_id:
-                    reserves.append(backup2.max_user_id)
-            
-            itat_client = get_itat_client()
-            api_response = await itat_client.update_staff(
+        # Collect current reserves after removal
+        reserves = []
+        if employee.backup_manager_1_id:
+            backup1_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_1_id)
+            backup1_result = await session.execute(backup1_stmt)
+            backup1 = backup1_result.scalar_one_or_none()
+            if backup1 and backup1.max_user_id:
+                reserves.append(backup1.max_user_id)
+
+        if employee.backup_manager_2_id:
+            backup2_stmt = select(Staff_Member).where(Staff_Member.id == employee.backup_manager_2_id)
+            backup2_result = await session.execute(backup2_stmt)
+            backup2 = backup2_result.scalar_one_or_none()
+            if backup2 and backup2.max_user_id:
+                reserves.append(backup2.max_user_id)
+
+        await call_itat_with_retry(
+            session=session,
+            operation="update_staff",
+            payload=dict(
                 messenger="max",
-                user_id=employee.max_user_id,
+                user_id=employee.max_user_id,  # staff max_user_id
                 action="upsert",
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=employee.position,
                 is_active=employee.is_active,
-                reserves=reserves
-            )
-            logger.info(f"i-TAT API staff reserves update successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API staff reserves update error: {api_error}")
-            # Continue with local update even if API fails
+                reserves=reserves,
+            ),
+            user_id=None,
+        )
         
         await session.commit()
         

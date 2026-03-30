@@ -233,7 +233,7 @@ async def handle_nps_rating_callback(
             
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(
-                    text="⏭️ Пропустить",
+                    text="⏭️️ Пропустить",
                     callback_data=f"nps_skip_feedback:{survey_type.value}:{rating}:{trigger_event_id}"
                 )]
             ])

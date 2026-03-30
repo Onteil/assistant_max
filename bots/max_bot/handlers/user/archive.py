@@ -94,68 +94,54 @@ async def show_archive_list(
             )
             return
         
-        # Default filter: invoice (first filter button)
-        current_filter = "invoice"
+        # Default filter: all
+        current_filter = "all"
         current_page = 0
-        
-        # Get closed tickets by filter
-        tickets = await client_service.get_client_closed_tickets_by_filter(
+
+        # Get all closed tickets (for filter visibility)
+        all_tickets = await client_service.get_client_closed_tickets_by_filter(
             session=session,
             user_id=user.id,
-            filter_type=current_filter
+            filter_type="all"
         )
-        
-        if not tickets:
-            # Try to get any closed tickets
-            all_tickets = await client_service.get_client_closed_tickets_by_filter(
-                session=session,
-                user_id=user.id,
-                filter_type="all"
+
+        if not all_tickets:
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            from bots.max_bot.payloads import ArchiveClosePayload
+
+            keyboard = Keyboard(
+                buttons=[[KeyboardButton(text="🏠 В меню", payload=ArchiveClosePayload().pack())]],
+                inline=True
             )
-            
-            if not all_tickets:
-                # No closed tickets - show message with "В меню" button
-                from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-                from bots.max_bot.payloads import ArchiveClosePayload
-                
-                keyboard = Keyboard(
-                    buttons=[
-                        [
-                            KeyboardButton(
-                                text="🏠 В меню",
-                                payload=ArchiveClosePayload().pack()
-                            )
-                        ]
-                    ],
-                    inline=True
-                )
-                
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text="📋 У вас пока нет закрытых обращений",
-                    keyboard=keyboard,
-                    parse_mode="HTML"
-                )
-                logger.info(f"Client {user.id} has no closed tickets")
-                return
-        
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="📋 У вас пока нет закрытых обращений",
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+            logger.info(f"Client {user.id} has no closed tickets")
+            return
+
+        tickets = all_tickets  # "all" filter — no additional filtering
+
         # Save filter to context
         await context.update_data(
             client_archive_filter=current_filter,
             client_archive_page=current_page
         )
-        
+
         # Format header text
         header_text = await client_service.format_client_archive_header(
             tickets_count=len(tickets),
             current_filter=current_filter
         )
-        
+
         # Generate inline keyboard
         keyboard = await client_service.get_client_archive_keyboard_max(
             tickets=tickets,
             current_filter=current_filter,
-            current_page=current_page
+            current_page=current_page,
+            all_tickets=all_tickets,
         )
         
         # Send message with header and keyboard
@@ -220,57 +206,60 @@ async def handle_client_archive_filter(
             return
         
         new_filter = payload.filter_type
-        
+
         # Switch to the new filter
         current_filter = new_filter
         current_page = 0  # Reset to first page
-        
-        # Get closed tickets by filter
+
+        # Get all tickets (for filter visibility) and filtered tickets
+        all_tickets = await client_service.get_client_closed_tickets_by_filter(
+            session=session,
+            user_id=user.id,
+            filter_type="all"
+        )
         tickets = await client_service.get_client_closed_tickets_by_filter(
             session=session,
             user_id=user.id,
             filter_type=current_filter
         )
-        
+
         # Save filter to context
         await context.update_data(
             client_archive_filter=current_filter,
             client_archive_page=current_page
         )
-        
+
         # Format header text
         header_text = await client_service.format_client_archive_header(
             tickets_count=len(tickets),
             current_filter=current_filter
         )
-        
+
         # Generate inline keyboard
         keyboard = await client_service.get_client_archive_keyboard_max(
             tickets=tickets,
             current_filter=current_filter,
-            current_page=current_page
+            current_page=current_page,
+            all_tickets=all_tickets,
         )
-        
-        # Get message ID for editing
+
+        # Replace message (delete + send)
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-        
-        # Edit message
         if message_id:
-            await messenger_adapter.edit_message(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=header_text,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-        else:
-            logger.warning(f"No message_id found for editing archive filter")
-        
-        logger.info(
-            f"Client {user.id} changed archive filter to {current_filter} "
-            f"(tickets_count={len(tickets)})"
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=header_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
         )
-        
+
+        logger.info(f"Client {user.id} changed archive filter to {current_filter} (tickets_count={len(tickets)})")
+
     except Exception as e:
         logger.error(f"Error handling archive filter: max_user_id={max_user_id}, error={e}", exc_info=True)
 
@@ -316,56 +305,59 @@ async def handle_client_archive_pagination(
         
         page = payload.page
         filter_type = payload.filter_type
-        
-        # Get tickets by filter
+
+        # Get all tickets (for filter visibility) and filtered tickets
+        all_tickets = await client_service.get_client_closed_tickets_by_filter(
+            session=session,
+            user_id=user.id,
+            filter_type="all"
+        )
         tickets = await client_service.get_client_closed_tickets_by_filter(
             session=session,
             user_id=user.id,
             filter_type=filter_type
         )
-        
+
         # Update context
         await context.update_data(
             client_archive_filter=filter_type,
             client_archive_page=page
         )
-        
+
         # Format header text
         header_text = await client_service.format_client_archive_header(
             tickets_count=len(tickets),
             current_filter=filter_type
         )
-        
+
         # Generate inline keyboard
         keyboard = await client_service.get_client_archive_keyboard_max(
             tickets=tickets,
             current_filter=filter_type,
-            current_page=page
+            current_page=page,
+            all_tickets=all_tickets,
         )
-        
-        # Get message ID for editing
+
+        # Replace message (delete + send)
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-        
-        # Edit message
         if message_id:
-            await messenger_adapter.edit_message(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=header_text,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
-        else:
-            logger.warning(f"No message_id found for editing archive pagination")
-        
-        logger.info(
-            f"Client archive pagination: user={user.id}, filter={filter_type}, page={page}"
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=header_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
         )
-        
+
+        logger.info(f"Client archive pagination: user={user.id}, filter={filter_type}, page={page}")
+
     except Exception as e:
         logger.error(
-            f"Error paginating client archive: max_user_id={max_user_id}, "
-            f"page={callback_data.get('page')}, error={e}",
+            f"Error paginating client archive: max_user_id={max_user_id}, error={e}",
             exc_info=True
         )
 
@@ -598,20 +590,10 @@ async def handle_client_archive_close(
             active_tickets_count = await get_user_active_tickets_count(session, user.id)
             keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
             
-            main_menu_text = (
-                "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                "Здесь вы можете:\n\n"
-                "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                "Выберите нужное действие:"
-            )
-            
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=main_menu_text,
+                text=MAIN_MENU_WELCOME_TEXT,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )

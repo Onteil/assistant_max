@@ -140,14 +140,15 @@ async def get_employee_active_tickets(
                 type_map = {
                     "invoice": TicketType.INVOICE,
                     "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "consultation": TicketType.CONSULTATION,
                     "renewal": TicketType.RENEWAL
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # TECHNICAL_SUPPORT sees all TECHNICAL_SUPPORT tickets (with or without filter)
+        # TECHNICAL_SUPPORT sees TECHNICAL_SUPPORT and CONSULTATION tickets
         elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
-            logger.info(f"Technical support {employee_id} viewing TECHNICAL_SUPPORT tickets (filter={ticket_type_filter})")
-            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+            logger.info(f"Technical support {employee_id} viewing TECHNICAL_SUPPORT+CONSULTATION tickets (filter={ticket_type_filter})")
+            conditions.append(Ticket.ticket_type.in_([TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION]))
         # Other roles see only assigned tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
@@ -156,6 +157,7 @@ async def get_employee_active_tickets(
                 type_map = {
                     "invoice": TicketType.INVOICE,
                     "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "consultation": TicketType.CONSULTATION,
                     "renewal": TicketType.RENEWAL
                 }
                 if ticket_type_filter in type_map:
@@ -604,6 +606,12 @@ async def get_available_employees_for_transfer(
                 StaffRole.DUTY_ENGINEER,
                 StaffRole.ADMINISTRATOR
             ]
+        elif ticket.ticket_type == TicketType.CONSULTATION:
+            # Consultation tickets handled by TECHNICAL_SUPPORT with estimate specialist flag
+            allowed_roles = [
+                StaffRole.TECHNICAL_SUPPORT,
+                StaffRole.ADMINISTRATOR
+            ]
         else:
             # For other ticket types (e.g., RENEWAL), allow all roles
             allowed_roles = [
@@ -643,6 +651,41 @@ async def get_available_employees_for_transfer(
             f"ticket_id={ticket.id}, current_employee_id={current_employee_id}, error={e}",
             exc_info=True
         )
+        raise
+
+
+async def get_estimate_tech_specialists(session: AsyncSession) -> list[Staff_Member]:
+    """
+    Get active TECHNICAL_SUPPORT staff members with is_estimate_tech_specialist flag.
+
+    Used for routing CONSULTATION tickets to the appropriate specialists.
+
+    Args:
+        session: Database session
+
+    Returns:
+        List of active Staff_Member objects with is_estimate_tech_specialist=True
+    """
+    try:
+        stmt = (
+            select(Staff_Member)
+            .where(
+                and_(
+                    Staff_Member.is_active == True,
+                    Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
+                    Staff_Member.is_estimate_tech_specialist == True,
+                )
+            )
+            .order_by(Staff_Member.full_name.asc())
+        )
+        result = await session.execute(stmt)
+        specialists = result.scalars().all()
+
+        logger.info(f"Found {len(specialists)} estimate tech specialists for consultation routing")
+        return list(specialists)
+
+    except Exception as e:
+        logger.error(f"Error getting estimate tech specialists: {e}", exc_info=True)
         raise
 
 
@@ -1313,6 +1356,7 @@ async def get_archive_keyboard(
         ticket_type_emoji = {
             TicketType.INVOICE: "💰",
             TicketType.TECHNICAL_SUPPORT: "🔧",
+            TicketType.CONSULTATION: "💬",
             TicketType.RENEWAL: "🔄"
         }
 
@@ -1620,6 +1664,7 @@ async def get_active_tickets_keyboard(
         ticket_type_emoji = {
             TicketType.INVOICE: "💰",
             TicketType.TECHNICAL_SUPPORT: "🔧",
+            TicketType.CONSULTATION: "💬",
             TicketType.RENEWAL: "🔄"
         }
         

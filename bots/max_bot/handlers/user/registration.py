@@ -55,6 +55,7 @@ from bots.max_bot.texts import (
 )
 from database.models import KeyConflictStatus, RegistrationStatus
 from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_retry
 from services.user_service import (
     KeyConflictError,
     add_user_key,
@@ -201,21 +202,11 @@ async def cmd_start(
                 from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
                 keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
                 
-                welcome_text = (
-                    "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                    "Здесь вы можете:\n\n"
-                    "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                    "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                    "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                    "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                    "Выберите нужное действие:"
-                )
-                
+                from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
                 logger.info(f"Active user accessed bot: user_id={user.id}, active_tickets={active_tickets_count}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=welcome_text,
+                    text=MAIN_MENU_WELCOME_TEXT,
                     keyboard=keyboard,
                     parse_mode="HTML"
                 )
@@ -1308,27 +1299,48 @@ async def submit_registration(
         inn = data.get("inn", "")
         
         # Submit to i-TAT API
-        itat_client = get_itat_client()
-        response = await itat_client.register_user(
-            messenger="max",
-            user_id=user.max_user_id,
-            phone=user.phone_number,
-            name=user.first_name or "",
-            surname=user.last_name or "",
-            inn=inn,
-            grand_key=key_number or "",
-            email=user.email
+        response = await call_itat_with_retry(
+            session=session,
+            operation="register_user",
+            payload=dict(
+                messenger="max",
+                user_id=user.max_user_id,
+                phone=user.phone_number,
+                name=user.first_name or "",
+                surname=user.last_name or "",
+                inn=inn,
+                grand_key=key_number or "",
+                email=user.email,
+            ),
+            user_id=user.id,
         )
-        
-        logger.info(f"i-TAT registration response: {response}")
-        
-        # Set user status to PENDING
+
+        if response is not None:
+            logger.info(f"i-TAT registration response: {response}")
+        else:
+            logger.warning(
+                f"register_user queued for retry: user_id={user.id}, "
+                f"proceeding with PENDING status"
+            )
+
+        # Set user status to PENDING regardless — retry will sync with i-TAT later
         await update_user_status(session, user_id, RegistrationStatus.PENDING)
         await session.commit()
         
         # Log registration completion to audit
         from bots.max_bot.utils.audit_logger import log_user_registration_completed
         await log_user_registration_completed(user_id, user.max_user_id)
+
+        # Notify administrators about new registration
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_new_registration
+            await notify_admins_new_registration(session, user_id, inn=inn, key_number=key_number)
+            logger.info(f"New registration notification sent for user_id={user_id}")
+        except Exception as notify_error:
+            logger.error(
+                f"Failed to send new registration notification for user_id={user_id}: {notify_error}",
+                exc_info=True
+            )
         
         logger.info(f"Registration submitted successfully: user_id={user_id}")
         
@@ -1348,21 +1360,6 @@ async def submit_registration(
             exc_info=True
         )
         await session.rollback()
-        
-        # Show detailed error to testers
-        error_type = type(e).__name__
-        error_msg = str(e)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=f"❌ <b>Ошибка регистрации через i-TAT API</b>\n\n"
-                 f"<b>Метод:</b> POST /user/register\n"
-                 f"<b>Тип ошибки:</b> {error_type}\n"
-                 f"<b>Детали:</b> {error_msg}\n\n"
-                 f"<i>Попробуйте позже или обратитесь в поддержку.</i>",
-            parse_mode="HTML"
-        )
-        
-        # Original error message for fallback
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_GENERAL,

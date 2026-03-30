@@ -233,3 +233,292 @@ async def notify_admins_key_conflict(
             f"key={key_number}, error={e}",
             exc_info=True
         )
+
+
+async def notify_admins_new_registration(
+    session: AsyncSession,
+    user_id: int,
+    inn: str | None = None,
+    key_number: str | None = None
+) -> None:
+    """
+    Send new user registration notification to all MAX administrators.
+
+    Called when a user completes registration and status is set to PENDING.
+    Notifies admins with all data entered by the user during registration.
+
+    IMPORTANT: Uses max_chat_id from staff_members table for sending messages.
+
+    Args:
+        session: Database session
+        user_id: Internal ID of the newly registered user
+        inn: INN entered during registration (from FSM context)
+        key_number: GS Key entered during registration (from FSM context)
+    """
+    try:
+        # Get user details
+        stmt = select(User).where(User.id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if not user:
+            logger.error(f"User {user_id} not found for new registration notification")
+            return
+
+        # Query all administrators with MAX chat_id
+        stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True,
+            Staff_Member.max_chat_id.isnot(None)
+        )
+        result = await session.execute(stmt)
+        admins = result.scalars().all()
+
+        if not admins:
+            logger.warning("No active administrators with MAX chat_id found to send new registration notification")
+            return
+
+        # Format registration date in Moscow timezone
+        moscow_tz = timezone(timedelta(hours=3))
+        reg_date_moscow = datetime.now(moscow_tz)
+        reg_date = reg_date_moscow.strftime("%d.%m.%Y %H:%M:%S")
+
+        # Build full name with middle name if available
+        name_parts = [
+            user.last_name or "",
+            user.first_name or "",
+            user.middle_name or "",
+        ]
+        full_name = " ".join(p for p in name_parts if p).strip() or "Не указано"
+
+        # Format notification message
+        message_text = (
+            f"🆕 Новая регистрация пользователя\n\n"
+            f"👤 Данные пользователя:\n"
+            f"🪪 ФИО: {full_name}\n"
+            f"📞 Телефон: {user.phone_number or 'Не указан'}\n"
+            f"📧 Email: {user.email or 'Не указан'}\n"
+            f"🏢 ИНН: {inn or 'Не указан'}\n"
+            f"🔑 Ключ Гранд-сметы: {key_number or 'Не указан'}\n"
+            f"🆔 MAX ID: {user.max_user_id or 'Не указан'}\n\n"
+            f"📅 Дата и время оформления: {reg_date}\n\n"
+            f"⏳ Статус: Ожидает подтверждения"
+        )
+
+        # Send notification to all administrators using max_chat_id
+        bot = MaxBot(token=MAX_BOT_TOKEN)
+
+        sent_count = 0
+        for admin in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin.max_chat_id,
+                    text=message_text
+                )
+                sent_count += 1
+                logger.info(
+                    f"Sent new registration notification to admin {admin.id} "
+                    f"(chat_id: {admin.max_chat_id})"
+                )
+
+            except Exception as send_error:
+                logger.error(
+                    f"Failed to send new registration notification to admin {admin.id} "
+                    f"(chat_id: {admin.max_chat_id}): {send_error}",
+                    exc_info=True
+                )
+
+        # Close bot session
+        try:
+            if hasattr(bot, 'session') and bot.session:
+                await bot.session.close()
+        except Exception as e:
+            logger.warning(f"Error closing MAX bot session: {e}")
+
+        logger.info(
+            f"New registration notification sent: user_id={user_id}, "
+            f"admins_notified={sent_count}/{len(admins)}"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error sending new registration notification: user_id={user_id}, "
+            f"error={e}",
+            exc_info=True
+        )
+
+
+async def notify_admins_api_retry_queued(
+    session: AsyncSession,
+    operation: str,
+    payload: dict,
+    error_message: str,
+    retry_id: int,
+    user_id: int | None = None,
+) -> None:
+    """
+    Notify admins when a failed i-TAT API call is queued for retry.
+
+    TEMPORARY: Used during testing phase to monitor retry queue activity.
+    Remove this call once the system is stable in production.
+
+    Args:
+        session: Database session
+        operation: ITatAPIClient method name (e.g. "update_user_assets")
+        payload: Request payload that failed
+        error_message: Error that triggered the retry
+        retry_id: ID of the created retry record
+        user_id: Internal user DB id (optional)
+    """
+    try:
+        stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True,
+            Staff_Member.max_chat_id.isnot(None),
+        )
+        result = await session.execute(stmt)
+        admins = result.scalars().all()
+
+        if not admins:
+            logger.warning("No active admins with MAX chat_id for retry_queued notification")
+            return
+
+        moscow_tz = timezone(timedelta(hours=3))
+        now_moscow = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M:%S")
+
+        # Truncate payload for display
+        payload_str = str(payload)
+        if len(payload_str) > 300:
+            payload_str = payload_str[:300] + "..."
+
+        message_text = (
+            f"🔄 Запрос к i-TAT поставлен в очередь повтора\n\n"
+            f"🆔 ID записи: {retry_id}\n"
+            f"⚙️ Метод: {operation}\n"
+            f"❌ Ошибка: {error_message[:300]}\n"
+            f"📦 Данные: {payload_str}\n"
+        )
+        if user_id:
+            message_text += f"👤 User ID: {user_id}\n"
+        message_text += (
+            f"\n📅 Время: {now_moscow}\n"
+            f"⏱ Следующая попытка через 5 минут\n\n"
+            f"ℹ️ Это уведомление временное (тестовый режим)"
+        )
+
+        bot = MaxBot(token=MAX_BOT_TOKEN)
+        sent_count = 0
+        for admin in admins:
+            try:
+                await bot.send_message(chat_id=admin.max_chat_id, text=message_text)
+                sent_count += 1
+            except Exception as e:
+                logger.error(
+                    f"Failed to send retry_queued notification to admin {admin.id}: {e}"
+                )
+
+        try:
+            if hasattr(bot, "session") and bot.session:
+                await bot.session.close()
+        except Exception:
+            pass
+
+        logger.info(
+            f"retry_queued notification sent: retry_id={retry_id}, "
+            f"operation={operation}, admins_notified={sent_count}/{len(admins)}"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error sending retry_queued notification: operation={operation}, error={e}",
+            exc_info=True,
+        )
+
+
+async def notify_admins_api_retry_exhausted(
+    session: AsyncSession,
+    retry_id: int,
+    operation: str,
+    payload: dict,
+    attempt_count: int,
+    last_error: str,
+    user_id: int | None = None,
+) -> None:
+    """
+    Notify admins when all retry attempts for an i-TAT API call are exhausted.
+
+    This requires manual intervention — the operation was never successfully
+    delivered to i-TAT after all retry attempts.
+
+    Args:
+        session: Database session
+        retry_id: ID of the exhausted retry record
+        operation: ITatAPIClient method name
+        payload: Request payload that was being retried
+        attempt_count: Total number of attempts made
+        last_error: Last error message
+        user_id: Internal user DB id (optional)
+    """
+    try:
+        stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True,
+            Staff_Member.max_chat_id.isnot(None),
+        )
+        result = await session.execute(stmt)
+        admins = result.scalars().all()
+
+        if not admins:
+            logger.warning("No active admins with MAX chat_id for retry_exhausted notification")
+            return
+
+        moscow_tz = timezone(timedelta(hours=3))
+        now_moscow = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M:%S")
+
+        payload_str = str(payload)
+        if len(payload_str) > 300:
+            payload_str = payload_str[:300] + "..."
+
+        message_text = (
+            f"🚨 Запрос к i-TAT НЕ ДОСТАВЛЕН — все попытки исчерпаны\n\n"
+            f"🆔 ID записи: {retry_id}\n"
+            f"⚙️ Метод: {operation}\n"
+            f"🔁 Попыток: {attempt_count}\n"
+            f"❌ Последняя ошибка: {last_error[:400]}\n"
+            f"📦 Данные: {payload_str}\n"
+        )
+        if user_id:
+            message_text += f"👤 User ID: {user_id}\n"
+        message_text += (
+            f"\n📅 Время: {now_moscow}\n\n"
+            f"⚠️ Требуется ручное вмешательство!\n"
+            f"Данные не были синхронизированы с 1С/CRM."
+        )
+
+        bot = MaxBot(token=MAX_BOT_TOKEN)
+        sent_count = 0
+        for admin in admins:
+            try:
+                await bot.send_message(chat_id=admin.max_chat_id, text=message_text)
+                sent_count += 1
+            except Exception as e:
+                logger.error(
+                    f"Failed to send retry_exhausted notification to admin {admin.id}: {e}"
+                )
+
+        try:
+            if hasattr(bot, "session") and bot.session:
+                await bot.session.close()
+        except Exception:
+            pass
+
+        logger.info(
+            f"retry_exhausted notification sent: retry_id={retry_id}, "
+            f"operation={operation}, admins_notified={sent_count}/{len(admins)}"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error sending retry_exhausted notification: retry_id={retry_id}, error={e}",
+            exc_info=True,
+        )

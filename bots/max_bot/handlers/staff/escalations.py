@@ -173,6 +173,7 @@ async def handle_escalations_list(
         ticket_type_names = {
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+            TicketType.CONSULTATION: "💬 Консультация",
             TicketType.RENEWAL: "🔄 Продление"
         }
         
@@ -333,6 +334,7 @@ async def handle_escalation_view(
         ticket_type_names = {
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+            TicketType.CONSULTATION: "💬 Консультация",
             TicketType.RENEWAL: "🔄 Продление"
         }
         

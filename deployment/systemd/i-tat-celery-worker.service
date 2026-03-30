@@ -16,7 +16,7 @@ ExecStart=/home/razrab/i-tat-bot/venv/bin/celery \
     worker \
     --loglevel=info \
     --pool=solo \
-    --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor \
+    --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries \
     --concurrency=4 \
     --max-tasks-per-child=1000 \
     --time-limit=300 \

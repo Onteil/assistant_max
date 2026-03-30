@@ -61,6 +61,7 @@ class TicketType(enum.Enum):
     """Ticket type values"""
     INVOICE = "invoice"
     TECHNICAL_SUPPORT = "technical_support"
+    CONSULTATION = "consultation"
     RENEWAL = "renewal"
     PHONE_CHANGE = "phone_change"
     KEY_CONFLICT = "key_conflict"
@@ -510,6 +511,9 @@ class Staff_Member(Base, TimestampMixin):
     full_name = Column(String(128), nullable=False)
     position = Column(String(128), nullable=False)
     staff_role = Column(Enum(StaffRole), nullable=False)
+    
+    # Specialist flags
+    is_estimate_tech_specialist = Column(Boolean, default=False, nullable=False, comment="Сметный тех. специалист — получает заявки типа Консультация")
     
     # Soft delete flag
     is_active = Column(Boolean, default=True, nullable=False)

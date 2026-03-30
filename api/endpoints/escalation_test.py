@@ -396,7 +396,7 @@ async def test_ticket_escalation(
                         f"Cannot send to manager channel {manager_channel}: "
                         f"{'MAX' if is_max else 'Telegram'} bot not available"
                     )
-        elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+        elif ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
             # For technical support tickets, send to duty escalation channel
             duty_channel = await get_setting(session, "escalation_duty_channel")
             if duty_channel:

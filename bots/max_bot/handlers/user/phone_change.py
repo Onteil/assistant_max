@@ -19,6 +19,7 @@ from services.user_service import get_user_by_max_id
 from services.ticket_service import create_ticket
 from services.validation_service import validate_phone_number
 from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_retry
 from bots.max_bot.texts import (
     ERROR_GENERAL,
     ERROR_VALIDATION_PHONE,
@@ -289,30 +290,25 @@ async def approve_phone_change(
             return False
         
         # Call i-TAT API to update phone
-        itat_client = get_itat_client()
-        try:
-            api_response = await itat_client.change_phone(
+        api_response = await call_itat_with_retry(
+            session=session,
+            operation="change_phone",
+            payload=dict(
                 messenger="max",
                 user_id=user.max_user_id,
                 old_phone=old_phone,
                 new_phone=new_phone,
-                staff_id=staff_id
-            )
+                staff_id=staff_id,
+            ),
+            user_id=user.id,
+        )
+        if api_response is not None:
             logger.info(f"i-TAT API phone change successful: {api_response}")
-        except Exception as api_error:
-            logger.error(f"i-TAT API phone change error: {api_error}", exc_info=True)
-            # Show error to testers for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            # Note: We don't send message here as this is admin action, log to admin instead
+        else:
             logger.warning(
-                f"⚠️ Ошибка смены номера через i-TAT API\n"
-                f"Метод: POST /user/change_phone\n"
-                f"Тип ошибки: {error_type}\n"
-                f"Детали: {error_msg}\n"
-                f"Номер изменен локально, но не синхронизирован с 1С."
+                f"change_phone queued for retry: user_id={user.id}, "
+                f"old={old_phone}, new={new_phone}"
             )
-            # Continue with local update even if API fails
         
         # Update user phone number
         user.phone_number = new_phone

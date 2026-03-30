@@ -60,7 +60,8 @@ async def log_ticket_to_itat(
         # Map ticket type to API format
         ticket_type_map = {
             TicketType.INVOICE: "Счет",
-            TicketType.TECHNICAL_SUPPORT: "Техподдержка", 
+            TicketType.TECHNICAL_SUPPORT: "Техподдержка",
+            TicketType.CONSULTATION: "Консультация",
             TicketType.RENEWAL: "Продление",
             TicketType.PHONE_CHANGE: "Смена телефона",
             TicketType.KEY_CONFLICT: "Конфликт ключа"

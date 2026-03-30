@@ -423,6 +423,39 @@ async def route_ticket(
                     f"work_mode={work_mode.value}"
                 )
         
+        # Route CONSULTATION tickets to estimate tech specialist (TECHNICAL_SUPPORT role + flag)
+        elif ticket.ticket_type == TicketType.CONSULTATION:
+            if work_mode == WorkMode.REGULAR:
+                routing_info["target_type"] = "support_team"
+                routing_info["target_id"] = None
+                routing_info["expected_response_time"] = "в течение рабочего дня"
+                
+                logger.debug(
+                    f"Consultation ticket routed to support team: ticket_id={ticket.id}, "
+                    f"work_mode={work_mode.value}"
+                )
+            
+            elif work_mode == WorkMode.EXTENDED:
+                duty_engineer = await _get_duty_engineer(session)
+                routing_info["target_type"] = "duty_engineer"
+                routing_info["target_id"] = duty_engineer.tg_user_id if duty_engineer else None
+                routing_info["expected_response_time"] = "в течение 4 часов"
+                
+                logger.debug(
+                    f"Consultation ticket routed to duty engineer: ticket_id={ticket.id}, "
+                    f"work_mode={work_mode.value}"
+                )
+            
+            else:  # NON_WORKING
+                routing_info["target_type"] = "queued"
+                routing_info["target_id"] = None
+                routing_info["expected_response_time"] = "в следующий рабочий день"
+                
+                logger.debug(
+                    f"Consultation ticket queued: ticket_id={ticket.id}, "
+                    f"work_mode={work_mode.value}"
+                )
+        
         return routing_info
     
     except SQLAlchemyError as e:
@@ -533,6 +566,7 @@ async def send_staff_notification(
         ticket_type_names = {
             TicketType.INVOICE: "📄 Запрос счета",
             TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
+            TicketType.CONSULTATION: "💬 Консультация",
             TicketType.RENEWAL: "🔄 Продление подписки"
         }
         
@@ -624,11 +658,17 @@ async def send_staff_notification(
                 message_text += f"\"Ваш менеджер увидит запрос первым делом в начале рабочего дня\"\n"
             elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
                 message_text += f"\"Техподдержка ответит в начале рабочего дня\"\n"
+            elif ticket.ticket_type == TicketType.CONSULTATION:
+                message_text += f"\"Специалист ответит в начале рабочего дня\"\n"
             elif ticket.ticket_type == TicketType.RENEWAL:
                 message_text += f"\"Менеджер свяжется с вами в начале рабочего дня\"\n"
         
         if routing_info and routing_info.get("expected_response_time"):
             message_text += f"\n⏱ <b>Ожидаемое время ответа:</b> {routing_info['expected_response_time']}"
+        
+        # Add reason if admin was notified as fallback (no specialist configured)
+        if routing_info and routing_info.get("no_specialist_reason"):
+            message_text += f"\n\n{routing_info['no_specialist_reason']}"
         
         # Build keyboard with "К заявке" button for MAX bot
         if is_max_bot:
@@ -966,9 +1006,9 @@ async def take_ticket_into_work(
         old_assigned_staff_id = ticket.assigned_staff_id
         ticket.ticket_status = TicketStatus.IN_PROGRESS
         
-        # For TECHNICAL_SUPPORT tickets, assign to staff member when they take it
+        # For TECHNICAL_SUPPORT and CONSULTATION tickets, assign to staff member when they take it
         # For other ticket types (INVOICE, RENEWAL), assigned_staff_id is already set at creation
-        if ticket.ticket_type == TicketType.TECHNICAL_SUPPORT and not ticket.assigned_staff_id:
+        if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION) and not ticket.assigned_staff_id:
             ticket.assigned_staff_id = staff_member.id
         
         ticket.escalated_at = None
@@ -1248,8 +1288,8 @@ async def close_ticket(
             f"old_status={old_status.value}"
         )
         
-        # Trigger NPS survey for TECH_SUPPORT tickets
-        if ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+        # Trigger NPS survey for all ticket types except KEY_CONFLICT
+        if ticket.ticket_type != TicketType.KEY_CONFLICT:
             try:
                 # Check if survey already scheduled for this ticket (duplicate prevention)
                 from database.models import NPS_Response
@@ -1274,7 +1314,7 @@ async def close_ticket(
                     if scheduled:
                         logger.info(
                             f"NPS survey scheduled for closed ticket: ticket_id={ticket_id}, "
-                            f"user_id={ticket.user_id}"
+                            f"user_id={ticket.user_id}, ticket_type={ticket.ticket_type.value}"
                         )
                     else:
                         logger.info(
@@ -1457,8 +1497,8 @@ async def close_ticket_with_notification(
             f"employee_id={employee_id}, old_status={old_status.value}"
         )
         
-        # Trigger NPS survey for TECH_SUPPORT tickets
-        if ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+        # Trigger NPS survey for all ticket types except KEY_CONFLICT
+        if ticket.ticket_type != TicketType.KEY_CONFLICT:
             try:
                 # Check if survey already scheduled for this ticket (duplicate prevention)
                 from database.models import NPS_Response
@@ -1483,7 +1523,7 @@ async def close_ticket_with_notification(
                     if scheduled:
                         logger.info(
                             f"NPS survey scheduled for closed ticket: ticket_id={ticket_id}, "
-                            f"user_id={ticket.user_id}"
+                            f"user_id={ticket.user_id}, ticket_type={ticket.ticket_type.value}"
                         )
                     else:
                         logger.info(
@@ -2380,6 +2420,328 @@ async def handle_client_message_to_ticket(
 
 
 
+async def forward_client_message_to_manager(
+    session: AsyncSession,
+    messenger_adapter,
+    ticket,
+    user,
+    message_text: str,
+    message_type_val: str,
+    file_url: str | None = None,
+    attachment_type: str | None = None,
+    file_name: str | None = None,
+    file_size: int | None = None,
+    manager_in_focus: bool = False,
+) -> None:
+    """
+    Store a client message in the database and forward it to the assigned manager.
+
+    Handles all attachment types with the same download/re-upload/fallback logic
+    used in handle_client_message_to_ticket_max. Accepts pre-extracted metadata
+    so it can be called both from the live event handler and from the deferred
+    ticket-selection flow (where the original event is no longer available).
+
+    Args:
+        session: Database session
+        messenger_adapter: MAXMessengerAdapter instance
+        ticket: Ticket object
+        user: User object (client)
+        message_text: Display text (e.g. "📷 Фото" or actual text)
+        message_type_val: MessageType enum value string
+        file_url: MAX file URL (None for text messages)
+        attachment_type: Raw MAX attachment type ("image", "file", "voice", …)
+        file_name: Original file name (None for text)
+        file_size: File size in bytes (None if unknown)
+        manager_in_focus: True if manager is already in focus mode for this ticket.
+            When True, action buttons are omitted from the notification since the
+            manager is already in the conversation and doesn't need them.
+    """
+    import logging
+    import uuid
+    from datetime import datetime
+    from pathlib import Path
+    from sqlalchemy import select
+    from database.models import (
+        MessageType,
+        SenderType,
+        ActionType,
+        Staff_Member,
+        MAX_Messenger_Data,
+        TicketStatus,
+        File_Attachment,
+        FileType,
+        UploaderType,
+    )
+
+    logger = logging.getLogger(__name__)
+
+    message_type = MessageType(message_type_val)
+
+    # Resolve FileType from attachment_type
+    file_type: FileType | None = None
+    if file_url:
+        if attachment_type == "image":
+            file_type = FileType.IMAGE
+        elif attachment_type in ("voice", "audio_video_note", "audio", "video"):
+            file_type = FileType.OTHER
+        elif attachment_type == "file":
+            from services.validation_service import classify_file_type
+            file_type = classify_file_type(file_name or "")
+        else:
+            file_type = FileType.OTHER
+
+    # Store message in DB
+    message = await add_ticket_message(
+        session=session,
+        ticket_id=ticket.id,
+        sender_type=SenderType.USER,
+        sender_id=user.id,
+        message_text=message_text,
+        message_type=message_type,
+    )
+
+    # Store file attachment record
+    if file_url and file_type is not None:
+        file_attachment = File_Attachment(
+            ticket_id=ticket.id,
+            message_id=message.id,
+            file_type=file_type,
+            telegram_file_id=file_url,
+            file_name=file_name,
+            file_size=file_size,
+            uploader_id=user.id,
+            uploader_type=UploaderType.USER,
+            uploaded_at=datetime.utcnow(),
+        )
+        session.add(file_attachment)
+        await session.flush()
+
+    # Change status WAITING_CLIENT → IN_PROGRESS
+    if ticket.ticket_status == TicketStatus.WAITING_CLIENT:
+        old_status = ticket.ticket_status
+        ticket.ticket_status = TicketStatus.IN_PROGRESS
+        ticket.updated_at = datetime.utcnow()
+        try:
+            from celery_app.escalation_tasks import cancel_escalation_monitoring
+            await cancel_escalation_monitoring(ticket.id)
+        except Exception as e:
+            logger.warning(
+                f"Failed to cancel escalation monitoring: ticket_id={ticket.id}, error={e}"
+            )
+        await _log_action(
+            session=session,
+            action_type=ActionType.STATUS_CHANGED,
+            ticket_id=ticket.id,
+            user_id=user.id,
+            action_details={
+                "old_status": old_status.value,
+                "new_status": TicketStatus.IN_PROGRESS.value,
+                "reason": "client_response",
+            },
+        )
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.IN_PROGRESS,
+                comment="Клиент ответил на заявку, статус изменен на 'В работе'",
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to log status change to I-TAT API: ticket_id={ticket.id}, error={e}",
+                exc_info=True,
+            )
+
+    # Forward to assigned manager
+    if ticket.assigned_staff_id:
+        try:
+            staff_result = await session.execute(
+                select(Staff_Member).where(Staff_Member.id == ticket.assigned_staff_id)
+            )
+            staff_member = staff_result.scalar_one_or_none()
+
+            if not staff_member or not staff_member.max_user_id:
+                logger.warning(
+                    f"Manager does not have MAX account: staff_id={ticket.assigned_staff_id}"
+                )
+            else:
+                max_data_result = await session.execute(
+                    select(MAX_Messenger_Data).where(
+                        MAX_Messenger_Data.max_user_id == staff_member.max_user_id
+                    )
+                )
+                max_data = max_data_result.scalar_one_or_none()
+
+                if not max_data:
+                    logger.warning(
+                        f"Manager MAX chat_id not found: staff_id={ticket.assigned_staff_id}"
+                    )
+                else:
+                    client_name = user.full_name or user.first_name or "Не указано"
+                    client_info_parts = [f"👤 Клиент: {client_name}"]
+                    if user.phone_number:
+                        client_info_parts.append(f"📱 Телефон: {user.phone_number}")
+                    if user.email:
+                        client_info_parts.append(f"📧 Email: {user.email}")
+                    client_info = "\n".join(client_info_parts)
+
+                    context_text = (
+                        f"💬 <b>Новое сообщение от клиента (Заявка #{ticket.id})</b>\n\n"
+                        f"{client_info}\n\n"
+                        f"💬 Сообщение:\n{message_text}"
+                    )
+
+                    # Build action buttons for manager notification
+                    # Skip buttons if manager is already in focus mode for this ticket
+                    notif_keyboard = None
+                    if not manager_in_focus:
+                        from bots.max_bot.payloads import (
+                            ManagerViewTicketPayload,
+                            ManagerTakeFromMessagePayload,
+                            ManagerFocusFromMessagePayload,
+                        )
+                        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+
+                        notif_btn_row = []
+                        if ticket.ticket_status == TicketStatus.NEW:
+                            notif_btn_row.append(
+                                KeyboardButton(
+                                    text="✋ Взять в работу",
+                                    payload=ManagerTakeFromMessagePayload(ticket_id=ticket.id).pack()
+                                )
+                            )
+                        else:
+                            notif_btn_row.append(
+                                KeyboardButton(
+                                    text="💬 Общение с клиентом",
+                                    payload=ManagerFocusFromMessagePayload(ticket_id=ticket.id).pack()
+                                )
+                            )
+                        notif_btn_row.append(
+                            KeyboardButton(
+                                text="📋 К заявке",
+                                payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+                            )
+                        )
+                        notif_keyboard = Keyboard(buttons=[notif_btn_row], inline=True)
+
+                    if file_url:
+                        # Voice, audio, image — download and re-upload for native display
+                        if attachment_type in ("voice", "audio_video_note", "audio", "image"):
+                            try:
+                                temp_dir = Path("media/temp")
+                                temp_dir.mkdir(parents=True, exist_ok=True)
+
+                                if attachment_type == "image":
+                                    unique_filename = f"ticket_{ticket.id}_client_{uuid.uuid4()}.jpg"
+                                elif attachment_type in ("voice", "audio_video_note"):
+                                    unique_filename = f"ticket_{ticket.id}_client_{uuid.uuid4()}.ogg"
+                                elif attachment_type == "audio":
+                                    unique_filename = f"ticket_{ticket.id}_client_{uuid.uuid4()}.mp3"
+                                else:
+                                    unique_filename = f"ticket_{ticket.id}_client_{uuid.uuid4()}.bin"
+
+                                local_path = await messenger_adapter.download_file(
+                                    file_url=file_url,
+                                    destination=f"media/temp/{unique_filename}",
+                                )
+
+                                if attachment_type == "image":
+                                    await messenger_adapter.send_photo(
+                                        chat_id=max_data.max_chat_id,
+                                        photo_path=local_path,
+                                        caption=context_text,
+                                        parse_mode="HTML",
+                                        keyboard=notif_keyboard,
+                                    )
+                                else:
+                                    await messenger_adapter.send_document(
+                                        chat_id=max_data.max_chat_id,
+                                        document_path=local_path,
+                                        caption=context_text,
+                                        parse_mode="HTML",
+                                        keyboard=notif_keyboard,
+                                    )
+
+                                try:
+                                    Path(local_path).unlink()
+                                except Exception as cleanup_err:
+                                    logger.warning(
+                                        f"Failed to delete temp file {local_path}: {cleanup_err}"
+                                    )
+
+                                logger.info(
+                                    f"Client file forwarded to manager: ticket_id={ticket.id}, "
+                                    f"attachment_type={attachment_type}"
+                                )
+
+                            except Exception as file_error:
+                                logger.error(
+                                    f"Failed to forward file to manager: ticket_id={ticket.id}, "
+                                    f"error={file_error}",
+                                    exc_info=True,
+                                )
+                                # Fallback: send as link
+                                await messenger_adapter.send_message(
+                                    chat_id=max_data.max_chat_id,
+                                    text=(
+                                        f"{context_text}\n\n"
+                                        f'📎 <a href="{file_url}">Скачать файл</a>'
+                                    ),
+                                    parse_mode="HTML",
+                                    keyboard=notif_keyboard,
+                                )
+                        else:
+                            # file / video — send as link
+                            await messenger_adapter.send_message(
+                                chat_id=max_data.max_chat_id,
+                                text=(
+                                    f"{context_text}\n\n"
+                                    f'📎 <a href="{file_url}">Скачать файл</a>'
+                                ),
+                                parse_mode="HTML",
+                                keyboard=notif_keyboard,
+                            )
+                            logger.info(
+                                f"File URL sent to manager: ticket_id={ticket.id}, "
+                                f"attachment_type={attachment_type}"
+                            )
+                    else:
+                        await messenger_adapter.send_message(
+                            chat_id=max_data.max_chat_id,
+                            text=context_text,
+                            parse_mode="HTML",
+                            keyboard=notif_keyboard,
+                        )
+                        logger.info(f"Text message sent to manager: ticket_id={ticket.id}")
+
+        except Exception as e:
+            logger.error(
+                f"Error forwarding client message to manager: ticket_id={ticket.id}, "
+                f"staff_id={ticket.assigned_staff_id}, error={e}",
+                exc_info=True,
+            )
+
+    await _log_action(
+        session=session,
+        action_type=ActionType.MESSAGE_SENT,
+        ticket_id=ticket.id,
+        user_id=user.id,
+        action_details={
+            "message_type": message_type_val,
+            "has_file": file_url is not None,
+        },
+    )
+
+    logger.info(
+        f"Client message handled: ticket_id={ticket.id}, "
+        f"client_id={user.id}, message_type={message_type_val}"
+    )
+
+
+
 # ========== Active Tickets Queries ==========
 
 
@@ -2601,19 +2963,9 @@ async def send_message_to_client_max(
         client_chat_id = ticket.user.max_messenger_data.max_chat_id
         
         # Build "Reply to manager" inline keyboard (only if requested)
+        # NOTE: Reply button is intentionally removed — client is instructed
+        # via a separate message to simply type their reply in chat.
         reply_keyboard = None
-        if include_reply_button:
-            from bots.max_bot.payloads import ReplyToManagerPayload
-            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-            reply_keyboard = Keyboard(
-                buttons=[[
-                    KeyboardButton(
-                        text="💬 Ответить менеджеру",
-                        payload=ReplyToManagerPayload(ticket_id=ticket_id).pack()
-                    )
-                ]],
-                inline=True
-            )
         
         # Send message to client via MAX
         try:
@@ -2737,6 +3089,17 @@ async def send_message_to_client_max(
                 exc_info=True
             )
             raise
+        
+        # Send reply instruction as a separate message (only for regular messages, not final comments)
+        if include_reply_button:
+            try:
+                await messenger_adapter.send_message(
+                    chat_id=client_chat_id,
+                    text="💬 Чтобы ответить менеджеру, просто напишите сообщение в этот чат.",
+                    parse_mode="HTML"
+                )
+            except Exception as hint_error:
+                logger.warning(f"Failed to send reply hint to client: {hint_error}")
         
         # Store message in database
         message = await add_ticket_message(

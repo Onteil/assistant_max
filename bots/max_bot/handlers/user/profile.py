@@ -48,6 +48,7 @@ from bots.max_bot.texts import (
 )
 from database.models import KeyConflictStatus, TicketType
 from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket
 from services.user_service import (
     KeyConflictError,
@@ -380,31 +381,22 @@ async def delete_organization(
                 user.organizations.remove(org_to_remove)
                 
                 # Update user assets via i-TAT API
-                itat_client = get_itat_client()
-                try:
-                    assets_response = await itat_client.update_user_assets(
+                assets_response = await call_itat_with_retry(
+                    session=session,
+                    operation="update_user_assets",
+                    payload=dict(
                         messenger="max",
                         user_id=user.max_user_id,
                         asset_type="inn",
                         action="remove",
-                        value=inn
-                    )
+                        value=inn,
+                    ),
+                    user_id=user.id,
+                )
+                if assets_response is not None:
                     logger.info(f"Assets removal result: {assets_response}")
-                except Exception as api_error:
-                    logger.error(f"Assets removal API error: {api_error}", exc_info=True)
-                    # Show error to testers for debugging
-                    error_type = type(api_error).__name__
-                    error_msg = str(api_error)
-                    await messenger_adapter.send_message(
-                        chat_id=chat_id,
-                        text=f"⚠️ <b>Ошибка удаления актива через i-TAT API</b>\n\n"
-                             f"<b>Метод:</b> POST /user/assets/update\n"
-                             f"<b>Тип ошибки:</b> {error_type}\n"
-                             f"<b>Детали:</b> {error_msg}\n\n"
-                             f"<i>ИНН удален локально, но не синхронизирован с 1С.</i>",
-                        parse_mode="HTML"
-                    )
-                    # Continue even if API fails - local data is already updated
+                else:
+                    logger.warning(f"update_user_assets (remove inn) queued for retry: user_id={user.id}, inn={inn}")
                 
                 # Log profile update to audit
                 from bots.max_bot.utils.audit_logger import log_user_profile_updated
@@ -507,31 +499,22 @@ async def delete_key(
             await session.flush()
             
             # Update user assets via i-TAT API
-            itat_client = get_itat_client()
-            try:
-                assets_response = await itat_client.update_user_assets(
+            assets_response = await call_itat_with_retry(
+                session=session,
+                operation="update_user_assets",
+                payload=dict(
                     messenger="max",
                     user_id=user.max_user_id,
                     asset_type="grand_key",
                     action="remove",
-                    value=key_number
-                )
+                    value=key_number,
+                ),
+                user_id=user.id,
+            )
+            if assets_response is not None:
                 logger.info(f"Assets removal result: {assets_response}")
-            except Exception as api_error:
-                logger.error(f"Assets removal API error: {api_error}", exc_info=True)
-                # Show error to testers for debugging
-                error_type = type(api_error).__name__
-                error_msg = str(api_error)
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ <b>Ошибка удаления ключа через i-TAT API</b>\n\n"
-                         f"<b>Метод:</b> POST /user/assets/update\n"
-                         f"<b>Тип ошибки:</b> {error_type}\n"
-                         f"<b>Детали:</b> {error_msg}\n\n"
-                         f"<i>Ключ удален локально, но не синхронизирован с 1С.</i>",
-                    parse_mode="HTML"
-                )
-                # Continue even if API fails - local data is already updated
+            else:
+                logger.warning(f"update_user_assets (remove key) queued for retry: user_id={user.id}, key={key_number}")
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
@@ -1137,20 +1120,10 @@ async def handle_profile_callback(
                 active_tickets_count = await get_user_active_tickets_count(session, user.id)
                 keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
                 
-                main_menu_text = (
-                    "🎉 <b>Добро пожаловать в меню сметчика АЙТАТ!</b>\n\n"
-                    "Здесь вы можете:\n\n"
-                    "💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                    "🆘 <b>Техподдержка</b> — получить помощь по работе с программой ГРАНД-Смета\n"
-                    "🔄 <b>Продление</b> — продлить подписку на информационно-техническое сопровождение\n"
-                    "🗃️ <b>Архив обращений</b> — просмотреть историю ваших обращений\n"
-                    "👤 <b>Мой профиль</b> — управление вашими данными и настройками\n\n"
-                    "Выберите нужное действие:"
-                )
-                
+                from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=main_menu_text,
+                    text=MAIN_MENU_WELCOME_TEXT,
                     keyboard=keyboard,
                     parse_mode="HTML"
                 )
@@ -1300,32 +1273,24 @@ async def process_add_inn(
         
         # Add organization to user profile locally
         await add_user_organization(session, user.id, inn)
-        
+
         # Update user assets via i-TAT API
-        try:
-            assets_response = await itat_client.update_user_assets(
+        assets_response = await call_itat_with_retry(
+            session=session,
+            operation="update_user_assets",
+            payload=dict(
                 messenger="max",
                 user_id=user.max_user_id,
                 asset_type="inn",
                 action="add",
-                value=inn
-            )
+                value=inn,
+            ),
+            user_id=user.id,
+        )
+        if assets_response is not None:
             logger.info(f"Assets update result: {assets_response}")
-        except Exception as api_error:
-            logger.error(f"Assets update API error: {api_error}", exc_info=True)
-            # Show error to testers for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка обновления активов через i-TAT API</b>\n\n"
-                     f"<b>Метод:</b> POST /user/assets/update\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>ИНН добавлен локально, но не синхронизирован с 1С.</i>",
-                parse_mode="HTML"
-            )
-            # Continue even if API fails - local data is already saved
+        else:
+            logger.warning(f"update_user_assets (add inn) queued for retry: user_id={user.id}, inn={inn}")
         
         logger.info(f"Organization added to profile: user_id={user.id}, inn={inn}")
         
@@ -1540,30 +1505,22 @@ async def process_add_key(
             )
             
             # Update user assets via i-TAT API
-            try:
-                assets_response = await itat_client.update_user_assets(
+            assets_response = await call_itat_with_retry(
+                session=session,
+                operation="update_user_assets",
+                payload=dict(
                     messenger="max",
                     user_id=user.max_user_id,
                     asset_type="grand_key",
                     action="add",
-                    value=normalized_key
-                )
+                    value=normalized_key,
+                ),
+                user_id=user.id,
+            )
+            if assets_response is not None:
                 logger.info(f"Assets update result: {assets_response}")
-            except Exception as api_error:
-                logger.error(f"Assets update API error: {api_error}", exc_info=True)
-                # Show error to testers for debugging
-                error_type = type(api_error).__name__
-                error_msg = str(api_error)
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ <b>Ошибка добавления ключа через i-TAT API</b>\n\n"
-                         f"<b>Метод:</b> POST /user/assets/update\n"
-                         f"<b>Тип ошибки:</b> {error_type}\n"
-                         f"<b>Детали:</b> {error_msg}\n\n"
-                         f"<i>Ключ добавлен локально, но не синхронизирован с 1С.</i>",
-                    parse_mode="HTML"
-                )
-                # Continue even if API fails - local data is already saved
+            else:
+                logger.warning(f"update_user_assets (add key) queued for retry: user_id={user.id}, key={normalized_key}")
             
             logger.info(f"GS_Key added to profile: user_id={user.id}, key={normalized_key}")
             

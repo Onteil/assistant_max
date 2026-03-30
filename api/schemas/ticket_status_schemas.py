@@ -29,10 +29,20 @@ class TicketStatusWebhookPayload(BaseModel):
     @field_validator("ticket_id")
     @classmethod
     def validate_ticket_id(cls, v: str) -> str:
-        """Validate that ticket_id is non-empty."""
+        """Validate and normalize ticket_id.
+        
+        Strips non-numeric prefixes like 'TKT_' sent by 1C/CRM systems.
+        Examples: 'TKT_36' -> '36', 'TKT_37' -> '37', '36' -> '36'
+        """
         if not v or not v.strip():
             raise ValueError("ticket_id must be a non-empty string")
-        return v.strip()
+        v = v.strip()
+        # Strip common CRM prefixes (e.g. TKT_36 -> 36)
+        import re
+        match = re.search(r'\d+$', v)
+        if match:
+            return match.group()
+        return v
     
     @field_validator("status")
     @classmethod

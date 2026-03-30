@@ -70,8 +70,19 @@ class TicketsPaginationPayload(CallbackPayload, prefix='tickets_page'):
     
     Fields:
         page: Page number (0-indexed)
+        filter: Optional ticket type filter (all/invoice/support/consultation/renewal)
     """
     page: int
+    filter: str = "all"
+
+
+class TicketsFilterPayload(CallbackPayload, prefix='tickets_filter'):
+    """Payload for filtering active tickets by type.
+    
+    Fields:
+        filter: Ticket type filter (all/invoice/support/consultation/renewal)
+    """
+    filter: str
 
 
 class ActiveTicketsClosePayload(CallbackPayload, prefix='close_tickets'):
@@ -105,6 +116,35 @@ class TicketHistoryBackPayload(CallbackPayload, prefix='history_back'):
         ticket_id: ID of the ticket to return to
     """
     ticket_id: int
+
+
+class MessageTicketSelectPayload(CallbackPayload, prefix='msg_ticket_select'):
+    """Payload for selecting a ticket when sending a free-text message.
+    
+    Shown when user sends a message without active FSM state and has multiple
+    active tickets. User selects which ticket to route the message to.
+    
+    Fields:
+        ticket_id: ID of the ticket to route the pending message to
+    """
+    ticket_id: int
+
+
+class MessageTicketPaginationPayload(CallbackPayload, prefix='msg_ticket_page'):
+    """Payload for pagination in the message ticket selection menu.
+    
+    Fields:
+        page: Page number (0-indexed)
+    """
+    page: int
+
+
+class MessageTicketCancelPayload(CallbackPayload, prefix='msg_ticket_cancel'):
+    """Payload for canceling the ticket selection for message routing.
+    
+    No additional fields needed.
+    """
+    pass
 
 
 # ============================================================================
@@ -389,6 +429,64 @@ class KeyContextActionPayload(CallbackPayload, prefix='key_ctx_action'):
 
 
 # ============================================================================
+# Consultation Flow Payloads
+# ============================================================================
+
+class ConsultationOrgSelectPayload(CallbackPayload, prefix='cons_org_select'):
+    """Payload for organization selection in consultation flow.
+    
+    Fields:
+        inn: INN number of the selected organization
+    """
+    inn: str
+
+
+class ConsultationOrgPagePayload(CallbackPayload, prefix='cons_org_page'):
+    """Payload for organization list pagination in consultation flow.
+    
+    Fields:
+        page: Page number (0-indexed)
+    """
+    page: int
+
+
+class ConsultationOrgActionPayload(CallbackPayload, prefix='cons_org_action'):
+    """Payload for organization-related actions in consultation flow.
+    
+    Fields:
+        action: Action type - "add_new", "skip", or "cancel"
+    """
+    action: str
+
+
+class ConsultationKeyTogglePayload(CallbackPayload, prefix='cons_key_toggle'):
+    """Payload for toggling key selection in consultation flow.
+    
+    Fields:
+        key_id: ID of the key to toggle
+    """
+    key_id: int
+
+
+class ConsultationKeyPagePayload(CallbackPayload, prefix='cons_key_page'):
+    """Payload for key list pagination in consultation flow.
+    
+    Fields:
+        page: Page number (0-indexed)
+    """
+    page: int
+
+
+class ConsultationKeyActionPayload(CallbackPayload, prefix='cons_key_action'):
+    """Payload for key-related actions in consultation flow.
+    
+    Fields:
+        action: Action type - "add_new", "done", "skip", "back", or "cancel"
+    """
+    action: str
+
+
+# ============================================================================
 # Registration Payloads
 # ============================================================================
 
@@ -546,6 +644,15 @@ class ManagerArchiveBackPayload(CallbackPayload, prefix='mgr_arc_back'):
     action: str
 
 
+class ManagerArchiveTypeFilterPayload(CallbackPayload, prefix='mgr_arc_type'):
+    """Payload for manager archive ticket-type filter.
+
+    Fields:
+        ticket_type: Ticket type filter - "all", "invoice", "technical_support", "consultation", "renewal"
+    """
+    ticket_type: str
+
+
 # ============================================================================
 # Manager Ticket Actions Payloads
 # ============================================================================
@@ -629,6 +736,30 @@ class ManagerTicketHistoryBackPayload(CallbackPayload, prefix='mgr_hist_back'):
     
     Fields:
         ticket_id: ID of the ticket to return to
+    """
+    ticket_id: int
+
+
+class ManagerTakeFromMessagePayload(CallbackPayload, prefix='mgr_take_msg'):
+    """Payload for "Взять в работу" button in client message notifications.
+    
+    Used when manager clicks "Взять в работу" directly from a client message
+    notification to take the ticket into work and enter focus mode.
+    
+    Fields:
+        ticket_id: ID of the ticket to take into work
+    """
+    ticket_id: int
+
+
+class ManagerFocusFromMessagePayload(CallbackPayload, prefix='mgr_focus_msg'):
+    """Payload for "Общение с клиентом" button in client message notifications.
+    
+    Used when manager clicks "Общение с клиентом" from a client message notification
+    to enter focus mode on an already in-progress ticket.
+    
+    Fields:
+        ticket_id: ID of the ticket to focus on
     """
     ticket_id: int
 
@@ -838,6 +969,7 @@ class EmployeeActionPayload(CallbackPayload, prefix='emp_action'):
         action: Action type - "view", "edit_name", "edit_signature", "edit_role", 
                 "deactivate", "confirm_deactivate", "activate",
                 "set_duty_support", "unset_duty_support",
+                "set_estimate_specialist", "unset_estimate_specialist",
                 "backup_config", "transfer_clients"
         employee_id: ID of the employee
     """
@@ -1081,3 +1213,37 @@ class DonePayload(CallbackPayload, prefix='done'):
     Sends a friendly farewell message.
     """
     pass
+
+
+# ============================================================================
+# NPS Survey Payloads
+# ============================================================================
+
+class NPSRatingPayload(CallbackPayload, prefix='nps_rating'):
+    """Payload for NPS rating button press.
+
+    Used when client clicks a rating button (0-10) in NPS survey.
+
+    Fields:
+        survey_type: Survey type - "loyalty" or "service_quality"
+        rating: Rating value (0-10)
+        trigger_event_id: ID of the triggering event (invoice_id or ticket_id)
+    """
+    survey_type: str
+    rating: int
+    trigger_event_id: int
+
+
+class NPSSkipFeedbackPayload(CallbackPayload, prefix='nps_skip'):
+    """Payload for skipping feedback comment in NPS survey.
+
+    Used when client clicks "⏭️️ Пропустить" after low rating.
+
+    Fields:
+        survey_type: Survey type - "loyalty" or "service_quality"
+        rating: Rating value (0-7)
+        trigger_event_id: ID of the triggering event
+    """
+    survey_type: str
+    rating: int
+    trigger_event_id: int

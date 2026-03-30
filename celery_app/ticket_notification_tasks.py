@@ -77,6 +77,7 @@ async def _process_pending_tickets_async() -> dict:
         "invoice_tickets": 0,
         "renewal_tickets": 0,
         "support_tickets": 0,
+        "consultation_tickets": 0,
         "notifications_sent": 0,
         "errors": 0,
     }
@@ -105,7 +106,7 @@ async def _process_pending_tickets_async() -> dict:
                 and_(
                     Ticket.ticket_status == TicketStatus.NEW,
                     Ticket.created_at >= cutoff_time,
-                    Ticket.ticket_type.in_([TicketType.INVOICE, TicketType.RENEWAL, TicketType.TECHNICAL_SUPPORT]),
+                    Ticket.ticket_type.in_([TicketType.INVOICE, TicketType.RENEWAL, TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION]),
                     Ticket.queue_notification_sent_at.is_(None),
                 )
             ).options(
@@ -163,6 +164,12 @@ async def _process_pending_tickets_async() -> dict:
                     elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
                         stats["support_tickets"] += 1
                         sent = await _process_support_ticket(
+                            ticket, max_bot, session, stats
+                        )
+                    
+                    elif ticket.ticket_type == TicketType.CONSULTATION:
+                        stats["consultation_tickets"] += 1
+                        sent = await _process_consultation_ticket(
                             ticket, max_bot, session, stats
                         )
                     else:
@@ -713,5 +720,180 @@ async def _process_support_ticket(
                     f"for support ticket {ticket.id}: {e}",
                     exc_info=True
                 )
+
+    return bool(notified_chat_ids)
+
+
+async def _process_consultation_ticket(
+    ticket: Ticket,
+    max_bot,
+    session: AsyncSession,
+    stats: dict
+) -> bool:
+    """
+    Process CONSULTATION ticket created during non-working hours.
+
+    Notifies all estimate tech specialists (is_estimate_tech_specialist=True).
+    Falls back to admins with reason if no specialists are configured.
+    Also notifies the duty channel.
+
+    Returns True if at least one notification was sent successfully.
+    """
+    from database.models import MAX_Messenger_Data
+    from services.employee_service import get_estimate_tech_specialists
+    from services.escalation_service import get_active_admins
+    from services.settings_service import get_setting
+    from utils.timezone_helpers import get_moscow_now_naive
+
+    elapsed = get_moscow_now_naive() - ticket.created_at
+    minutes = int(elapsed.total_seconds() // 60)
+
+    user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+    user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+
+    notification_text = (
+        f"💬 <b>Заявка на консультацию из очереди</b>\n\n"
+        f"<b>Заявка:</b> #{ticket.id}\n"
+        f"<b>Создана:</b> {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"<b>Клиент:</b> {user_name}\n"
+        f"<b>Телефон:</b> {user_phone}\n"
+    )
+
+    if ticket.organization_inn:
+        notification_text += f"<b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
+
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+        notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+
+    if ticket.description:
+        desc_preview = ticket.description[:150]
+        if len(ticket.description) > 150:
+            desc_preview += "..."
+        notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+
+    notification_text += (
+        f"\n⏱ <b>Ожидает:</b> {minutes} мин\n"
+        f"💬 <b>Клиенту сообщено:</b> \"Специалист ответит в начале рабочего дня\"\n"
+        f"⚠️ <b>Требуется взять заявку в работу</b>"
+    )
+
+    from bots.max_bot.payloads import ManagerViewTicketPayload
+    from maxapi.types.attachments.buttons import CallbackButton
+    from maxapi.types.attachments.attachment import ButtonsPayload
+
+    buttons = [[
+        CallbackButton(
+            text="📋 К заявке",
+            payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+        )
+    ]]
+
+    notified_chat_ids = []
+
+    # Try to notify estimate tech specialists first
+    specialists = await get_estimate_tech_specialists(session)
+
+    if specialists:
+        recipients = specialists
+        no_specialist_suffix = ""
+    else:
+        # Fall back to admins with reason
+        logger.warning(
+            f"No estimate tech specialists found for queued consultation ticket {ticket.id}, "
+            f"falling back to admins"
+        )
+        recipients = await get_active_admins(session)
+        no_specialist_suffix = (
+            "\n\n⚠️ <b>Причина уведомления администратора:</b> "
+            "В системе не настроен ни один сметный тех. специалист. "
+            "Заявка требует ручного назначения."
+        )
+
+    for recipient in recipients:
+        try:
+            if recipient.max_user_id and max_bot:
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == recipient.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+
+                if chat_id:
+                    text = notification_text + no_specialist_suffix
+                    await max_bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        attachments=[ButtonsPayload(buttons=buttons).pack()]
+                    )
+                    stats["notifications_sent"] += 1
+                    notified_chat_ids.append(chat_id)
+                    logger.info(
+                        f"Recipient notified for queued consultation ticket {ticket.id}, "
+                        f"recipient_id={recipient.id}"
+                    )
+                else:
+                    logger.warning(
+                        f"No MAX chat_id for recipient {recipient.id}, "
+                        f"max_user_id={recipient.max_user_id}"
+                    )
+        except Exception as e:
+            logger.error(
+                f"Failed to notify recipient {recipient.id} for consultation ticket {ticket.id}: {e}",
+                exc_info=True
+            )
+
+    # Notify duty channel
+    try:
+        duty_channel = await get_setting(session, "escalation_duty_channel")
+        if duty_channel and max_bot:
+            try:
+                await max_bot.send_message(
+                    chat_id=int(duty_channel),
+                    text=notification_text,
+                    attachments=[ButtonsPayload(buttons=buttons).pack()]
+                )
+                stats["notifications_sent"] += 1
+                notified_chat_ids.append(int(duty_channel))
+                logger.info(
+                    f"Duty channel notified for queued consultation ticket {ticket.id}, "
+                    f"channel={duty_channel}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to notify duty channel for consultation ticket {ticket.id}: {e}",
+                    exc_info=True
+                )
+    except Exception as e:
+        logger.error(
+            f"Error getting duty channel setting for consultation ticket {ticket.id}: {e}",
+            exc_info=True
+        )
+
+    # Forward attachments to all notified recipients
+    if ticket.file_attachments and notified_chat_ids:
+        for chat_id in notified_chat_ids:
+            try:
+                await _forward_ticket_attachments(ticket, chat_id, max_bot, session)
+            except Exception as e:
+                logger.error(
+                    f"Failed to forward attachments to chat {chat_id} "
+                    f"for consultation ticket {ticket.id}: {e}",
+                    exc_info=True
+                )
+
+    # Schedule escalation monitoring now that working hours have started
+    if notified_chat_ids:
+        try:
+            from celery_app.escalation_tasks import schedule_technical_support_monitoring
+            await schedule_technical_support_monitoring(ticket_id=ticket.id)
+            logger.info(
+                f"Escalation monitoring scheduled for queued consultation ticket {ticket.id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to schedule escalation for queued consultation ticket {ticket.id}: {e}",
+                exc_info=True
+            )
 
     return bool(notified_chat_ids)
