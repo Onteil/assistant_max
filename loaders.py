@@ -188,17 +188,34 @@ async def register_max_bot_commands():
     
     try:
         from maxapi.types import BotCommand
+        from re import search as re_search, DOTALL
+        from maxapi.filters.command import CommandsInfo
         
-        # Вызываем внутренний метод __ready для извлечения команд из обработчиков
-        # Этот метод обычно вызывается в start_polling, но мы используем webhook через FastAPI
-        # Поэтому вызываем его вручную для извлечения commands_info из docstring
-        await max_dp._Dispatcher__ready(max_bot)
+        COMMANDS_INFO_PATTERN = r"commands_info:\s*(.*?)(?=\n|$)"
         
-        # Получаем список команд из обработчиков
-        # max_bot.handlers_commands содержит CommandsInfo объекты с информацией о командах
+        # Извлекаем команды из обработчиков вручную, БЕЗ вызова __ready,
+        # так как __ready добавляет self в self.routers и вызывает дублирование хендлеров
         commands_dict = {}
         
-        for cmd_info in max_bot.handlers_commands:
+        all_routers = list(max_dp.routers) + [max_dp]
+        commands_info_list: list[CommandsInfo] = []
+        
+        for router in all_routers:
+            for handler in router.event_handlers:
+                if handler.base_filters is None:
+                    continue
+                for base_filter in handler.base_filters:
+                    commands = getattr(base_filter, "commands", None)
+                    if commands and type(commands) is list:
+                        handler_doc = handler.func_event.__doc__
+                        extracted_info = None
+                        if handler_doc:
+                            from_pattern = re_search(COMMANDS_INFO_PATTERN, handler_doc, DOTALL)
+                            if from_pattern:
+                                extracted_info = from_pattern.group(1).strip()
+                        commands_info_list.append(CommandsInfo(commands, extracted_info))
+        
+        for cmd_info in commands_info_list:
             # cmd_info.commands - список команд (без префикса "/")
             # cmd_info.info - описание команды из docstring
             for command_name in cmd_info.commands:
