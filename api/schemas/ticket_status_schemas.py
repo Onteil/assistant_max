@@ -70,8 +70,9 @@ class TicketStatusWebhookPayload(BaseModel):
     
     @model_validator(mode="after")
     def validate_closed_by_staff_id_required(self) -> "TicketStatusWebhookPayload":
-        """Validate that closed_by_staff_id is provided when status='closed'."""
-        if self.status.lower() == "closed" and self.closed_by_staff_id is None:
+        """Validate that closed_by_staff_id is provided when status='closed' or 'Закрыто'."""
+        closed_statuses = {"closed", "закрыто"}
+        if self.status.lower() in closed_statuses and self.closed_by_staff_id is None:
             raise ValueError("closed_by_staff_id is required when status='closed'")
         return self
 

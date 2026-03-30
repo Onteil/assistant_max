@@ -166,12 +166,20 @@ async def ticket_status_update_webhook(
             )
         
         # Map string status to TicketStatus enum
+        # Supports both English keys and Russian values sent by 1C CRM triggers
         status_mapping = {
+            # English keys (our internal format)
             "new": TicketStatus.NEW,
             "in_progress": TicketStatus.IN_PROGRESS,
             "waiting_client": TicketStatus.WAITING_CLIENT,
             "closed": TicketStatus.CLOSED,
             "cancelled": TicketStatus.CANCELLED,
+            # Russian values from 1C CRM (ай_СтатусыОбращений enum)
+            "новое": TicketStatus.NEW,
+            "в работе": TicketStatus.IN_PROGRESS,
+            "ожидание клиента": TicketStatus.WAITING_CLIENT,
+            "закрыто": TicketStatus.CLOSED,
+            "отменено": TicketStatus.CANCELLED,
         }
         
         new_status_enum = status_mapping.get(payload.status.lower())
@@ -179,10 +187,23 @@ async def ticket_status_update_webhook(
             logger.error(f"Invalid status value: {payload.status}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status: {payload.status}",
+                detail=f"Invalid status: {payload.status}. Expected one of: new, in_progress, waiting_client, closed, cancelled (or Russian equivalents: Новое, В работе, Ожидание клиента, Закрыто, Отменено)",
             )
         
         old_status = ticket.ticket_status
+        
+        # Idempotency: skip update if status already matches (CRM trigger race condition)
+        if old_status == new_status_enum:
+            logger.info(
+                f"Ticket {payload.ticket_id} already has status={new_status_enum.value}, "
+                f"skipping update (likely CRM trigger echo)"
+            )
+            return TicketStatusWebhookResponse(
+                status="success",
+                message="Ticket status already up to date",
+                ticket_id=payload.ticket_id,
+                new_status=payload.status
+            )
         
         # Requirement 4.1: Update Ticket.status to new status
         ticket.ticket_status = new_status_enum
