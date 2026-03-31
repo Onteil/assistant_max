@@ -25,6 +25,7 @@ from database.models import (
     Action_Log,
     ActionType,
     Staff_Member,
+    StaffRole,
     Ticket,
     TicketStatus,
 )
@@ -191,6 +192,12 @@ async def staff_update_webhook(
             staff.position = payload.updates.position
             updates_applied.append("position")
             logger.info(f"Updated position for staff {staff.id}")
+        
+        # Update staff_role if provided
+        if payload.updates.staff_role is not None:
+            staff.staff_role = StaffRole(payload.updates.staff_role)
+            updates_applied.append("staff_role")
+            logger.info(f"Updated staff_role to {payload.updates.staff_role} for staff {staff.id}")
         
         # Requirement 3.7: Update backup managers if provided
         if payload.updates.backup_managers is not None:
@@ -383,6 +390,9 @@ async def staff_update_webhook(
                 exc_info=True
             )
         
+        if tickets_reassigned > 0:
+            updates_applied.append(f"tickets_reassigned: {tickets_reassigned}")
+        
         logger.info(
             f"Staff update webhook processed successfully: staff_id={payload.staff_id}, "
             f"updates={updates_applied}, tickets_reassigned={tickets_reassigned}"
@@ -393,7 +403,6 @@ async def staff_update_webhook(
             message="Staff member updated successfully",
             staff_id=payload.staff_id,
             updates_applied=updates_applied,
-            tickets_reassigned=tickets_reassigned if tickets_reassigned > 0 else None
         )
         
     except HTTPException as http_exc:

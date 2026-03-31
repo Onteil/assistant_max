@@ -6,7 +6,11 @@ endpoint that handles staff member lifecycle management including deactivation
 and ticket reassignment.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+StaffRoleValue = Literal["manager", "technical_support", "duty_engineer", "administrator"]
 
 
 class StaffUpdates(BaseModel):
@@ -16,12 +20,14 @@ class StaffUpdates(BaseModel):
     Attributes:
         full_name: Updated staff member full name
         position: Updated staff member position
+        staff_role: Staff role (manager, technical_support, duty_engineer, administrator)
         is_active: Active status (false triggers ticket reassignment)
         backup_managers: List of backup manager IDs for ticket reassignment
     """
     
     full_name: str | None = Field(None, description="Updated staff member full name")
     position: str | None = Field(None, description="Updated staff member position")
+    staff_role: StaffRoleValue | None = Field(None, description="Staff role")
     is_active: bool | None = Field(None, description="Active status")
     backup_managers: list[int] | None = Field(None, description="List of backup manager IDs")
     
@@ -72,13 +78,13 @@ class StaffUpdateWebhookResponse(BaseModel):
     Attributes:
         status: Operation status ("success" or "error")
         message: Human-readable status message
-        staff_id: Staff member ID that was updated
-        updates_applied: List of field names that were updated
-        tickets_reassigned: Number of tickets reassigned (if deactivated)
+        staff_id: Staff member ID that was updated (null on error)
+        updates_applied: List of field names that were updated (null on error)
+    
+    On success, updates_applied may include "tickets_reassigned: N" entry.
     """
     
     status: str = Field(..., description="Operation status")
     message: str = Field(..., description="Human-readable status message")
-    staff_id: int = Field(..., description="Staff member ID that was updated")
-    updates_applied: list[str] = Field(..., description="List of field names that were updated")
-    tickets_reassigned: int | None = Field(None, description="Number of tickets reassigned")
+    staff_id: int | None = Field(None, description="Staff member ID that was updated")
+    updates_applied: list[str] | None = Field(None, description="List of field names that were updated")
