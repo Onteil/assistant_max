@@ -354,7 +354,7 @@ async def route_ticket(
     
     Returns:
         Dictionary with routing information:
-            - target_type: "manager" | "support_team" | "duty_engineer" | "queued"
+            - target_type: "manager" | "support_team" | "duty_engineer" | "estimate_specialist" | "queued"
             - target_id: Staff member ID or None
             - expected_response_time: Human-readable response time estimate
     
@@ -423,26 +423,25 @@ async def route_ticket(
                     f"work_mode={work_mode.value}"
                 )
         
-        # Route CONSULTATION tickets to estimate tech specialist (TECHNICAL_SUPPORT role + flag)
+        # Route CONSULTATION tickets to estimate tech specialists (is_estimate_tech_specialist=True)
         elif ticket.ticket_type == TicketType.CONSULTATION:
             if work_mode == WorkMode.REGULAR:
-                routing_info["target_type"] = "support_team"
+                routing_info["target_type"] = "estimate_specialist"
                 routing_info["target_id"] = None
                 routing_info["expected_response_time"] = "в течение рабочего дня"
                 
                 logger.debug(
-                    f"Consultation ticket routed to support team: ticket_id={ticket.id}, "
+                    f"Consultation ticket routed to estimate specialists: ticket_id={ticket.id}, "
                     f"work_mode={work_mode.value}"
                 )
             
             elif work_mode == WorkMode.EXTENDED:
-                duty_engineer = await _get_duty_engineer(session)
-                routing_info["target_type"] = "duty_engineer"
-                routing_info["target_id"] = duty_engineer.tg_user_id if duty_engineer else None
-                routing_info["expected_response_time"] = "в течение 4 часов"
+                routing_info["target_type"] = "estimate_specialist"
+                routing_info["target_id"] = None
+                routing_info["expected_response_time"] = "в течение рабочего дня"
                 
                 logger.debug(
-                    f"Consultation ticket routed to duty engineer: ticket_id={ticket.id}, "
+                    f"Consultation ticket routed to estimate specialists: ticket_id={ticket.id}, "
                     f"work_mode={work_mode.value}"
                 )
             
