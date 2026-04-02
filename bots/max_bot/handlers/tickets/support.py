@@ -627,7 +627,8 @@ async def create_renewal_ticket(
                     and_(
                         Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
                         Staff_Member.is_active == True,
-                        Staff_Member.max_user_id.isnot(None)
+                        Staff_Member.max_user_id.isnot(None),
+                        Staff_Member.is_estimate_tech_specialist == False,
                     )
                 )
                 result = await session.execute(stmt)
@@ -1811,7 +1812,7 @@ async def create_support_ticket(
         
         if work_mode == WorkMode.REGULAR:
             if has_support_staff:
-                # Send notification to all active support staff
+                # Send notification to all active support staff (excluding estimate specialists)
                 from database.models import Staff_Member, StaffRole
                 from sqlalchemy import select, and_
                 
@@ -1819,7 +1820,8 @@ async def create_support_ticket(
                     and_(
                         Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
                         Staff_Member.is_active == True,
-                        Staff_Member.max_user_id.isnot(None)
+                        Staff_Member.max_user_id.isnot(None),
+                        Staff_Member.is_estimate_tech_specialist == False,
                     )
                 )
                 result = await session.execute(stmt)

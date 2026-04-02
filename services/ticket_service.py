@@ -310,7 +310,8 @@ async def check_support_staff_availability(session: AsyncSession) -> bool:
         stmt = select(Staff_Member).where(
             and_(
                 Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                Staff_Member.is_active == True
+                Staff_Member.is_active == True,
+                Staff_Member.is_estimate_tech_specialist == False,
             )
         )
         

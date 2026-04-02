@@ -656,7 +656,7 @@ async def get_available_employees_for_transfer(
 
 async def get_estimate_tech_specialists(session: AsyncSession) -> list[Staff_Member]:
     """
-    Get active TECHNICAL_SUPPORT staff members with is_estimate_tech_specialist flag.
+    Get active staff members with is_estimate_tech_specialist flag (any role).
 
     Used for routing CONSULTATION tickets to the appropriate specialists.
 
@@ -672,7 +672,6 @@ async def get_estimate_tech_specialists(session: AsyncSession) -> list[Staff_Mem
             .where(
                 and_(
                     Staff_Member.is_active == True,
-                    Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
                     Staff_Member.is_estimate_tech_specialist == True,
                 )
             )
