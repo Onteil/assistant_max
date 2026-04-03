@@ -1041,7 +1041,7 @@ class API_Retry_Queue(Base):
     
     # Retry tracking
     attempt_count = Column(Integer, default=0, nullable=False)
-    status = Column(Enum(RetryStatus), default=RetryStatus.PENDING, nullable=False)
+    status = Column(Enum(RetryStatus, values_callable=lambda x: [e.value for e in x]), default=RetryStatus.PENDING, nullable=False)
     
     # Scheduling
     next_retry_at = Column(DateTime, nullable=False)

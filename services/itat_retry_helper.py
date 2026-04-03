@@ -113,5 +113,4 @@ async def call_itat_with_retry(
 
         return None
 
-    finally:
-        await api_client.close()
+    # NOTE: Do NOT close the singleton client here — it is reused across requests.
