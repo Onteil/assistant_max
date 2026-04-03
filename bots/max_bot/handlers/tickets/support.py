@@ -50,8 +50,8 @@ from bots.max_bot.texts import (
     SUPPORT_RESPONSE_TIME_REGULAR,
     SUPPORT_RESPONSE_TIME_EXTENDED,
     SUPPORT_RESPONSE_TIME_NON_WORKING,
-    SUPPORT_NON_WORKING_HOURS_MESSAGE,
-    RENEWAL_NON_WORKING_HOURS_MESSAGE,
+    get_support_non_working_hours_message,
+    get_renewal_non_working_hours_message,
 )
 from database.models import (
     KeyConflictStatus,
@@ -87,36 +87,32 @@ async def cmd_support(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Handle /support command or callback - check subscription status and initiate flow.
-    
-    Checks user subscription status:
-    - ACTIVE: Proceed to problem description
-    - EXPIRED/NONE: Offer renewal option
-    
+    Handle /support command or callback - initiate support flow without subscription check.
+
+    All registered users can access technical support regardless of subscription status.
+
     Args:
         event: Message or callback event from MAX
         context: FSM context for state management
         session: Database session
         messenger_adapter: Messenger adapter for sending messages
-    
+
     commands_info: Запросить техническую поддержку
-    
+
     Requirements: 3.1, 3.2, 3.3
     """
     chat_id = event.message.recipient.chat_id
-    # Get user_id based on event type (MessageCreated uses sender, MessageCallback uses callback.user)
     from maxapi.types import MessageCallback as MCType
     if isinstance(event, MCType):
         max_user_id = event.callback.user.user_id
     else:
         max_user_id = event.message.sender.user_id
-    
+
     logger.info(f"User initiated support request: max_user_id={max_user_id}, chat_id={chat_id}")
-    
+
     try:
-        # Get user from database
         user = await get_user_by_max_id(session, max_user_id)
-        
+
         if not user:
             logger.error(f"User not found for support request: max_user_id={max_user_id}")
             await messenger_adapter.send_message(
@@ -125,59 +121,24 @@ async def cmd_support(
                 parse_mode="HTML"
             )
             return
-        
-        # Check subscription status
-        subscription_status = user.subscription_status
-        
-        logger.info(
-            f"User subscription status: user_id={user.id}, status={subscription_status.value}"
+
+        logger.info(f"Proceeding to problem description (no subscription check): user_id={user.id}")
+
+        await context.update_data(
+            user_id=user.id,
+            problem_description=None,
+            attachments=[],
+            selected_keys=[]
         )
-        
-        if subscription_status == SubscriptionStatus.ACTIVE:
-            # Proceed to problem description
-            logger.info(f"Active subscription - proceeding to problem description: user_id={user.id}")
-            
-            # Initialize FSM context
-            await context.update_data(
-                user_id=user.id,
-                problem_description=None,
-                attachments=[],
-                selected_keys=[]
-            )
-            
-            # Set FSM state
-            await context.set_state(SupportStates.entering_problem)
-            
-            # Prompt for problem description
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=SUPPORT_CREATE_TICKET,
-                keyboard=get_problem_description_keyboard(),
-                parse_mode="HTML"
-            )
-        
-        elif subscription_status == SubscriptionStatus.EXPIRED:
-            # Offer renewal option
-            logger.info(f"Expired subscription - offering renewal: user_id={user.id}")
-            
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=SUPPORT_SUBSCRIPTION_EXPIRED,
-                keyboard=get_renewal_keyboard(),
-                parse_mode="HTML"
-            )
-        
-        else:  # SubscriptionStatus.NONE
-            # Offer renewal option
-            logger.info(f"No subscription - offering renewal: user_id={user.id}")
-            
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=SUPPORT_NO_SUBSCRIPTION,
-                keyboard=get_renewal_keyboard(),
-                parse_mode="HTML"
-            )
-    
+        await context.set_state(SupportStates.entering_problem)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=SUPPORT_CREATE_TICKET,
+            keyboard=get_problem_description_keyboard(),
+            parse_mode="HTML"
+        )
+
     except SQLAlchemyError as e:
         logger.error(
             f"Database error in cmd_support: max_user_id={max_user_id}, error={e}",
@@ -188,7 +149,7 @@ async def cmd_support(
             text=ERROR_GENERAL,
             parse_mode="HTML"
         )
-    
+
     except Exception as e:
         logger.error(
             f"Unexpected error in cmd_support: max_user_id={max_user_id}, error={e}",
@@ -543,7 +504,7 @@ async def create_renewal_ticket(
             )
         else:
             # Non-working hours - friendly message
-            from bots.max_bot.texts import RENEWAL_NON_WORKING_HOURS_MESSAGE
+            from bots.max_bot.texts import get_renewal_non_working_hours_message
             
             # Show ticket creation confirmation first
             await messenger_adapter.send_message(
@@ -555,7 +516,7 @@ async def create_renewal_ticket(
             # Then show non-working hours message
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=RENEWAL_NON_WORKING_HOURS_MESSAGE,
+                text=get_renewal_non_working_hours_message(),
                 parse_mode="HTML"
             )
         
@@ -1771,8 +1732,8 @@ async def create_support_ticket(
         
         # Get response time message based on work mode
         if work_mode == WorkMode.NON_WORKING:
-            from bots.max_bot.texts import SUPPORT_NON_WORKING_HOURS_MESSAGE
-            response_time_message = SUPPORT_NON_WORKING_HOURS_MESSAGE
+            from bots.max_bot.texts import get_support_non_working_hours_message
+            response_time_message = get_support_non_working_hours_message()
         else:
             response_time_message = response_time_messages[work_mode]
         

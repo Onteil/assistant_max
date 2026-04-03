@@ -344,8 +344,24 @@ ADMIN_CREATION_CANCELLED = """
 # Friendly messages for tickets created outside working hours
 # Requirements: Show friendly message with emoji and working hours info
 
-INVOICE_NON_WORKING_HOURS_MESSAGE = """
-🌙 <b>Добрый вечер!</b> 
+def _get_time_greeting() -> str:
+    """Return greeting and emoji based on current Moscow time (hour)."""
+    from datetime import datetime, timezone, timedelta
+    moscow_tz = timezone(timedelta(hours=3))
+    hour = datetime.now(moscow_tz).hour
+    if 5 <= hour < 12:
+        return "☀️", "Доброе утро!"
+    elif 12 <= hour < 18:
+        return "🌤️", "Добрый день!"
+    else:
+        return "🌙", "Добрый вечер!"
+
+
+def get_invoice_non_working_hours_message() -> str:
+    """Non-working hours message for invoice tickets with time-based greeting."""
+    emoji, greeting = _get_time_greeting()
+    return f"""
+{emoji} <b>{greeting}</b> 
 
 Ваша заявка поставлена в очередь. На данный момент нет свободных специалистов.
 
@@ -354,8 +370,12 @@ INVOICE_NON_WORKING_HOURS_MESSAGE = """
 Ваш менеджер увидит заявку первым делом утром и свяжется с вами. Спасибо за понимание! 😊
 """
 
-SUPPORT_NON_WORKING_HOURS_MESSAGE = """
-🌙 <b>Добрый вечер!</b> 
+
+def get_support_non_working_hours_message() -> str:
+    """Non-working hours message for support tickets with time-based greeting."""
+    emoji, greeting = _get_time_greeting()
+    return f"""
+{emoji} <b>{greeting}</b> 
 
 Ваша заявка поставлена в очередь. На данный момент нет свободных специалистов.
 
@@ -364,8 +384,12 @@ SUPPORT_NON_WORKING_HOURS_MESSAGE = """
 Мы ответим вам в начале рабочего дня. Спасибо за понимание! 😊
 """
 
-RENEWAL_NON_WORKING_HOURS_MESSAGE = """
-🌙 <b>Добрый вечер!</b> 
+
+def get_renewal_non_working_hours_message() -> str:
+    """Non-working hours message for renewal tickets with time-based greeting."""
+    emoji, greeting = _get_time_greeting()
+    return f"""
+{emoji} <b>{greeting}</b> 
 
 Ваша заявка поставлена в очередь. На данный момент нет свободных специалистов.
 
@@ -373,6 +397,7 @@ RENEWAL_NON_WORKING_HOURS_MESSAGE = """
 
 Ваш менеджер свяжется с вами в начале рабочего дня. Спасибо за понимание! 😊
 """
+
 
 # ========== Consultation Flow Messages ==========
 
@@ -424,7 +449,12 @@ CONSULTATION_TICKET_CREATED = """
 Ваш вопрос передан сметному специалисту. Он свяжется с вами в ближайшее время.
 """
 
-CONSULTATION_TICKET_CREATED_NON_WORKING = """
+def get_consultation_non_working_hours_message() -> str:
+    """Non-working hours message for consultation tickets with time-based greeting."""
+    emoji, greeting = _get_time_greeting()
+    return f"""
+{emoji} <b>{greeting}</b>
+
 ✅ <b>Заявка на консультацию создана!</b>
 
 Ваш вопрос поставлен в очередь.
@@ -434,10 +464,30 @@ CONSULTATION_TICKET_CREATED_NON_WORKING = """
 Специалист свяжется с вами в начале рабочего дня. Спасибо за понимание! 😊
 """
 
+
+# Keep for backward compatibility (working hours variant — no greeting needed)
+CONSULTATION_TICKET_CREATED_NON_WORKING = get_consultation_non_working_hours_message()
+
 CONSULTATION_KEY_CONFLICT = """
 ⚠️ <b>Конфликт ключа</b>
 
 Этот ключ уже зарегистрирован за другим пользователем. Попробуйте другой ключ или пропустите этот шаг.
+"""
+
+CONSULTATION_NO_SUBSCRIPTION = """
+🔒 <b>Консультация недоступна</b>
+
+Сметная консультация доступна только клиентам с активной подпиской на ИТС.
+
+Для получения консультации необходимо оформить подписку. Заявка на подписку уже отправлена вашему менеджеру — он свяжется с вами в ближайшее время.
+"""
+
+CONSULTATION_SUBSCRIPTION_EXPIRED = """
+🔒 <b>Консультация недоступна</b>
+
+Ваша подписка на ИТС истекла. Сметная консультация доступна только при активной подписке.
+
+Заявка на продление уже отправлена вашему менеджеру — он свяжется с вами в ближайшее время.
 """
 
 # ========== Main Menu Welcome Text (used across multiple handlers) ==========

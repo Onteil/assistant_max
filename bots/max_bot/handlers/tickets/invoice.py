@@ -59,7 +59,7 @@ from bots.max_bot.texts import (
     INVOICE_INN_ADDED,
     INVOICE_KEY_ADDED,
     INVOICE_KEY_CONFLICT,
-    INVOICE_NON_WORKING_HOURS_MESSAGE,
+    get_invoice_non_working_hours_message,
     INVOICE_RESPONSE_TIME_WORKING,
     INVOICE_SELECT_DELIVERY,
     INVOICE_SELECT_KEYS,
@@ -2366,8 +2366,8 @@ async def create_invoice_ticket(
             response_time_message = INVOICE_RESPONSE_TIME_WORKING
         else:
             # Import the new non-working hours message
-            from bots.max_bot.texts import INVOICE_NON_WORKING_HOURS_MESSAGE
-            response_time_message = INVOICE_NON_WORKING_HOURS_MESSAGE
+            from bots.max_bot.texts import get_invoice_non_working_hours_message
+            response_time_message = get_invoice_non_working_hours_message()
         
         # Send success message to user
         # Use different message template based on whether user has assigned manager

@@ -321,6 +321,9 @@ def get_employee_menu_text(
         f"⚙️ <b>Настройки</b> — управление профилем и подписью\n"
     )
     
+    if role == "manager":
+        text += f"👥 <b>Передача клиентов</b> — передать своих клиентов другому менеджеру\n"
+    
     if role == "administrator":
         text += f"🔐 <b>Админ-панель</b> — управление сотрудниками и системой\n"
     
@@ -603,7 +606,8 @@ async def cmd_manager(
         
         # Generate menu keyboard based on employee role with new tickets count
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
-        keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
+        is_manager = employee.staff_role == StaffRole.MANAGER
+        keyboard = get_manager_menu_keyboard(is_admin=is_admin, is_manager=is_manager, new_tickets_count=new_tickets_count)
         
         # Generate role-specific menu text with tickets counts
         menu_text = get_employee_menu_text(
@@ -707,6 +711,58 @@ async def handle_manager_menu_action(
             # Show archive view
             await show_archive(chat_id, max_user_id, session, messenger_adapter, context)
             logger.info(f"Employee {max_user_id} accessed archive")
+        
+        elif action == "transfer_clients":
+            # Transfer clients - only for managers
+            if employee.staff_role != StaffRole.MANAGER:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Передача клиентов доступна только для менеджеров.",
+                    parse_mode="HTML"
+                )
+                return
+            
+            from bots.max_bot.handlers.staff.employees import handle_transfer_clients_start
+            from bots.max_bot.payloads import TransferClientsPayload
+            
+            fake_payload = TransferClientsPayload(action="start", source_manager_id=employee.id)
+            await handle_transfer_clients_start(
+                event=event,
+                payload=fake_payload,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter,
+                initiated_by_manager=True,
+                message_already_deleted=True
+            )
+        
+        elif action == "back_to_menu":
+            # Return to manager main menu (used after transfer_clients)
+            is_admin_role = employee.staff_role == StaffRole.ADMINISTRATOR
+            is_manager_role = employee.staff_role == StaffRole.MANAGER
+            
+            from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
+            active_tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter=None)
+            new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
+            
+            keyboard = get_manager_menu_keyboard(
+                is_admin=is_admin_role,
+                is_manager=is_manager_role,
+                new_tickets_count=new_tickets_count
+            )
+            menu_text = get_employee_menu_text(
+                role=employee.staff_role.value,
+                full_name=employee.full_name,
+                position=employee.position,
+                active_tickets_count=len(active_tickets),
+                new_tickets_count=new_tickets_count
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=menu_text,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
         
         elif action == "admin_panel":
             # Delegate to admin panel handler

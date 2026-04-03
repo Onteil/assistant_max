@@ -1193,21 +1193,19 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                     logger.error(f"Failed to initialize MAX bot for channels: {e}")
             
             # Get escalation channel settings
-            from services.settings_service import get_setting
+            from services.settings_service import get_escalation_channels
             
             if ticket.ticket_type.value in ["invoice", "renewal"]:
-                # For invoice/renewal tickets, send to manager escalation channel
-                manager_channel = await get_setting(session, "escalation_manager_channel")
-                if manager_channel:
-                    is_max = is_max_chat_id(manager_channel)
-                    
-                    if is_max and max_bot:
+                # For invoice/renewal tickets, send to manager escalation channels
+                manager_channels = await get_escalation_channels(session, "escalation_manager_channel")
+                for manager_channel in manager_channels:
+                    if is_max_chat_id(manager_channel) and max_bot:
                         try:
                             await max_bot.send_message(
                                 chat_id=int(manager_channel),
                                 text=notification_text
                             )
-                            channels_notified.append("escalation_manager_channel (MAX)")
+                            channels_notified.append(f"escalation_manager_channel:{manager_channel} (MAX)")
                             logger.info(
                                 f"Escalation notification sent to MAX manager channel: {manager_channel}, "
                                 f"ticket_id={ticket_id}"
@@ -1219,23 +1217,20 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                             )
                     else:
                         logger.warning(
-                            f"Cannot send to manager channel {manager_channel}: "
-                            f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
+                            f"Cannot send to manager channel {manager_channel}: MAX bot not available"
                         )
             
-            elif ticket.ticket_type.value == "technical_support":
-                # For technical support tickets, send to duty escalation channel
-                duty_channel = await get_setting(session, "escalation_duty_channel")
-                if duty_channel:
-                    is_max = is_max_chat_id(duty_channel)
-                    
-                    if is_max and max_bot:
+            elif ticket.ticket_type.value in ("technical_support", "consultation"):
+                # For technical support / consultation tickets, send to duty escalation channels
+                duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
+                for duty_channel in duty_channels:
+                    if is_max_chat_id(duty_channel) and max_bot:
                         try:
                             await max_bot.send_message(
                                 chat_id=int(duty_channel),
                                 text=notification_text
                             )
-                            channels_notified.append("escalation_duty_channel (MAX)")
+                            channels_notified.append(f"escalation_duty_channel:{duty_channel} (MAX)")
                             logger.info(
                                 f"Escalation notification sent to MAX duty channel: {duty_channel}, "
                                 f"ticket_id={ticket_id}"
@@ -1247,9 +1242,32 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                             )
                     else:
                         logger.warning(
-                            f"Cannot send to duty channel {duty_channel}: "
-                            f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
+                            f"Cannot send to duty channel {duty_channel}: MAX bot not available"
                         )
+                # For consultation tickets also notify consultant channels
+                if ticket.ticket_type.value == "consultation":
+                    consultant_channels = await get_escalation_channels(session, "escalation_consultant_channel")
+                    for consultant_channel in consultant_channels:
+                        if is_max_chat_id(consultant_channel) and max_bot:
+                            try:
+                                await max_bot.send_message(
+                                    chat_id=int(consultant_channel),
+                                    text=notification_text
+                                )
+                                channels_notified.append(f"escalation_consultant_channel:{consultant_channel} (MAX)")
+                                logger.info(
+                                    f"Escalation notification sent to MAX consultant channel: {consultant_channel}, "
+                                    f"ticket_id={ticket_id}"
+                                )
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to send escalation to MAX consultant channel {consultant_channel}: {e}",
+                                    exc_info=True
+                                )
+                        else:
+                            logger.warning(
+                                f"Cannot send to consultant channel {consultant_channel}: MAX bot not available"
+                            )
         
         finally:
             # Close bot session
@@ -1767,35 +1785,33 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 except Exception as e:
                     logger.error(f"Failed to initialize MAX bot for duty channel: {e}")
             
-            # Get escalation duty channel setting
-            from services.settings_service import get_setting
+            # Get escalation duty channel settings
+            from services.settings_service import get_escalation_channels
             
-            duty_channel = await get_setting(session, "escalation_duty_channel")
-            if duty_channel:
-                is_max = is_max_chat_id(duty_channel)
-                
-                if is_max and max_bot:
-                    try:
-                        await max_bot.send_message(
-                            chat_id=int(duty_channel),
-                            text=notification_text,
-                            attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
+            duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
+            if duty_channels:
+                for duty_channel in duty_channels:
+                    if is_max_chat_id(duty_channel) and max_bot:
+                        try:
+                            await max_bot.send_message(
+                                chat_id=int(duty_channel),
+                                text=notification_text,
+                                attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
+                            )
+                            channels_notified.append(f"escalation_duty_channel:{duty_channel} (MAX)")
+                            logger.info(
+                                f"Technical support escalation sent to MAX duty channel: {duty_channel}, "
+                                f"ticket_id={ticket_id}"
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send technical support escalation to MAX duty channel {duty_channel}: {e}",
+                                exc_info=True
+                            )
+                    else:
+                        logger.warning(
+                            f"Cannot send to duty channel {duty_channel}: MAX bot not available"
                         )
-                        channels_notified.append("escalation_duty_channel (MAX)")
-                        logger.info(
-                            f"Technical support escalation sent to MAX duty channel: {duty_channel}, "
-                            f"ticket_id={ticket_id}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to send technical support escalation to MAX duty channel {duty_channel}: {e}",
-                            exc_info=True
-                        )
-                else:
-                    logger.warning(
-                        f"Cannot send to duty channel {duty_channel}: "
-                        f"{'Not a MAX chat ID' if not is_max else 'MAX bot not available'}"
-                    )
             else:
                 logger.info(
                     f"No escalation_duty_channel configured for technical support escalation: "

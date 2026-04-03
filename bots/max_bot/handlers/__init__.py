@@ -239,7 +239,8 @@ from .staff.settings import (
     handle_reset_renewal_reminders,
     handle_reset_escalation,
     handle_reset_duty_support,
-    handle_edit_escalation_channel_start,
+    handle_add_escalation_channel_start,
+    handle_remove_escalation_channel,
     handle_escalation_channel_input,
     handle_edit_duty_account_start,
     handle_duty_account_input,
@@ -265,6 +266,7 @@ from .staff.employees import (
     handle_transfer_ticket_confirm,
     handle_transfer_clients_start,
     handle_transfer_clients_confirm,
+    handle_transfer_clients_execute,
 )
 from .staff.calendar import (
     handle_calendar_menu,
@@ -657,8 +659,10 @@ def create_user_router() -> Router:
     async def route_transfer_clients(event: MessageCallback, payload: TransferClientsPayload, context: MemoryContext, session: AsyncSession, messenger_adapter: MAXMessengerAdapter):
         if payload.action == "start":
             await handle_transfer_clients_start(event, payload, context, session, messenger_adapter)
-        elif payload.action in ["confirm", "execute"]:
+        elif payload.action == "confirm":
             await handle_transfer_clients_confirm(event, payload, context, session, messenger_adapter)
+        elif payload.action == "execute":
+            await handle_transfer_clients_execute(event, payload, context, session, messenger_adapter)
     
     user_router.message_callback(TransferClientsPayload.filter())(route_transfer_clients)
     
@@ -857,8 +861,10 @@ def create_user_router() -> Router:
             await handle_reset_timeouts(event, payload, context, session, messenger_adapter)
         elif payload.action == "escalation":
             await handle_escalation_settings(event, payload, context, session, messenger_adapter)
-        elif payload.action == "edit_escalation_channel":
-            await handle_edit_escalation_channel_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "add_escalation_channel":
+            await handle_add_escalation_channel_start(event, payload, context, session, messenger_adapter)
+        elif payload.action == "remove_escalation_channel":
+            await handle_remove_escalation_channel(event, payload, context, session, messenger_adapter)
         elif payload.action == "reset_escalation":
             await handle_reset_escalation(event, payload, context, session, messenger_adapter)
         elif payload.action == "duty_support":

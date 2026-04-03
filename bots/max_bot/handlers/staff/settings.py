@@ -561,7 +561,43 @@ async def handle_timeout_value_input(
 # ========== Escalation Channel Settings ==========
 
 
-# ========== Escalation Channel Settings ==========
+async def _build_escalation_settings_message(session: AsyncSession) -> tuple[str, list]:
+    """Build escalation settings text and keyboard buttons."""
+    from services.settings_service import get_escalation_channels
+
+    CHANNEL_KEYS = [
+        ("escalation_manager_channel", "💼 Менеджеры", "Счета и продления"),
+        ("escalation_duty_channel", "🛠 Дежурная ТП", "Техподдержка"),
+        ("escalation_consultant_channel", "📐 Консультанты", "Сметные консультанты"),
+    ]
+
+    text_lines = ["📢 <b>Настройка каналов эскалации</b>\n"]
+    buttons = []
+
+    for key, label, desc in CHANNEL_KEYS:
+        channels = await get_escalation_channels(session, key)
+        text_lines.append(f"<b>{label} ({desc}):</b>")
+        if channels:
+            for idx, ch in enumerate(channels):
+                text_lines.append(f"  • <code>{ch}</code>")
+                buttons.append([KeyboardButton(
+                    text=f"❌ Удалить {ch}",
+                    payload=SettingsPayload(action="remove_escalation_channel", setting_key=key, page=idx).pack()
+                )])
+        else:
+            text_lines.append("  ❌ Не настроен")
+        buttons.append([KeyboardButton(
+            text=f"➕ Добавить канал ({label})",
+            payload=SettingsPayload(action="add_escalation_channel", setting_key=key).pack()
+        )])
+        text_lines.append("")
+
+    text_lines.append("⚠️ Перед добавлением бот отправит тестовое сообщение в канал.")
+    buttons.extend([
+        [KeyboardButton(text="🔄 Сбросить все", payload=SettingsPayload(action="reset_escalation").pack())],
+        [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())],
+    ])
+    return "\n".join(text_lines), buttons
 
 
 async def handle_escalation_settings(
@@ -573,18 +609,17 @@ async def handle_escalation_settings(
 ) -> None:
     """
     Display escalation channel configuration screen.
-    
-    Shows current escalation channels for manager and duty support.
+
+    Shows current escalation channels for manager, duty support, and consultants.
     Uses replace_message pattern.
-    
+
     Requirements: 3.1, 3.2, 8.1, 8.2
     """
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-    
+
     try:
-        # Verify user is administrator
         admin = await is_admin(session, max_user_id)
         if not admin:
             await messenger_adapter.send_message(
@@ -593,93 +628,25 @@ async def handle_escalation_settings(
                 parse_mode="HTML"
             )
             return
-        
-        # Delete old message
+
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
-        # Get current escalation channel values
-        manager_channel = await get_setting(session, "escalation_manager_channel")
-        duty_channel = await get_setting(session, "escalation_duty_channel")
-        
-        # Get chat titles from action logs
-        manager_title = await _get_chat_title_from_logs(session, "escalation_manager_channel")
-        duty_title = await _get_chat_title_from_logs(session, "escalation_duty_channel")
-        
-        # Format channel display with titles
-        if manager_channel:
-            manager_status = f"{manager_channel}"
-            if manager_title:
-                manager_status += f" ({manager_title})"
-        else:
-            manager_status = "❌ Не настроен"
-            
-        if duty_channel:
-            duty_status = f"{duty_channel}"
-            if duty_title:
-                duty_status += f" ({duty_title})"
-        else:
-            duty_status = "❌ Не настроен"
-        
-        # Build keyboard
-        buttons = [
-            [
-                KeyboardButton(
-                    text=f"📢 Канал менеджеров: {manager_status[:20]}...",
-                    payload=SettingsPayload(
-                        action="edit_escalation_channel",
-                        setting_key="escalation_manager_channel"
-                    ).pack()
-                )
-            ],
-            [
-                KeyboardButton(
-                    text=f"📢 Канал дежурной: {duty_status[:20]}...",
-                    payload=SettingsPayload(
-                        action="edit_escalation_channel",
-                        setting_key="escalation_duty_channel"
-                    ).pack()
-                )
-            ],
-            [
-                KeyboardButton(
-                    text="🔄 Сбросить по умолчанию",
-                    payload=SettingsPayload(action="reset_escalation").pack()
-                )
-            ],
-            [
-                KeyboardButton(
-                    text="◀️ Назад",
-                    payload=SettingsPayload(action="menu").pack()
-                )
-            ]
-        ]
-        
+
+        escalation_text, buttons = await _build_escalation_settings_message(session)
         keyboard = Keyboard(buttons=buttons, inline=True)
-        
-        escalation_text = (
-            "📢 <b>Настройка каналов эскалации</b>\n\n"
-            "Настройте MAX чаты для уведомлений об эскалации заявок.\n\n"
-            f"<b>Канал эскалации менеджеров:</b> {manager_status}\n"
-            "Чат для уведомлений об эскалации заявок менеджеров.\n\n"
-            f"<b>Канал эскалации дежурной:</b> {duty_status}\n"
-            "Чат для уведомлений об эскалации заявок дежурной поддержки.\n\n"
-            "Нажмите на параметр для изменения значения.\n"
-            "⚠️ Перед сохранением будет отправлено тестовое сообщение."
-        )
-        
+
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=escalation_text,
             keyboard=keyboard,
             parse_mode="HTML"
         )
-        
+
         logger.info(f"Administrator {max_user_id} accessed escalation settings")
-        
+
     except Exception as e:
         logger.error(f"Error showing escalation settings: {e}", exc_info=True)
         await messenger_adapter.send_message(
@@ -1643,7 +1610,7 @@ async def handle_reset_escalation(
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
-    """Reset escalation channel settings to default values."""
+    """Reset all escalation channel settings to default (empty lists)."""
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     
@@ -1652,13 +1619,10 @@ async def handle_reset_escalation(
         if not admin:
             return
         
-        # Reset both escalation channels
-        for key in ["escalation_manager_channel", "escalation_duty_channel"]:
+        for key in ["escalation_manager_channel", "escalation_duty_channel", "escalation_consultant_channel"]:
             await reset_setting(session=session, key=key, admin_id=admin.max_user_id)
         
-        # Show updated escalation settings
         await handle_escalation_settings(event, payload, context, session, messenger_adapter)
-        
         logger.info(f"Administrator {admin.id} reset escalation settings")
         
     except Exception as e:
@@ -1697,72 +1661,142 @@ async def handle_reset_duty_support(
 # ========== Escalation Channel Editing ==========
 
 
-async def handle_edit_escalation_channel_start(
+async def handle_add_escalation_channel_start(
     event: MessageCallback,
     payload: SettingsPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
-    """Start escalation channel editing flow."""
+    """Start adding a new escalation channel."""
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-    
+
     try:
         admin = await is_admin(session, max_user_id)
         if not admin:
             await messenger_adapter.send_message(chat_id=chat_id, text="❌ У вас нет доступа к настройкам системы.", parse_mode="HTML")
             return
-        
+
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
+
         setting_key = payload.setting_key
+
+        # Whitelist valid escalation channel keys
+        VALID_ESCALATION_KEYS = {
+            "escalation_manager_channel",
+            "escalation_duty_channel",
+            "escalation_consultant_channel",
+        }
+        if setting_key not in VALID_ESCALATION_KEYS:
+            logger.warning(f"Invalid escalation setting_key attempted: {setting_key} by admin {max_user_id}")
+            await messenger_adapter.send_message(chat_id=chat_id, text="❌ Неверный ключ настройки.", parse_mode="HTML")
+            return
+
         await context.update_data(editing_setting_key=setting_key)
         await context.set_state(SettingsStates.entering_escalation_chat_id)
-        
-        setting_info = {
-            "escalation_manager_channel": {
-                "name": "канала эскалации менеджеров",
-                "description": "В этот чат будут приходить уведомления об эскалации обращений к менеджерам."
-            },
-            "escalation_duty_channel": {
-                "name": "канала эскалации дежурной",
-                "description": "В этот чат будут приходить уведомления об эскалации обращений к дежурной поддержке."
-            }
+
+        setting_labels = {
+            "escalation_manager_channel": "менеджеров (счета/продления)",
+            "escalation_duty_channel": "дежурной ТП (техподдержка)",
+            "escalation_consultant_channel": "сметных консультантов",
         }
-        
-        info = setting_info.get(setting_key, {"name": "канала эскалации", "description": "В этот чат будут приходить уведомления об эскалации."})
-        
+        label = setting_labels.get(setting_key, "эскалации")
+
         keyboard = Keyboard(buttons=[[KeyboardButton(text="❌ Отмена", payload=SettingsPayload(action="escalation").pack())]], inline=True)
-        
+
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=(
-                f"📢 <b>Изменение {info['name']}</b>\n\n"
-                f"{info['description']}\n\n"
+                f"📢 <b>Добавление канала {label}</b>\n\n"
+                "Введите Chat ID группового чата MAX.\n\n"
                 "<b>Как узнать Chat ID:</b>\n"
                 "1️⃣ Добавьте бота в групповой чат\n"
                 "2️⃣ Отправьте команду <code>/get_chat_id</code> в этом чате\n"
                 "3️⃣ Скопируйте Chat ID из ответного сообщения бота\n\n"
-                "<b>Требования:</b>\n"
-                "• Бот должен быть добавлен в этот чат\n"
-                "• Бот должен иметь право на отправку сообщений\n\n"
-                "<b>Формат:</b> <code>-71826453867944</code> (отрицательное число для групповых чатов)\n\n"
+                "<b>Формат:</b> <code>-71826453867944</code>\n\n"
                 "⚠️ После ввода будет отправлено тестовое сообщение для проверки доступа."
             ),
             keyboard=keyboard,
             parse_mode="HTML"
         )
-        
-        logger.info(f"Administrator {max_user_id} started editing escalation channel: {setting_key}")
-        
+
+        logger.info(f"Administrator {max_user_id} started adding escalation channel: {setting_key}")
+
     except Exception as e:
-        logger.error(f"Error starting escalation channel edit: {e}", exc_info=True)
+        logger.error(f"Error starting escalation channel add: {e}", exc_info=True)
+        await messenger_adapter.send_message(chat_id=chat_id, text="❌ Произошла ошибка.", parse_mode="HTML")
+
+
+async def handle_remove_escalation_channel(
+    event: MessageCallback,
+    payload: SettingsPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """Remove a specific channel from an escalation channel list."""
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        setting_key = payload.setting_key
+
+        # Whitelist valid escalation channel keys
+        VALID_ESCALATION_KEYS = {
+            "escalation_manager_channel",
+            "escalation_duty_channel",
+            "escalation_consultant_channel",
+        }
+        if not setting_key or setting_key not in VALID_ESCALATION_KEYS:
+            await messenger_adapter.send_message(chat_id=chat_id, text="❌ Неверный ключ настройки.", parse_mode="HTML")
+            return
+
+        # The page field stores the index of the channel in the list
+        from services.settings_service import get_escalation_channels, remove_channel_from_setting
+        channels = await get_escalation_channels(session, setting_key)
+        target_index = payload.page
+
+        if target_index is None or target_index < 0 or target_index >= len(channels):
+            await messenger_adapter.send_message(chat_id=chat_id, text="❌ Канал не найден.", parse_mode="HTML")
+            return
+
+        target_channel = channels[target_index]
+
+        success, msg = await remove_channel_from_setting(session, setting_key, target_channel, admin.max_user_id)
+        if not success:
+            await messenger_adapter.send_message(chat_id=chat_id, text=f"❌ {msg}", parse_mode="HTML")
+            return
+
+        # Refresh escalation settings screen
+        escalation_text, buttons = await _build_escalation_settings_message(session)
+        keyboard = Keyboard(buttons=buttons, inline=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="✅ Канал удалён.\n\n" + escalation_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+        logger.info(f"Administrator {admin.id} removed channel {target_channel} from {setting_key}")
+
+    except Exception as e:
+        logger.error(f"Error removing escalation channel: {e}", exc_info=True)
         await messenger_adapter.send_message(chat_id=chat_id, text="❌ Произошла ошибка.", parse_mode="HTML")
 
 
@@ -1772,31 +1806,42 @@ async def handle_escalation_channel_input(
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
-    """Process escalation channel input, test, and save if valid."""
+    """Process escalation channel input, test, and add to list if valid."""
     chat_id = event.message.recipient.chat_id
     max_user_id = event.message.sender.user_id
-    
+
     try:
         admin = await is_admin(session, max_user_id)
         if not admin:
             await messenger_adapter.send_message(chat_id=chat_id, text="❌ У вас нет доступа к настройкам системы.", parse_mode="HTML")
             await context.clear()
             return
-        
+
         data = await context.get_data()
         setting_key = data.get("editing_setting_key")
-        
+
         if not setting_key:
             await messenger_adapter.send_message(chat_id=chat_id, text="❌ Ошибка: не найден ключ настройки.", parse_mode="HTML")
             await context.clear()
             return
-        
+
         chat_id_input = event.message.body.text.strip()
-        
+
+        # Basic format validation before testing
+        try:
+            int(chat_id_input)
+        except ValueError:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ <b>Неверный формат</b>\n\nChat ID должен быть числом (например: <code>-71826453867944</code>).\n\nПопробуйте еще раз или нажмите \"Отмена\".",
+                parse_mode="HTML"
+            )
+            return
+
         # Test the channel
-        max_bot = messenger_adapter.bot
-        test_success, test_message, chat_title = await test_escalation_channel(max_bot, chat_id_input)
-        
+        max_bot_instance = messenger_adapter.bot
+        test_success, test_message, chat_title = await test_escalation_channel(max_bot_instance, chat_id_input)
+
         if not test_success:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
@@ -1813,104 +1858,38 @@ async def handle_escalation_channel_input(
             )
             logger.warning(f"Escalation channel test failed for admin {admin.id}: {test_message}")
             return
-        
-        # Save the setting
-        success, result_message = await update_setting(
+
+        # Add channel to list
+        from services.settings_service import add_channel_to_setting
+        success, result_message = await add_channel_to_setting(
             session=session,
             key=setting_key,
-            value=chat_id_input,
+            chat_id=chat_id_input,
             admin_id=admin.max_user_id,
             chat_title=chat_title
         )
-        
+
         if success:
             await context.clear()
-            
-            # Get updated escalation channel values
-            manager_channel = await get_setting(session, "escalation_manager_channel")
-            duty_channel = await get_setting(session, "escalation_duty_channel")
-            
-            # Get chat titles from action logs
-            manager_title = await _get_chat_title_from_logs(session, "escalation_manager_channel")
-            duty_title = await _get_chat_title_from_logs(session, "escalation_duty_channel")
-            
-            # Format channel display with titles
-            if manager_channel:
-                manager_status = f"{manager_channel}"
-                if manager_title:
-                    manager_status += f" ({manager_title})"
-            else:
-                manager_status = "❌ Не настроен"
-                
-            if duty_channel:
-                duty_status = f"{duty_channel}"
-                if duty_title:
-                    duty_status += f" ({duty_title})"
-            else:
-                duty_status = "❌ Не настроен"
-            
-            # Build keyboard
-            buttons = [
-                [
-                    KeyboardButton(
-                        text=f"💼 Канал менеджеров: {manager_status[:30]}...",
-                        payload=SettingsPayload(
-                            action="edit_escalation_channel",
-                            setting_key="escalation_manager_channel"
-                        ).pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text=f"🛠 Канал дежурной: {duty_status[:30]}...",
-                        payload=SettingsPayload(
-                            action="edit_escalation_channel",
-                            setting_key="escalation_duty_channel"
-                        ).pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="🔄 Сбросить по умолчанию",
-                        payload=SettingsPayload(action="reset_escalation").pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="◀️ Назад",
-                        payload=SettingsPayload(action="menu").pack()
-                    )
-                ]
-            ]
-            
+            escalation_text, buttons = await _build_escalation_settings_message(session)
             keyboard = Keyboard(buttons=buttons, inline=True)
-            
-            escalation_text = (
-                "✅ <b>Канал эскалации успешно обновлен</b>\n\n"
-                "📢 <b>Настройка каналов эскалации</b>\n\n"
-                f"<b>Канал менеджеров:</b> {manager_status}\n"
-                "Канал для эскалации заявок на счета и продления.\n\n"
-                f"<b>Канал дежурной поддержки:</b> {duty_status}\n"
-                "Канал для эскалации заявок техподдержки.\n\n"
-                "Нажмите на канал для изменения или тестирования."
-            )
-            
+            title_info = f" ({chat_title})" if chat_title else ""
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=escalation_text,
+                text=f"✅ Канал <code>{chat_id_input}</code>{title_info} добавлен.\n\n" + escalation_text,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
-            
-            logger.info(f"Administrator {admin.id} updated escalation channel {setting_key} to {chat_id_input}")
+            logger.info(f"Administrator {admin.id} added channel {chat_id_input} to {setting_key}")
         else:
+            # Keep FSM state so user can try again or cancel
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"❌ <b>Ошибка валидации</b>\n\n{result_message}\n\nПопробуйте еще раз или нажмите \"Отмена\".",
+                text=f"❌ <b>Ошибка</b>\n\n{result_message}\n\nПопробуйте другой Chat ID или нажмите \"Отмена\".",
                 parse_mode="HTML"
             )
-            logger.warning(f"Escalation channel validation failed for admin {admin.id}: {result_message}")
-    
+            logger.warning(f"add_channel_to_setting failed for admin {admin.id}: {result_message}")
+
     except Exception as e:
         logger.error(f"Error processing escalation channel: {e}", exc_info=True)
         await messenger_adapter.send_message(chat_id=chat_id, text="❌ Произошла ошибка при сохранении настройки.", parse_mode="HTML")

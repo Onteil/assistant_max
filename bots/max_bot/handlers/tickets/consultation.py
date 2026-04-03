@@ -42,17 +42,19 @@ from bots.max_bot.texts import (
     CONSULTATION_INN_ADDED,
     CONSULTATION_KEY_ADDED,
     CONSULTATION_KEY_CONFLICT,
+    CONSULTATION_NO_SUBSCRIPTION,
     CONSULTATION_SELECT_KEYS,
     CONSULTATION_SELECT_ORGANIZATION,
+    CONSULTATION_SUBSCRIPTION_EXPIRED,
     CONSULTATION_TICKET_CREATED,
-    CONSULTATION_TICKET_CREATED_NON_WORKING,
+    get_consultation_non_working_hours_message,
     ERROR_GENERAL,
     ERROR_TEXT_TOO_LONG,
     ERROR_VALIDATION_INN,
     ERROR_VALIDATION_KEY,
     FLOW_CANCELLED,
 )
-from database.models import KeyConflictStatus, TicketType, WorkMode
+from database.models import KeyConflictStatus, SubscriptionStatus, TicketType, WorkMode
 from services.calendar_service import get_current_work_mode
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
@@ -137,7 +139,11 @@ async def cmd_consultation(
     messenger_adapter: MAXMessengerAdapter,
 ) -> None:
     """
-    Handle /consultation command or callback — initiate consultation request flow.
+    Handle /consultation command or callback — check subscription and initiate consultation flow.
+
+    Subscription check:
+    - ACTIVE: Proceed to organization selection
+    - EXPIRED/NONE: Auto-create RENEWAL ticket to assigned manager, block consultation
 
     commands_info: Задать вопрос сметному специалисту
     """
@@ -157,6 +163,25 @@ async def cmd_consultation(
             )
             return
 
+        subscription_status = user.subscription_status
+        logger.info(f"Consultation subscription check: user_id={user.id}, status={subscription_status.value}")
+
+        if subscription_status != SubscriptionStatus.ACTIVE:
+            # Block consultation and auto-create RENEWAL ticket to assigned manager
+            logger.info(
+                f"Consultation blocked (no active subscription): user_id={user.id}, "
+                f"status={subscription_status.value}"
+            )
+            await _create_renewal_ticket_for_consultation(
+                session=session,
+                messenger_adapter=messenger_adapter,
+                chat_id=chat_id,
+                user=user,
+                subscription_status=subscription_status,
+            )
+            return
+
+        # Active subscription — proceed to consultation flow
         await context.update_data(
             user_id=user.id,
             selected_inn=None,
@@ -178,6 +203,139 @@ async def cmd_consultation(
         await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Unexpected error in cmd_consultation: {e}", exc_info=True)
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+async def _create_renewal_ticket_for_consultation(
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+    chat_id: int,
+    user,
+    subscription_status: SubscriptionStatus,
+) -> None:
+    """
+    Create RENEWAL ticket when user without active subscription requests consultation.
+
+    Creates a RENEWAL ticket routed to the assigned manager and notifies them.
+    Shows appropriate message to the user based on subscription status.
+    """
+    from services.ticket_service import determine_assigned_manager, send_staff_notification
+    from services.calendar_service import get_current_work_mode
+    from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
+    from loaders import max_bot
+
+    logger.info(f"Creating auto-renewal ticket for consultation block: user_id={user.id}")
+
+    try:
+        work_mode = await get_current_work_mode(session)
+        is_working = work_mode != WorkMode.NON_WORKING
+
+        assigned_staff_id, has_manager = await determine_assigned_manager(
+            session=session,
+            user_id=user.id,
+            assign_admin_if_no_manager=True,
+        )
+
+        if not assigned_staff_id:
+            logger.error(f"No staff available for auto-renewal ticket: user_id={user.id}")
+            # Still show the blocking message even if ticket creation fails
+            text = (
+                CONSULTATION_SUBSCRIPTION_EXPIRED
+                if subscription_status == SubscriptionStatus.EXPIRED
+                else CONSULTATION_NO_SUBSCRIPTION
+            )
+            await messenger_adapter.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            return
+
+        # Check for existing active RENEWAL ticket to avoid duplicates
+        from sqlalchemy import and_, select
+        from database.models import Ticket, TicketStatus
+
+        result = await session.execute(
+            select(Ticket).where(
+                and_(
+                    Ticket.user_id == user.id,
+                    Ticket.ticket_type == TicketType.RENEWAL,
+                    Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS]),
+                )
+            )
+        )
+        existing_ticket = result.scalar_one_or_none()
+
+        if not existing_ticket:
+            ticket_data = {
+                "ticket_type": TicketType.RENEWAL,
+                "user_id": user.id,
+                "assigned_staff_id": assigned_staff_id,
+                "description": "Запрос на продление подписки (автоматически при попытке получить консультацию)",
+            }
+            ticket = await create_ticket(session, ticket_data)
+            await session.commit()
+
+            logger.info(
+                f"Auto-renewal ticket created: ticket_id={ticket.id}, user_id={user.id}, "
+                f"assigned_staff={assigned_staff_id}"
+            )
+
+            try:
+                await log_ticket_creation_to_itat(session, ticket)
+            except Exception as e:
+                logger.error(
+                    f"Failed to log auto-renewal ticket to i-TAT: ticket_id={ticket.id}, error={e}",
+                    exc_info=True,
+                )
+
+            # Notify manager during working hours
+            if assigned_staff_id and is_working:
+                try:
+                    await send_staff_notification(
+                        bot=max_bot,
+                        staff_id=assigned_staff_id,
+                        ticket=ticket,
+                        session=session,
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to notify manager about auto-renewal ticket: "
+                        f"ticket_id={ticket.id}, error={e}",
+                        exc_info=True,
+                    )
+        else:
+            logger.info(
+                f"Active RENEWAL ticket already exists, skipping creation: "
+                f"user_id={user.id}, ticket_id={existing_ticket.id}"
+            )
+
+        # Show blocking message to user
+        text = (
+            CONSULTATION_SUBSCRIPTION_EXPIRED
+            if subscription_status == SubscriptionStatus.EXPIRED
+            else CONSULTATION_NO_SUBSCRIPTION
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+
+        # Show main menu
+        from services.ticket_service import get_user_active_tickets_count
+        from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+        from database.models import RegistrationStatus
+
+        if user.registration_status == RegistrationStatus.ACTIVE:
+            active_tickets_count = await get_user_active_tickets_count(session, user.id)
+            keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=MAIN_MENU_WELCOME_TEXT,
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Error in _create_renewal_ticket_for_consultation: user_id={user.id}, error={e}",
+            exc_info=True,
+        )
+        await session.rollback()
         await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
 
 
@@ -509,7 +667,7 @@ async def handle_consultation_key_action(
                     await schedule_technical_support_monitoring(ticket_id=ticket.id)
                 except Exception as e:
                     logger.error(f"Failed to schedule escalation for consultation {ticket.id}: {e}", exc_info=True)
-            confirmation_text = CONSULTATION_TICKET_CREATED if is_working else CONSULTATION_TICKET_CREATED_NON_WORKING
+            confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
             await messenger_adapter.send_message(chat_id=chat_id, text=confirmation_text, parse_mode="HTML")
             if is_working:
                 from services.employee_service import get_estimate_tech_specialists
@@ -883,7 +1041,7 @@ async def process_consultation_description(
                 )
 
         # Send confirmation to user
-        confirmation_text = CONSULTATION_TICKET_CREATED if is_working else CONSULTATION_TICKET_CREATED_NON_WORKING
+        confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=confirmation_text,

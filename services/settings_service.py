@@ -41,24 +41,34 @@ DEFAULT_SETTINGS = {
         "description": "Время ожидания перед эскалацией заявки (применяется ко всем типам эскалации: резервные менеджеры, техподдержка)",
         "requires_test": False,
     },
-    # Escalation channels
+    # Escalation channels (stored as JSON arrays of chat IDs)
     "escalation_manager_channel": {
-        "value": None,
+        "value": "[]",
         "category": SettingCategory.ESCALATION,
-        "data_type": SettingDataType.CHAT_ID,
-        "display_name": "Канал эскалации менеджеров",
-        "description": "Telegram чат для уведомлений об эскалации менеджеров",
-        "requires_test": True,
+        "data_type": SettingDataType.JSON,
+        "display_name": "Каналы эскалации менеджеров",
+        "description": "Список MAX чатов для уведомлений об эскалации менеджеров (JSON массив)",
+        "requires_test": False,
         "min_value": None,
         "max_value": None,
     },
     "escalation_duty_channel": {
-        "value": None,
+        "value": "[]",
         "category": SettingCategory.ESCALATION,
-        "data_type": SettingDataType.CHAT_ID,
-        "display_name": "Канал эскалации дежурной",
-        "description": "Telegram чат для уведомлений об эскалации дежурной поддержки",
-        "requires_test": True,
+        "data_type": SettingDataType.JSON,
+        "display_name": "Каналы эскалации дежурной",
+        "description": "Список MAX чатов для уведомлений об эскалации дежурной поддержки (JSON массив)",
+        "requires_test": False,
+        "min_value": None,
+        "max_value": None,
+    },
+    "escalation_consultant_channel": {
+        "value": "[]",
+        "category": SettingCategory.ESCALATION,
+        "data_type": SettingDataType.JSON,
+        "display_name": "Каналы эскалации консультантов",
+        "description": "Список MAX чатов для уведомлений об эскалации сметных консультантов (JSON массив)",
+        "requires_test": False,
         "min_value": None,
         "max_value": None,
     },
@@ -298,6 +308,80 @@ async def get_settings_by_category(
         )
         for setting in settings
     }
+
+
+async def get_escalation_channels(session: AsyncSession, key: str) -> list[str]:
+    """
+    Get escalation channel list for a given setting key.
+
+    Returns a list of chat ID strings. Always returns a list (empty if not set).
+
+    Args:
+        session: Database session
+        key: Setting key (e.g. 'escalation_manager_channel')
+
+    Returns:
+        List of chat ID strings
+    """
+    value = await get_setting(session, key)
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    # Legacy single chat_id string
+    return [str(value)]
+
+
+async def add_channel_to_setting(
+    session: AsyncSession,
+    key: str,
+    chat_id: str,
+    admin_id: int,
+    chat_title: str | None = None
+) -> tuple[bool, str]:
+    """
+    Add a chat ID to an escalation channel list setting.
+
+    Args:
+        session: Database session
+        key: Setting key
+        chat_id: Chat ID to add
+        admin_id: Administrator user ID
+        chat_title: Optional display name for the channel
+
+    Returns:
+        Tuple of (success, message)
+    """
+    channels = await get_escalation_channels(session, key)
+    if chat_id in channels:
+        return False, "Этот канал уже добавлен"
+    channels.append(chat_id)
+    return await update_setting(session, key, channels, admin_id, chat_title)
+
+
+async def remove_channel_from_setting(
+    session: AsyncSession,
+    key: str,
+    chat_id: str,
+    admin_id: int
+) -> tuple[bool, str]:
+    """
+    Remove a chat ID from an escalation channel list setting.
+
+    Args:
+        session: Database session
+        key: Setting key
+        chat_id: Chat ID to remove
+        admin_id: Administrator user ID
+
+    Returns:
+        Tuple of (success, message)
+    """
+    channels = await get_escalation_channels(session, key)
+    if chat_id not in channels:
+        return False, "Канал не найден в списке"
+    channels.remove(chat_id)
+    return await update_setting(session, key, channels, admin_id)
 
 
 async def update_setting(

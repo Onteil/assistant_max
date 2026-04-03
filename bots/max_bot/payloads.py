@@ -1101,9 +1101,10 @@ class SettingsPayload(CallbackPayload, prefix='settings'):
     Fields:
         action: Action type - "menu", "timeouts", "escalation", "duty_support", 
                 "nps", "renewal_reminders", "history", "edit_timeout", 
-                "edit_escalation_channel", "edit_duty_account", "reset_timeouts"
+                "add_escalation_channel", "remove_escalation_channel",
+                "edit_duty_account", "reset_timeouts", "reset_escalation"
         setting_key: Key of the setting being edited (optional)
-        page: Page number for paginated views (optional)
+        page: Page number for paginated views, or channel list index for remove_escalation_channel (optional)
     """
     action: str
     setting_key: str | None = None

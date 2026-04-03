@@ -35,7 +35,7 @@ from database.models import (
     TicketType,
 )
 from services.escalation_service import create_escalation, get_active_admins
-from services.settings_service import get_setting
+from services.settings_service import get_setting, get_escalation_channels
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -354,91 +354,50 @@ async def test_ticket_escalation(
         
         # Send to escalation channels based on ticket type
         if ticket.ticket_type in [TicketType.INVOICE, TicketType.RENEWAL]:
-            # For invoice/renewal tickets, send to manager escalation channel
-            manager_channel = await get_setting(session, "escalation_manager_channel")
-            if manager_channel:
-                # Determine messenger type by chat_id format
+            # For invoice/renewal tickets, send to manager escalation channels
+            manager_channels = await get_escalation_channels(session, "escalation_manager_channel")
+            for manager_channel in manager_channels:
                 is_max = is_max_chat_id(manager_channel)
-                
                 if is_max and max_bot_instance:
                     try:
                         await max_bot_instance.send_message(
                             chat_id=int(manager_channel),
                             text=notification_text
                         )
-                        channels_notified.append("escalation_manager_channel (MAX)")
-                        logger.info(
-                            f"Test escalation notification sent to MAX manager channel: {manager_channel}"
-                        )
+                        channels_notified.append(f"escalation_manager_channel:{manager_channel} (MAX)")
+                        logger.info(f"Test escalation notification sent to MAX manager channel: {manager_channel}")
                     except Exception as e:
-                        logger.error(
-                            f"Failed to send test escalation to MAX manager channel {manager_channel}: {e}",
-                            exc_info=True
-                        )
+                        logger.error(f"Failed to send test escalation to MAX manager channel {manager_channel}: {e}", exc_info=True)
                 elif not is_max and tg_bot:
                     try:
-                        await tg_bot.send_message(
-                            chat_id=manager_channel,
-                            text=notification_text,
-                            parse_mode="HTML"
-                        )
-                        channels_notified.append("escalation_manager_channel (Telegram)")
-                        logger.info(
-                            f"Test escalation notification sent to Telegram manager channel: {manager_channel}"
-                        )
+                        await tg_bot.send_message(chat_id=manager_channel, text=notification_text, parse_mode="HTML")
+                        channels_notified.append(f"escalation_manager_channel:{manager_channel} (Telegram)")
+                        logger.info(f"Test escalation notification sent to Telegram manager channel: {manager_channel}")
                     except Exception as e:
-                        logger.error(
-                            f"Failed to send test escalation to Telegram manager channel {manager_channel}: {e}",
-                            exc_info=True
-                        )
+                        logger.error(f"Failed to send test escalation to Telegram manager channel {manager_channel}: {e}", exc_info=True)
                 else:
-                    logger.warning(
-                        f"Cannot send to manager channel {manager_channel}: "
-                        f"{'MAX' if is_max else 'Telegram'} bot not available"
-                    )
+                    logger.warning(f"Cannot send to manager channel {manager_channel}: bot not available")
         elif ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
-            # For technical support tickets, send to duty escalation channel
-            duty_channel = await get_setting(session, "escalation_duty_channel")
-            if duty_channel:
-                # Determine messenger type by chat_id format
+            # For technical support/consultation tickets, send to duty escalation channels
+            duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
+            for duty_channel in duty_channels:
                 is_max = is_max_chat_id(duty_channel)
-                
                 if is_max and max_bot_instance:
                     try:
-                        await max_bot_instance.send_message(
-                            chat_id=int(duty_channel),
-                            text=notification_text
-                        )
-                        channels_notified.append("escalation_duty_channel (MAX)")
-                        logger.info(
-                            f"Test escalation notification sent to MAX duty channel: {duty_channel}"
-                        )
+                        await max_bot_instance.send_message(chat_id=int(duty_channel), text=notification_text)
+                        channels_notified.append(f"escalation_duty_channel:{duty_channel} (MAX)")
+                        logger.info(f"Test escalation notification sent to MAX duty channel: {duty_channel}")
                     except Exception as e:
-                        logger.error(
-                            f"Failed to send test escalation to MAX duty channel {duty_channel}: {e}",
-                            exc_info=True
-                        )
+                        logger.error(f"Failed to send test escalation to MAX duty channel {duty_channel}: {e}", exc_info=True)
                 elif not is_max and tg_bot:
                     try:
-                        await tg_bot.send_message(
-                            chat_id=duty_channel,
-                            text=notification_text,
-                            parse_mode="HTML"
-                        )
-                        channels_notified.append("escalation_duty_channel (Telegram)")
-                        logger.info(
-                            f"Test escalation notification sent to Telegram duty channel: {duty_channel}"
-                        )
+                        await tg_bot.send_message(chat_id=duty_channel, text=notification_text, parse_mode="HTML")
+                        channels_notified.append(f"escalation_duty_channel:{duty_channel} (Telegram)")
+                        logger.info(f"Test escalation notification sent to Telegram duty channel: {duty_channel}")
                     except Exception as e:
-                        logger.error(
-                            f"Failed to send test escalation to Telegram duty channel {duty_channel}: {e}",
-                            exc_info=True
-                        )
+                        logger.error(f"Failed to send test escalation to Telegram duty channel {duty_channel}: {e}", exc_info=True)
                 else:
-                    logger.warning(
-                        f"Cannot send to duty channel {duty_channel}: "
-                        f"{'MAX' if is_max else 'Telegram'} bot not available"
-                    )
+                    logger.warning(f"Cannot send to duty channel {duty_channel}: bot not available")
         
         # Close bot sessions
         if tg_bot:

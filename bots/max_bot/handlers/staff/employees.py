@@ -17,7 +17,7 @@ from datetime import datetime
 from maxapi.types import MessageCallback, MessageCreated
 from maxapi.context import MemoryContext
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, update
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
 from bots.max_bot.states import EmployeeManagementStates
@@ -33,6 +33,7 @@ from bots.max_bot.payloads import (
     TransferTicketPayload,
     TransferClientsPayload,
     MainMenuActionPayload,
+    ManagerMenuActionPayload,
 )
 from database.models import Staff_Member, StaffRole, Action_Log, ActionType
 from services.itat_retry_helper import call_itat_with_retry
@@ -61,6 +62,20 @@ async def is_admin(session: AsyncSession, max_user_id: int) -> Staff_Member | No
         return result.scalar_one_or_none()
     except Exception as e:
         logger.error(f"Error checking admin status: {e}", exc_info=True)
+        return None
+
+
+async def _get_active_staff(session: AsyncSession, max_user_id: int) -> Staff_Member | None:
+    """Return any active staff member by MAX user ID."""
+    try:
+        stmt = select(Staff_Member).where(
+            Staff_Member.max_user_id == max_user_id,
+            Staff_Member.is_active == True
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+    except Exception as e:
+        logger.error(f"Error getting active staff: {e}", exc_info=True)
         return None
 
 
@@ -3684,12 +3699,15 @@ async def handle_transfer_clients_start(
     payload: TransferClientsPayload,
     context: MemoryContext,
     session: AsyncSession,
-    messenger_adapter: MAXMessengerAdapter
+    messenger_adapter: MAXMessengerAdapter,
+    initiated_by_manager: bool = False,
+    message_already_deleted: bool = False
 ) -> None:
     """
     Handle client transfer start.
     
     Shows list of available managers to transfer clients to.
+    Accessible by both administrators (via employee card) and managers (via main menu).
     Uses replace_message pattern.
     """
     chat_id = event.message.recipient.chat_id
@@ -3697,18 +3715,21 @@ async def handle_transfer_clients_start(
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
     
     try:
-        # Verify user is administrator
+        # Verify user is admin OR the manager themselves
         admin = await is_admin(session, max_user_id)
+        staff = None
         if not admin:
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text="❌ У вас нет доступа к управлению сотрудниками.",
-                parse_mode="HTML"
-            )
-            return
+            staff = await _get_active_staff(session, max_user_id)
+            if not staff or staff.staff_role != StaffRole.MANAGER:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ У вас нет доступа к передаче клиентов.",
+                    parse_mode="HTML"
+                )
+                return
         
-        # Delete old message
-        if message_id:
+        # Delete old message (skip if already deleted by caller)
+        if message_id and not message_already_deleted:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
@@ -3747,20 +3768,17 @@ async def handle_transfer_clients_start(
         managers_result = await session.execute(managers_stmt)
         available_managers = list(managers_result.scalars().all())
         
+        # Cancel button destination depends on who initiated
+        if initiated_by_manager or (staff and staff.id == payload.source_manager_id):
+            cancel_payload = ManagerMenuActionPayload(action="back_to_menu").pack()
+        else:
+            cancel_payload = EmployeeActionPayload(action="view", employee_id=payload.source_manager_id).pack()
+        
         if not available_managers:
-            # No managers available - show message with back button
             keyboard = Keyboard(
-                buttons=[
-                    [
-                        KeyboardButton(
-                            text="◀️ Назад к карточке",
-                            payload=EmployeeActionPayload(action="view", employee_id=payload.source_manager_id).pack()
-                        )
-                    ]
-                ],
+                buttons=[[KeyboardButton(text="◀️ Назад", payload=cancel_payload)]],
                 inline=True
             )
-            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ Нет доступных менеджеров для передачи клиентов.",
@@ -3771,7 +3789,6 @@ async def handle_transfer_clients_start(
         
         # Create selection buttons
         buttons = []
-        
         for manager in available_managers:
             buttons.append([
                 KeyboardButton(
@@ -3784,28 +3801,22 @@ async def handle_transfer_clients_start(
                 )
             ])
         
-        # Cancel button
-        buttons.append([
-            KeyboardButton(
-                text="❌ Отмена",
-                payload=EmployeeActionPayload(action="view", employee_id=payload.source_manager_id).pack()
-            )
-        ])
+        buttons.append([KeyboardButton(text="❌ Отмена", payload=cancel_payload)])
         
         keyboard = Keyboard(buttons=buttons, inline=True)
         
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=(
-                f"👤 <b>Передача всех клиентов</b>\n\n"
-                f"От менеджера: {source_manager.full_name}\n\n"
-                f"Выберите целевого менеджера:"
+                f"👥 <b>Передача клиентов</b>\n\n"
+                f"От менеджера: <b>{source_manager.full_name}</b>\n\n"
+                f"Выберите менеджера, которому передать клиентов:"
             ),
             keyboard=keyboard,
             parse_mode="HTML"
         )
         
-        logger.info(f"Administrator {max_user_id} started client transfer from manager {payload.source_manager_id}")
+        logger.info(f"User {max_user_id} started client transfer from manager {payload.source_manager_id}")
         
     except Exception as e:
         logger.error(f"Error starting client transfer: {e}", exc_info=True)
@@ -3824,9 +3835,10 @@ async def handle_transfer_clients_confirm(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Handle client transfer confirmation.
+    Handle client transfer confirmation screen.
     
-    Transfers all clients from source manager to target manager via i-TAT API.
+    Shows confirmation prompt before executing the transfer.
+    Accessible by both administrators and managers.
     Uses replace_message pattern.
     """
     chat_id = event.message.recipient.chat_id
@@ -3834,15 +3846,18 @@ async def handle_transfer_clients_confirm(
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
     
     try:
-        # Verify user is administrator
+        # Verify user is admin OR the source manager themselves
         admin = await is_admin(session, max_user_id)
+        staff = None
         if not admin:
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text="❌ У вас нет доступа к управлению сотрудниками.",
-                parse_mode="HTML"
-            )
-            return
+            staff = await _get_active_staff(session, max_user_id)
+            if not staff or staff.staff_role != StaffRole.MANAGER:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ У вас нет доступа к передаче клиентов.",
+                    parse_mode="HTML"
+                )
+                return
         
         # Delete old message
         if message_id:
@@ -3868,11 +3883,16 @@ async def handle_transfer_clients_confirm(
             )
             return
         
-        # Show confirmation with warning
+        # Cancel button: back to manager list
+        cancel_payload = TransferClientsPayload(
+            action="start",
+            source_manager_id=payload.source_manager_id
+        ).pack()
+        
         buttons = [
             [
                 KeyboardButton(
-                    text="✅ Да, передать всех клиентов",
+                    text="✅ Да, передать клиентов",
                     payload=TransferClientsPayload(
                         action="execute",
                         source_manager_id=payload.source_manager_id,
@@ -3881,10 +3901,7 @@ async def handle_transfer_clients_confirm(
                 )
             ],
             [
-                KeyboardButton(
-                    text="❌ Отмена",
-                    payload=EmployeeActionPayload(action="view", employee_id=payload.source_manager_id).pack()
-                )
+                KeyboardButton(text="◀️ Назад", payload=cancel_payload)
             ]
         ]
         keyboard = Keyboard(buttons=buttons, inline=True)
@@ -3893,8 +3910,8 @@ async def handle_transfer_clients_confirm(
             chat_id=chat_id,
             text=(
                 f"⚠️ <b>Подтверждение передачи клиентов</b>\n\n"
-                f"Эта операция передаст ВСЕХ клиентов (по ИНН) от выбранного менеджера "
-                f"другому менеджеру через API i-TAT.\n\n"
+                f"Будут переданы все клиенты (default_manager) и активные заявки.\n"
+                f"Закрытые заявки не затрагиваются.\n\n"
                 f"<b>От:</b> {source_manager.full_name}\n"
                 f"<b>Кому:</b> {target_manager.full_name}\n\n"
                 f"Вы уверены?"
@@ -3903,12 +3920,154 @@ async def handle_transfer_clients_confirm(
             parse_mode="HTML"
         )
         
-        logger.info(f"Administrator {max_user_id} viewing transfer confirmation: from={payload.source_manager_id} to={payload.target_manager_id}")
+        logger.info(f"User {max_user_id} viewing transfer confirmation: from={payload.source_manager_id} to={payload.target_manager_id}")
         
     except Exception as e:
         logger.error(f"Error showing transfer confirmation: {e}", exc_info=True)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_transfer_clients_execute(
+    event: MessageCallback,
+    payload: TransferClientsPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Execute client transfer.
+    
+    Updates default_manager_id for all users assigned to source manager,
+    and reassigns their active (non-closed) tickets to target manager.
+    Accessible by both administrators and managers.
+    Uses replace_message pattern.
+    """
+    from database.models import User, Ticket, TicketStatus
+    
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    
+    try:
+        # Verify user is admin OR the source manager themselves
+        admin = await is_admin(session, max_user_id)
+        staff = None
+        if not admin:
+            staff = await _get_active_staff(session, max_user_id)
+            if not staff or staff.staff_role != StaffRole.MANAGER:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ У вас нет доступа к передаче клиентов.",
+                    parse_mode="HTML"
+                )
+                return
+        
+        # Delete old message
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+        
+        # Get both managers
+        source_stmt = select(Staff_Member).where(Staff_Member.id == payload.source_manager_id)
+        source_result = await session.execute(source_stmt)
+        source_manager = source_result.scalar_one_or_none()
+        
+        target_stmt = select(Staff_Member).where(Staff_Member.id == payload.target_manager_id)
+        target_result = await session.execute(target_stmt)
+        target_manager = target_result.scalar_one_or_none()
+        
+        if not source_manager or not target_manager:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Менеджер не найден.",
+                parse_mode="HTML"
+            )
+            return
+        
+        # 1. Update default_manager_id for all users assigned to source manager
+        users_update = (
+            update(User)
+            .where(User.default_manager_id == payload.source_manager_id)
+            .values(default_manager_id=payload.target_manager_id)
+            .execution_options(synchronize_session=False)
+        )
+        users_result = await session.execute(users_update)
+        users_transferred = users_result.rowcount
+        
+        # 2. Reassign active (non-closed) tickets from source to target manager
+        closed_statuses = [TicketStatus.CLOSED, TicketStatus.CANCELLED]
+        tickets_update = (
+            update(Ticket)
+            .where(
+                and_(
+                    Ticket.assigned_staff_id == payload.source_manager_id,
+                    Ticket.ticket_status.notin_(closed_statuses)
+                )
+            )
+            .values(assigned_staff_id=payload.target_manager_id)
+            .execution_options(synchronize_session=False)
+        )
+        tickets_result = await session.execute(tickets_update)
+        tickets_transferred = tickets_result.rowcount
+        
+        # Log action
+        initiator_id = admin.id if admin else (staff.id if staff else None)
+        action_log = Action_Log(
+            action_type=ActionType.TICKET_TRANSFERRED,
+            staff_id=initiator_id,
+            action_details={
+                "action": "transfer_clients",
+                "source_manager_id": payload.source_manager_id,
+                "source_manager_name": source_manager.full_name,
+                "target_manager_id": payload.target_manager_id,
+                "target_manager_name": target_manager.full_name,
+                "users_transferred": users_transferred,
+                "tickets_transferred": tickets_transferred,
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+        
+        # Back button
+        if admin:
+            back_payload = EmployeeActionPayload(action="view", employee_id=payload.source_manager_id).pack()
+        else:
+            back_payload = ManagerMenuActionPayload(action="back_to_menu").pack()
+        
+        keyboard = Keyboard(
+            buttons=[[KeyboardButton(text="◀️ Готово", payload=back_payload)]],
+            inline=True
+        )
+        
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ <b>Передача клиентов выполнена</b>\n\n"
+                f"<b>От:</b> {source_manager.full_name}\n"
+                f"<b>Кому:</b> {target_manager.full_name}\n\n"
+                f"Клиентов переназначено: <b>{users_transferred}</b>\n"
+                f"Активных заявок переназначено: <b>{tickets_transferred}</b>"
+            ),
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+        
+        logger.info(
+            f"User {max_user_id} executed client transfer: "
+            f"from={payload.source_manager_id}, to={payload.target_manager_id}, "
+            f"users={users_transferred}, tickets={tickets_transferred}"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error executing client transfer: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при передаче клиентов.",
             parse_mode="HTML"
         )
