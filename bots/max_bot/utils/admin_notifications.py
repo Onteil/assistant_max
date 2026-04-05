@@ -522,3 +522,132 @@ async def notify_admins_api_retry_exhausted(
             f"Error sending retry_exhausted notification: retry_id={retry_id}, error={e}",
             exc_info=True,
         )
+
+
+async def notify_admins_phone_change_request(
+    session: AsyncSession,
+    source_user_id: int,
+    target_user_id: int,
+    old_phone: str,
+    new_phone: str,
+    ticket_id: int,
+) -> None:
+    """
+    Send phone change request notification to all MAX administrators.
+
+    Called when a user confirms a phone change request (ticket created).
+    Notifies admins with details of both accounts and a direct link to the
+    ticket management screen (approve/reject).
+
+    Args:
+        session: Database session
+        source_user_id: Internal ID of the user who filed the request (old phone)
+        target_user_id: Internal ID of the target account (new phone)
+        old_phone: Current phone number (source account)
+        new_phone: New phone number (target account)
+        ticket_id: ID of the created PHONE_CHANGE ticket
+    """
+    try:
+        # Load both users
+        source_stmt = select(User).where(User.id == source_user_id)
+        target_stmt = select(User).where(User.id == target_user_id)
+        source_user = (await session.execute(source_stmt)).scalar_one_or_none()
+        target_user = (await session.execute(target_stmt)).scalar_one_or_none()
+
+        if not source_user or not target_user:
+            logger.error(
+                f"Users not found for phone change notification: "
+                f"source={source_user_id}, target={target_user_id}"
+            )
+            return
+
+        # Query all active administrators with MAX chat_id
+        admins_stmt = select(Staff_Member).where(
+            Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
+            Staff_Member.is_active == True,
+            Staff_Member.max_chat_id.isnot(None),
+        )
+        admins = (await session.execute(admins_stmt)).scalars().all()
+
+        if not admins:
+            logger.warning("No active administrators with MAX chat_id for phone change notification")
+            return
+
+        moscow_tz = timezone(timedelta(hours=3))
+        req_date = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M:%S")
+
+        def _fmt_name(u: User) -> str:
+            return (
+                u.full_name
+                or f"{u.last_name or ''} {u.first_name or ''} {u.middle_name or ''}".strip()
+                or "Не указано"
+            )
+
+        message_text = (
+            f"📱 Запрос на смену номера телефона\n\n"
+            f"👤 Заявитель (старый номер):\n"
+            f"🪪 ФИО: {_fmt_name(source_user)}\n"
+            f"📞 Телефон: {old_phone}\n"
+            f"🆔 MAX ID: {source_user.max_user_id or 'Не указан'}\n\n"
+            f"👤 Целевой аккаунт (новый номер):\n"
+            f"🪪 ФИО: {_fmt_name(target_user)}\n"
+            f"📞 Телефон: {new_phone}\n"
+            f"🆔 MAX ID: {target_user.max_user_id or 'Не указан'}\n\n"
+            f"🎫 Заявка: #{ticket_id}\n"
+            f"📅 Дата запроса: {req_date}\n\n"
+            f"⚠️ После одобрения все данные заявителя будут перенесены "
+            f"на целевой аккаунт, старый аккаунт будет удалён."
+        )
+
+        from bots.max_bot.payloads import PhoneChangePayload
+        from maxapi.types.attachments.buttons import CallbackButton
+        from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            CallbackButton(
+                text="🔍 Детали операции",
+                payload=PhoneChangePayload(action="view", ticket_id=ticket_id).pack(),
+            )
+        )
+        attachments = [builder.as_markup()]
+
+        bot = MaxBot(token=MAX_BOT_TOKEN)
+        sent_count = 0
+
+        for admin in admins:
+            try:
+                await bot.send_message(
+                    chat_id=admin.max_chat_id,
+                    text=message_text,
+                    attachments=attachments,
+                )
+                sent_count += 1
+                logger.info(
+                    f"Sent phone change notification to admin {admin.id} "
+                    f"(chat_id={admin.max_chat_id})"
+                )
+            except Exception as send_error:
+                logger.error(
+                    f"Failed to send phone change notification to admin {admin.id} "
+                    f"(chat_id={admin.max_chat_id}): {send_error}",
+                    exc_info=True,
+                )
+
+        try:
+            if hasattr(bot, "session") and bot.session:
+                await bot.session.close()
+        except Exception as e:
+            logger.warning(f"Error closing MAX bot session: {e}")
+
+        logger.info(
+            f"Phone change notification sent: ticket_id={ticket_id}, "
+            f"source={source_user_id}, target={target_user_id}, "
+            f"admins_notified={sent_count}/{len(admins)}"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error sending phone change notification: ticket_id={ticket_id}, error={e}",
+            exc_info=True,
+        )

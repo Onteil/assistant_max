@@ -99,6 +99,7 @@ from bots.max_bot.payloads import (
     AdminCreationCancelPayload,
     BackupEscalationPayload,
     PhoneChangePayload,
+    PhoneChangeConfirmPayload,
     ConsultationOrgSelectPayload,
     ConsultationOrgPagePayload,
     ConsultationOrgActionPayload,
@@ -328,7 +329,7 @@ from .user.profile import (
     process_change_email,
     cancel_profile_action,
 )
-from .user.phone_change import process_phone_change
+from .user.phone_change import process_phone_change, confirm_phone_change
 from .user.registration import (
     cmd_start,
     process_phone_contact,
@@ -840,6 +841,9 @@ def create_user_router() -> Router:
             logger.warning(f"Unknown phone change action: {payload.action}")
     
     user_router.message_callback(PhoneChangePayload.filter())(route_phone_change)
+
+    # User-side phone change confirmation/cancellation
+    user_router.message_callback(PhoneChangeConfirmPayload.filter())(confirm_phone_change)
     
     # ========== Settings Handlers ==========
     

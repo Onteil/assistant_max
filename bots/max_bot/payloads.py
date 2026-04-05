@@ -1203,6 +1203,20 @@ class PhoneChangePayload(CallbackPayload, prefix='phone_change'):
     ticket_id: int | None = None
 
 
+class PhoneChangeConfirmPayload(CallbackPayload, prefix='phone_change_confirm'):
+    """Payload for user-side phone change confirmation/cancellation.
+
+    Used when user confirms or cancels their phone change request after
+    the target account has been verified.
+
+    Fields:
+        action: "confirm" or "cancel"
+        new_phone: The new phone number being requested (URL-encoded)
+    """
+    action: str
+    new_phone: str
+
+
 # ============================================================================
 # Done / No More Questions Payload
 # ============================================================================
