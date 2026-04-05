@@ -561,42 +561,113 @@ async def handle_timeout_value_input(
 # ========== Escalation Channel Settings ==========
 
 
-async def _build_escalation_settings_message(session: AsyncSession) -> tuple[str, list]:
-    """Build escalation settings text and keyboard buttons."""
-    from services.settings_service import get_escalation_channels
+ESCALATION_CHANNEL_KEYS = [
+    ("escalation_manager_channel", "💼 Менеджеры", "Счета и продления"),
+    ("escalation_duty_channel", "🛠 Дежурная ТП", "Техподдержка"),
+    ("escalation_consultant_channel", "📐 Консультанты", "Сметные консультанты"),
+]
 
-    CHANNEL_KEYS = [
-        ("escalation_manager_channel", "💼 Менеджеры", "Счета и продления"),
-        ("escalation_duty_channel", "🛠 Дежурная ТП", "Техподдержка"),
-        ("escalation_consultant_channel", "📐 Консультанты", "Сметные консультанты"),
-    ]
+CHANNELS_PER_PAGE = 5
+
+
+async def _build_escalation_settings_message(session: AsyncSession) -> tuple[str, list]:
+    """Build main escalation settings screen with one button per channel type."""
+    from services.settings_service import get_escalation_channels
 
     text_lines = ["📢 <b>Настройка каналов эскалации</b>\n"]
     buttons = []
 
-    for key, label, desc in CHANNEL_KEYS:
+    for key, label, desc in ESCALATION_CHANNEL_KEYS:
         channels = await get_escalation_channels(session, key)
-        text_lines.append(f"<b>{label} ({desc}):</b>")
-        if channels:
-            for idx, ch in enumerate(channels):
-                text_lines.append(f"  • <code>{ch}</code>")
-                buttons.append([KeyboardButton(
-                    text=f"❌ Удалить {ch}",
-                    payload=SettingsPayload(action="remove_escalation_channel", setting_key=key, page=idx).pack()
-                )])
+        count = len(channels)
+        if count:
+            text_lines.append(f"<b>{label} ({desc}):</b> {count} канал(ов)")
         else:
-            text_lines.append("  ❌ Не настроен")
+            text_lines.append(f"<b>{label} ({desc}):</b> ❌ Не настроен")
         buttons.append([KeyboardButton(
-            text=f"➕ Добавить канал ({label})",
-            payload=SettingsPayload(action="add_escalation_channel", setting_key=key).pack()
+            text=f"{label} ({count} канал(ов))" if count else f"{label} — не настроен",
+            payload=SettingsPayload(action="escalation_channel_type", setting_key=key, page=0).pack()
         )])
-        text_lines.append("")
 
+    text_lines.append("")
     text_lines.append("⚠️ Перед добавлением бот отправит тестовое сообщение в канал.")
     buttons.extend([
         [KeyboardButton(text="🔄 Сбросить все", payload=SettingsPayload(action="reset_escalation").pack())],
         [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())],
     ])
+    return "\n".join(text_lines), buttons
+
+
+async def _build_escalation_channel_type_message(
+    session: AsyncSession,
+    setting_key: str,
+    page: int
+) -> tuple[str, list] | None:
+    """Build channel management screen for a specific escalation type with pagination."""
+    from services.settings_service import get_escalation_channels
+
+    key_info = {k: (label, desc) for k, label, desc in ESCALATION_CHANNEL_KEYS}
+    if setting_key not in key_info:
+        return None
+
+    label, desc = key_info[setting_key]
+    channels = await get_escalation_channels(session, setting_key)
+
+    total = len(channels)
+    total_pages = max(1, (total + CHANNELS_PER_PAGE - 1) // CHANNELS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * CHANNELS_PER_PAGE
+    page_channels = channels[start:start + CHANNELS_PER_PAGE]
+
+    text_lines = [
+        f"📢 <b>{label} ({desc})</b>\n",
+        f"Каналов: {total}" + (f" (стр. {page + 1}/{total_pages})" if total_pages > 1 else ""),
+        "",
+    ]
+    if channels:
+        for ch in page_channels:
+            text_lines.append(f"  • <code>{ch}</code>")
+    else:
+        text_lines.append("  ❌ Каналы не настроены")
+
+    text_lines.append("\n⚠️ Перед добавлением бот отправит тестовое сообщение в канал.")
+
+    buttons = []
+    # Add channel button always first
+    buttons.append([KeyboardButton(
+        text="➕ Добавить канал",
+        payload=SettingsPayload(action="add_escalation_channel", setting_key=setting_key).pack()
+    )])
+
+    # Delete buttons for current page channels
+    for idx, ch in enumerate(page_channels):
+        real_idx = start + idx
+        buttons.append([KeyboardButton(
+            text=f"❌ Удалить {ch}",
+            payload=SettingsPayload(action="remove_escalation_channel", setting_key=setting_key, page=real_idx).pack()
+        )])
+
+    # Pagination row
+    if total_pages > 1:
+        nav_row = []
+        if page > 0:
+            nav_row.append(KeyboardButton(
+                text="⬅️",
+                payload=SettingsPayload(action="escalation_channel_type", setting_key=setting_key, page=page - 1).pack()
+            ))
+        if page < total_pages - 1:
+            nav_row.append(KeyboardButton(
+                text="➡️",
+                payload=SettingsPayload(action="escalation_channel_type", setting_key=setting_key, page=page + 1).pack()
+            ))
+        if nav_row:
+            buttons.append(nav_row)
+
+    buttons.append([KeyboardButton(
+        text="◀️ Назад",
+        payload=SettingsPayload(action="escalation").pack()
+    )])
+
     return "\n".join(text_lines), buttons
 
 
@@ -635,6 +706,9 @@ async def handle_escalation_settings(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
 
+        # Clear any active FSM state
+        await context.clear()
+
         escalation_text, buttons = await _build_escalation_settings_message(session)
         keyboard = Keyboard(buttons=buttons, inline=True)
 
@@ -653,6 +727,65 @@ async def handle_escalation_settings(
             chat_id=chat_id,
             text="❌ Произошла ошибка при загрузке настроек.",
             parse_mode="HTML"
+        )
+
+
+async def handle_escalation_channel_type(
+    event: MessageCallback,
+    payload: SettingsPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Display channel management screen for a specific escalation type.
+
+    Shows add button + paginated list of delete buttons for channels of one type.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к настройкам системы.",
+                parse_mode="HTML"
+            )
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        # Clear any active FSM state (e.g. user pressed Cancel during channel input)
+        await context.clear()
+
+        result = await _build_escalation_channel_type_message(
+            session, payload.setting_key or "", payload.page or 0
+        )
+        if result is None:
+            await messenger_adapter.send_message(
+                chat_id=chat_id, text="❌ Неверный ключ настройки.", parse_mode="HTML"
+            )
+            return
+
+        text, buttons = result
+        keyboard = Keyboard(buttons=buttons, inline=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id, text=text, keyboard=keyboard, parse_mode="HTML"
+        )
+        logger.info(f"Administrator {max_user_id} viewed channel type {payload.setting_key}, page {payload.page}")
+
+    except Exception as e:
+        logger.error(f"Error showing escalation channel type: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id, text="❌ Произошла ошибка при загрузке настроек.", parse_mode="HTML"
         )
 
 
@@ -1708,7 +1841,7 @@ async def handle_add_escalation_channel_start(
         }
         label = setting_labels.get(setting_key, "эскалации")
 
-        keyboard = Keyboard(buttons=[[KeyboardButton(text="❌ Отмена", payload=SettingsPayload(action="escalation").pack())]], inline=True)
+        keyboard = Keyboard(buttons=[[KeyboardButton(text="❌ Отмена", payload=SettingsPayload(action="escalation_channel_type", setting_key=setting_key, page=0).pack())]], inline=True)
 
         await messenger_adapter.send_message(
             chat_id=chat_id,
@@ -1784,15 +1917,27 @@ async def handle_remove_escalation_channel(
             await messenger_adapter.send_message(chat_id=chat_id, text=f"❌ {msg}", parse_mode="HTML")
             return
 
-        # Refresh escalation settings screen
-        escalation_text, buttons = await _build_escalation_settings_message(session)
-        keyboard = Keyboard(buttons=buttons, inline=True)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="✅ Канал удалён.\n\n" + escalation_text,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
+        # Return to channel type screen (page 0 after deletion)
+        result = await _build_escalation_channel_type_message(session, setting_key, 0)
+        if result:
+            text, buttons = result
+            keyboard = Keyboard(buttons=buttons, inline=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="✅ Канал удалён.\n\n" + text,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+        else:
+            # Fallback to main escalation screen
+            escalation_text, buttons = await _build_escalation_settings_message(session)
+            keyboard = Keyboard(buttons=buttons, inline=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="✅ Канал удалён.\n\n" + escalation_text,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
         logger.info(f"Administrator {admin.id} removed channel {target_channel} from {setting_key}")
 
     except Exception as e:
@@ -1871,15 +2016,27 @@ async def handle_escalation_channel_input(
 
         if success:
             await context.clear()
-            escalation_text, buttons = await _build_escalation_settings_message(session)
-            keyboard = Keyboard(buttons=buttons, inline=True)
+            result = await _build_escalation_channel_type_message(session, setting_key, 0)
             title_info = f" ({chat_title})" if chat_title else ""
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"✅ Канал <code>{chat_id_input}</code>{title_info} добавлен.\n\n" + escalation_text,
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
+            if result:
+                text, buttons = result
+                keyboard = Keyboard(buttons=buttons, inline=True)
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Канал <code>{chat_id_input}</code>{title_info} добавлен.\n\n" + text,
+                    keyboard=keyboard,
+                    parse_mode="HTML"
+                )
+            else:
+                # Fallback to main escalation screen
+                escalation_text, esc_buttons = await _build_escalation_settings_message(session)
+                keyboard = Keyboard(buttons=esc_buttons, inline=True)
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"✅ Канал <code>{chat_id_input}</code>{title_info} добавлен.\n\n" + escalation_text,
+                    keyboard=keyboard,
+                    parse_mode="HTML"
+                )
             logger.info(f"Administrator {admin.id} added channel {chat_id_input} to {setting_key}")
         else:
             # Keep FSM state so user can try again or cancel

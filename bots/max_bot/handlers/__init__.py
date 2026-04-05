@@ -224,6 +224,7 @@ from .staff.settings import (
     handle_edit_timeout_start,
     handle_timeout_value_input,
     handle_escalation_settings,
+    handle_escalation_channel_type,
     handle_duty_support_settings,
     handle_nps_settings,
     handle_renewal_reminders_settings,
@@ -865,6 +866,8 @@ def create_user_router() -> Router:
             await handle_reset_timeouts(event, payload, context, session, messenger_adapter)
         elif payload.action == "escalation":
             await handle_escalation_settings(event, payload, context, session, messenger_adapter)
+        elif payload.action == "escalation_channel_type":
+            await handle_escalation_channel_type(event, payload, context, session, messenger_adapter)
         elif payload.action == "add_escalation_channel":
             await handle_add_escalation_channel_start(event, payload, context, session, messenger_adapter)
         elif payload.action == "remove_escalation_channel":
