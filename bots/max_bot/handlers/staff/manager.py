@@ -2333,19 +2333,19 @@ async def handle_ticket_action(
             await context.update_data(ticket_id=ticket_id)
 
             role_display = {
-                "MANAGER": "Менеджер",
-                "TECHNICAL_SUPPORT": "ТП",
-                "DUTY_ENGINEER": "Дежурный инженер",
-                "ADMINISTRATOR": "Администратор",
+                "MANAGER": ("💼", "Менеджер"),
+                "TECHNICAL_SUPPORT": ("🔧", "ТП"),
+                "DUTY_ENGINEER": ("👷", "Дежурный инженер"),
+                "ADMINISTRATOR": ("👑", "Администратор"),
             }
 
             buttons = []
             for emp_item in same_type_employees:
                 if emp_item.is_estimate_tech_specialist:
-                    label = f"{emp_item.full_name} (Сметный)"
+                    label = f"📋 {emp_item.full_name} (Сметный)"
                 else:
-                    role_text = role_display.get(emp_item.staff_role.value, emp_item.staff_role.value)
-                    label = f"{emp_item.full_name} ({role_text})"
+                    emoji, role_text = role_display.get(emp_item.staff_role.value, ("👤", emp_item.staff_role.value))
+                    label = f"{emoji} {emp_item.full_name} ({role_text})"
                 buttons.append([
                     KeyboardButton(
                         text=label,
@@ -2456,7 +2456,7 @@ async def handle_ticket_action(
 
             buttons = []
             for emp_item in target_employees:
-                label = f"{emp_item.full_name} ({'Сметный' if is_to_consultation else 'ТП'})"
+                label = f"{'📋' if is_to_consultation else '🔧'} {emp_item.full_name} ({'Сметный' if is_to_consultation else 'ТП'})"
                 buttons.append([
                     KeyboardButton(
                         text=label,
