@@ -575,9 +575,16 @@ async def send_staff_notification(
         
         # Check if this is a queued ticket (sent from queue task)
         from_queue = routing_info and routing_info.get("from_queue", False)
+        is_transfer = routing_info and routing_info.get("is_transfer", False)
+        source_employee_name = routing_info and routing_info.get("source_employee_name")
         
         # Build formatted message with emoji and structured lists
-        if from_queue:
+        if is_transfer:
+            if source_employee_name:
+                message_text = f"🔄 <b>Заявка #{ticket.id} передана вам от {source_employee_name}</b>\n\n"
+            else:
+                message_text = f"🔄 <b>Заявка #{ticket.id} передана вам</b>\n\n"
+        elif from_queue:
             message_text = f"🔔 <b>Новое обращение #{ticket.id}</b>\n"
             message_text += f"⚠️ <b>ЗАЯВКА ИЗ ОЧЕРЕДИ</b> (создана в нерабочее время)\n\n"
         else:
@@ -1563,10 +1570,15 @@ async def transfer_ticket(
     ticket_id: int,
     source_employee_id: int,
     target_employee_id: int,
-    messenger: str = "telegram"
+    messenger: str = "telegram",
+    new_ticket_type: TicketType | None = None
 ) -> Ticket:
     """
-    Transfer ticket to another employee.
+    Transfer ticket to another employee, optionally changing ticket type.
+    
+    Cross-type transfer:
+    - TECHNICAL_SUPPORT → CONSULTATION: set new_ticket_type=TicketType.CONSULTATION
+    - CONSULTATION → TECHNICAL_SUPPORT: set new_ticket_type=TicketType.TECHNICAL_SUPPORT
     
     Updates assigned_staff_id and logs the transfer action with both
     source and target employee IDs.
@@ -1621,7 +1633,10 @@ async def transfer_ticket(
         
         # Update ticket assignment with internal staff ID
         old_assigned_staff_id = ticket.assigned_staff_id
+        old_ticket_type = ticket.ticket_type
         ticket.assigned_staff_id = target_employee.id  # Use internal ID, not tg_user_id
+        if new_ticket_type is not None:
+            ticket.ticket_type = new_ticket_type
         ticket.updated_at = datetime.utcnow()
         
         # Get internal staff ID for logging
@@ -1637,7 +1652,8 @@ async def transfer_ticket(
                 "action": "transfer",
                 "source_employee_id": source_employee_id,
                 "target_employee_id": target_employee_id,
-                "old_assigned_staff_id": old_assigned_staff_id
+                "old_assigned_staff_id": old_assigned_staff_id,
+                **({"old_ticket_type": old_ticket_type.value, "new_ticket_type": new_ticket_type.value} if new_ticket_type else {})
             }
         )
         

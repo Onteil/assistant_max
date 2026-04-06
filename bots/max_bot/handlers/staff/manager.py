@@ -2279,7 +2279,7 @@ async def handle_ticket_action(
             # Initiate ticket transfer flow - show employee selection
             from services.employee_service import get_available_employees_for_transfer
             from bots.max_bot.states import EmployeeStates
-            
+
             # Get ticket with relationships
             from sqlalchemy.orm import selectinload
             stmt = select(Ticket).where(Ticket.id == ticket_id).options(
@@ -2289,85 +2289,226 @@ async def handle_ticket_action(
             )
             result = await session.execute(stmt)
             ticket = result.scalar_one_or_none()
-            
+
             if not ticket:
                 await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text="❌ Заявка не найдена.",
-                    parse_mode="HTML"
+                    chat_id=chat_id, text="❌ Заявка не найдена.", parse_mode="HTML"
                 )
                 return
-            
-            # Get employee's Telegram ID
+
+            # Get current employee record
             stmt = select(Staff_Member).where(
                 Staff_Member.max_user_id == max_user_id,
                 Staff_Member.is_active == True
             )
             result = await session.execute(stmt)
             emp = result.scalar_one_or_none()
-            
-            if not emp or not emp.max_user_id:
+
+            if not emp:
                 await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text="❌ Не удалось получить список сотрудников.",
-                    parse_mode="HTML"
+                    chat_id=chat_id, text="❌ Не удалось получить данные сотрудника.", parse_mode="HTML"
                 )
                 return
-            
-            # Get available employees for transfer
-            available_employees = await get_available_employees_for_transfer(
-                session, ticket, emp.max_user_id
+
+            # Same-type employees (filtered by ticket type and role)
+            same_type_employees = await get_available_employees_for_transfer(
+                session, ticket, emp.id, use_internal_id=True
             )
-            
-            # Build employee selection keyboard (always show, even if empty)
+
+            # Cross-type transfer availability:
+            # TS (non-estimate) on TS ticket → can send to estimate specialist (→ CONSULTATION)
+            can_transfer_to_consultation = (
+                ticket.ticket_type == TicketType.TECHNICAL_SUPPORT
+                and emp.staff_role == StaffRole.TECHNICAL_SUPPORT
+                and not emp.is_estimate_tech_specialist
+            )
+            # Estimate specialist on CONSULTATION ticket → can send to regular TS (→ TECHNICAL_SUPPORT)
+            can_transfer_to_support = (
+                ticket.ticket_type == TicketType.CONSULTATION
+                and emp.staff_role == StaffRole.TECHNICAL_SUPPORT
+                and emp.is_estimate_tech_specialist
+            )
+
+            await context.set_state(EmployeeStates.manager_transferring_ticket)
+            await context.update_data(ticket_id=ticket_id)
+
+            role_display = {
+                "MANAGER": "Менеджер",
+                "TECHNICAL_SUPPORT": "ТП",
+                "DUTY_ENGINEER": "Дежурный инженер",
+                "ADMINISTRATOR": "Администратор",
+            }
+
             buttons = []
-            
-            if available_employees:
-                # Group employees by role for better organization
-                role_display = {
-                    "MANAGER": "Менеджер",
-                    "TECHNICAL_SUPPORT": "ТП",
-                    "DUTY_ENGINEER": "Дежурный инженер",
-                    "ADMINISTRATOR": "Администратор"
-                }
-                
-                for employee in available_employees:
-                    role_text = role_display.get(employee.staff_role.value, employee.staff_role.value)
-                    buttons.append([
-                        KeyboardButton(
-                            text=f"{employee.full_name} ({role_text})",
-                            payload=ManagerEmployeeSelectPayload(action="select", employee_id=employee.id).pack()
-                        )
-                    ])
-            
-            # Add cancel button (always present)
+            for emp_item in same_type_employees:
+                if emp_item.is_estimate_tech_specialist:
+                    label = f"{emp_item.full_name} (Сметный)"
+                else:
+                    role_text = role_display.get(emp_item.staff_role.value, emp_item.staff_role.value)
+                    label = f"{emp_item.full_name} ({role_text})"
+                buttons.append([
+                    KeyboardButton(
+                        text=label,
+                        payload=ManagerEmployeeSelectPayload(
+                            action="select",
+                            employee_id=emp_item.id
+                        ).pack()
+                    )
+                ])
+
+            if can_transfer_to_consultation:
+                buttons.append([
+                    KeyboardButton(
+                        text="📋 Передать сметному специалисту (→ Консультация)",
+                        payload=ManagerTicketActionPayload(
+                            action="transfer_to_consultation",
+                            ticket_id=ticket_id
+                        ).pack()
+                    )
+                ])
+            elif can_transfer_to_support:
+                buttons.append([
+                    KeyboardButton(
+                        text="🔧 Передать в техподдержку (→ Тех. поддержка)",
+                        payload=ManagerTicketActionPayload(
+                            action="transfer_to_support",
+                            ticket_id=ticket_id
+                        ).pack()
+                    )
+                ])
+
             buttons.append([
                 KeyboardButton(
                     text="❌ Отмена",
                     payload=ManagerEmployeeSelectPayload(action="cancel", employee_id=None).pack()
                 )
             ])
-            
+
             keyboard = Keyboard(buttons=buttons, inline=True)
-            
-            # Set FSM state
-            await context.set_state(EmployeeStates.manager_transferring_ticket)
-            await context.update_data(ticket_id=ticket_id)
-            
-            # Prepare message text
-            if available_employees:
+
+            has_options = same_type_employees or can_transfer_to_consultation or can_transfer_to_support
+            if has_options:
                 text = "🔄 <b>Передача заявки</b>\n\nВыберите сотрудника для передачи заявки:"
             else:
-                text = "🔄 <b>Передача заявки</b>\n\n❌ Нет доступных сотрудников для передачи заявки.\n\nСотрудники фильтруются по типу заявки:\n• Счета → Менеджер\n• Техподдержка → ТП/Дежурный инженер"
-            
+                text = (
+                    "🔄 <b>Передача заявки</b>\n\n"
+                    "❌ Нет доступных сотрудников для передачи заявки.\n\n"
+                    "Сотрудники фильтруются по типу заявки:\n"
+                    "• Счета → Менеджер\n"
+                    "• Техподдержка → ТП/Дежурный инженер\n"
+                    "• Консультация → Сметный специалист"
+                )
+
+            await messenger_adapter.send_message(
+                chat_id=chat_id, text=text, keyboard=keyboard, parse_mode="HTML"
+            )
+
+            logger.info(
+                f"Employee {max_user_id} initiated transfer for ticket {ticket_id}, "
+                f"same_type={len(same_type_employees)}, "
+                f"can_to_consultation={can_transfer_to_consultation}, "
+                f"can_to_support={can_transfer_to_support}"
+            )
+
+        elif action in ("transfer_to_consultation", "transfer_to_support"):
+            # Cross-type transfer: show employees of the target type
+            from services.employee_service import get_available_employees_for_transfer
+            from bots.max_bot.states import EmployeeStates
+            from sqlalchemy.orm import selectinload
+
+            stmt = select(Ticket).where(Ticket.id == ticket_id).options(
+                selectinload(Ticket.user),
+                selectinload(Ticket.organization),
+                selectinload(Ticket.gs_keys)
+            )
+            result = await session.execute(stmt)
+            ticket = result.scalar_one_or_none()
+
+            if not ticket:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id, text="❌ Заявка не найдена.", parse_mode="HTML"
+                )
+                return
+
+            stmt = select(Staff_Member).where(
+                Staff_Member.max_user_id == max_user_id,
+                Staff_Member.is_active == True
+            )
+            result = await session.execute(stmt)
+            emp = result.scalar_one_or_none()
+
+            if not emp:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id, text="❌ Не удалось получить данные сотрудника.", parse_mode="HTML"
+                )
+                return
+
+            is_to_consultation = action == "transfer_to_consultation"
+            cross_type = "to_consultation" if is_to_consultation else "to_support"
+            new_ticket_type_value = "CONSULTATION" if is_to_consultation else "TECHNICAL_SUPPORT"
+
+            target_employees = await get_available_employees_for_transfer(
+                session, ticket, emp.id, use_internal_id=True, cross_type=cross_type
+            )
+
+            await context.set_state(EmployeeStates.manager_transferring_ticket)
+            await context.update_data(ticket_id=ticket_id, new_ticket_type=new_ticket_type_value)
+
+            buttons = []
+            for emp_item in target_employees:
+                label = f"{emp_item.full_name} ({'Сметный' if is_to_consultation else 'ТП'})"
+                buttons.append([
+                    KeyboardButton(
+                        text=label,
+                        payload=ManagerEmployeeSelectPayload(
+                            action="select",
+                            employee_id=emp_item.id,
+                            new_ticket_type=new_ticket_type_value
+                        ).pack()
+                    )
+                ])
+
+            buttons.append([
+                KeyboardButton(
+                    text="⬅️ Назад",
+                    payload=ManagerTicketActionPayload(action="transfer", ticket_id=ticket_id).pack()
+                )
+            ])
+            buttons.append([
+                KeyboardButton(
+                    text="❌ Отмена",
+                    payload=ManagerEmployeeSelectPayload(action="cancel", employee_id=None).pack()
+                )
+            ])
+
+            keyboard = Keyboard(buttons=buttons, inline=True)
+
+            if is_to_consultation:
+                header = (
+                    "📋 <b>Передача сметному специалисту</b>\n\n"
+                    "Тип заявки изменится на <b>Консультация</b>.\n\n"
+                    "Выберите сметного специалиста:"
+                )
+                empty_msg = "❌ Нет доступных сметных специалистов для передачи."
+            else:
+                header = (
+                    "🔧 <b>Передача в техподдержку</b>\n\n"
+                    "Тип заявки изменится на <b>Тех. поддержка</b>.\n\n"
+                    "Выберите специалиста ТП:"
+                )
+                empty_msg = "❌ Нет доступных специалистов ТП для передачи."
+
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=text,
+                text=header if target_employees else empty_msg,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
-            
-            logger.info(f"Employee {max_user_id} initiated transfer for ticket {ticket_id}, found {len(available_employees)} employees")
+
+            logger.info(
+                f"Employee {max_user_id} cross-type transfer for ticket {ticket_id}, "
+                f"action={action}, found {len(target_employees)} target employees"
+            )
         
         elif action == "view_card":
             # Show ticket card (used from notification buttons)
@@ -2869,7 +3010,9 @@ async def handle_employee_selection(
             data = await context.get_data()
             ticket_id = data.get("ticket_id")
             target_employee_id = payload.employee_id
-            
+            # new_ticket_type can come from payload (cross-type transfer) or FSM data
+            new_ticket_type_str = payload.new_ticket_type or data.get("new_ticket_type")
+
             if not ticket_id or not target_employee_id:
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
@@ -2908,26 +3051,85 @@ async def handle_employee_selection(
                     parse_mode="HTML"
                 )
                 return
+
+            # Resolve new ticket type for cross-type transfer
+            new_ticket_type = None
+            if new_ticket_type_str:
+                from database.models import TicketType as TT
+                type_map = {
+                    "CONSULTATION": TT.CONSULTATION,
+                    "TECHNICAL_SUPPORT": TT.TECHNICAL_SUPPORT,
+                }
+                new_ticket_type = type_map.get(new_ticket_type_str)
             
             # Transfer ticket using MAX user IDs
             ticket = await transfer_ticket_service(
-                session, ticket_id, employee.max_user_id, target_employee.max_user_id, messenger="max"
+                session, ticket_id, employee.max_user_id, target_employee.max_user_id,
+                messenger="max", new_ticket_type=new_ticket_type
             )
             
             # Clear FSM state
             await context.clear()
+
+            # Notify target employee about the transfer
+            try:
+                from services.ticket_service import send_staff_notification
+                from sqlalchemy.orm import selectinload as _selectinload
+                # Reload ticket with relationships for notification
+                stmt_notif = (
+                    select(Ticket)
+                    .where(Ticket.id == ticket_id)
+                    .options(
+                        _selectinload(Ticket.user),
+                        _selectinload(Ticket.gs_keys),
+                    )
+                )
+                result_notif = await session.execute(stmt_notif)
+                ticket_for_notif = result_notif.scalar_one_or_none()
+                if ticket_for_notif:
+                    await send_staff_notification(
+                        bot=messenger_adapter.bot,
+                        staff_id=target_employee.id,
+                        ticket=ticket_for_notif,
+                        routing_info={
+                            "is_transfer": True,
+                            "source_employee_name": employee.full_name,
+                        },
+                        session=session,
+                    )
+            except Exception as notif_err:
+                logger.warning(
+                    f"Failed to send transfer notification to employee {target_employee.id}: {notif_err}"
+                )
+
+            # Build success message
+            if new_ticket_type is not None:
+                type_names = {
+                    "CONSULTATION": "Консультация",
+                    "TECHNICAL_SUPPORT": "Тех. поддержка",
+                }
+                type_label = type_names.get(new_ticket_type_str, new_ticket_type_str)
+                success_text = (
+                    f"✅ Заявка #{ticket_id} передана сотруднику {target_employee.full_name}.\n"
+                    f"Тип заявки изменён на: <b>{type_label}</b>."
+                )
+            else:
+                success_text = f"✅ Заявка #{ticket_id} успешно передана сотруднику {target_employee.full_name}."
             
             # Show success message
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"✅ Заявка #{ticket_id} успешно передана сотруднику {target_employee.full_name}.",
+                text=success_text,
                 parse_mode="HTML"
             )
             
             # Return to active tickets list
             await show_active_tickets(chat_id, max_user_id, session, messenger_adapter, context)
             
-            logger.info(f"Employee {max_user_id} transferred ticket {ticket_id} to employee {target_employee_id}")
+            logger.info(
+                f"Employee {max_user_id} transferred ticket {ticket_id} to employee {target_employee_id}, "
+                f"new_ticket_type={new_ticket_type_str}"
+            )
         
         else:
             logger.warning(f"Unknown employee selection action: {action}")

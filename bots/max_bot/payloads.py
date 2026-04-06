@@ -663,7 +663,8 @@ class ManagerTicketActionPayload(CallbackPayload, prefix='mgr_ticket_action'):
     Used when manager performs actions on a ticket.
     
     Fields:
-        action: Action type - "take", "close", "transfer", "history", "back_to_list", "cancel_close", "cancel_transfer"
+        action: Action type - "take", "close", "transfer", "history", "back_to_list",
+                "cancel_close", "cancel_transfer", "transfer_to_consultation", "transfer_to_support"
         ticket_id: ID of the ticket
     """
     action: str
@@ -703,10 +704,13 @@ class ManagerEmployeeSelectPayload(CallbackPayload, prefix='mgr_emp_select'):
     Fields:
         action: Action type - "select" or "cancel"
         employee_id: ID of the selected employee (optional, only for "select" action)
+        new_ticket_type: Optional new ticket type when cross-type transfer is needed
+                         (e.g., TECHNICAL_SUPPORT → CONSULTATION or vice versa)
     """
     action: str
     employee_id: int | None = None
-    
+    new_ticket_type: str | None = None
+
     @field_validator('employee_id', mode='before')
     @classmethod
     def empty_str_to_none(cls, v):
