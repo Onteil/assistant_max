@@ -1093,6 +1093,19 @@ def create_user_router() -> Router:
     
     # Registration cancel callback - handles cancel button clicks during registration
     user_router.message_callback(RegistrationCancelPayload.filter())(cancel_registration_callback)
+
+    # Registration cancel message - handles text "❌ Отмена" during registration flow
+    for _reg_state in (
+        RegistrationStates.waiting_for_phone,
+        RegistrationStates.waiting_for_name,
+        RegistrationStates.waiting_for_email,
+        RegistrationStates.waiting_for_inn,
+        RegistrationStates.waiting_for_key,
+    ):
+        user_router.message_created(
+            F.message.body.text == "❌ Отмена",
+            _reg_state,
+        )(cancel_registration)
     
     # ========== Admin Creation Flow Handlers ==========
     

@@ -15,6 +15,7 @@ services/google/secret.json
 .vscode
 .kiro
 cleanup_drive.py
+final_checklist.md
 
 # Файлы IDE
 .idea/

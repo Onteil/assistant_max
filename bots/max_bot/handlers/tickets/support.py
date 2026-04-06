@@ -67,6 +67,8 @@ from services.i_tat_service import get_itat_client
 from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
+    KeyAlreadyOwnedByUserError,
+    KeyConflictError,
     add_user_key,
     get_user_by_id,
     get_user_by_max_id,
@@ -1377,6 +1379,39 @@ async def process_new_key_for_support(
             messenger_adapter=messenger_adapter
         )
     
+    except KeyAlreadyOwnedByUserError:
+        logger.info(f"User tried to add their own key again: key={key_number}")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="ℹ️ Этот ключ уже добавлен в ваш профиль. Вы не можете добавить свой же ключ повторно.",
+            parse_mode="HTML"
+        )
+    except KeyConflictError as e:
+        logger.warning(
+            f"Key conflict (DB fallback) in support: key={key_number}, "
+            f"owner_user_id={e.existing_user_id}"
+        )
+        await session.commit()
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+            await notify_admins_key_conflict(session, user_id, normalized_key)
+        except Exception as notify_error:
+            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="⚠️ Ключ добавлен, но обнаружен конфликт. Ключ отправлен на проверку администратору и не может быть выбран.",
+            parse_mode="HTML"
+        )
+        await context.set_state(SupportStates.selecting_key_context)
+        selected_keys = set(data.get("selected_keys", []))
+        await show_key_context_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=selected_keys,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
     except Exception as e:
         logger.error(
             f"Error processing new key for support: key={key_number}, error={e}",

@@ -39,6 +39,16 @@ class KeyConflictError(Exception):
         self.gs_key = gs_key
         super().__init__(f"Key {key_number!r} already owned by user_id={existing_user_id}")
 
+
+class KeyAlreadyOwnedByUserError(Exception):
+    """Raised when a key already belongs to the same user who is trying to add it."""
+
+    def __init__(self, key_number: str, user_id: int, gs_key: "GS_Key") -> None:
+        self.key_number = key_number
+        self.user_id = user_id
+        self.gs_key = gs_key
+        super().__init__(f"Key {key_number!r} already owned by the same user_id={user_id}")
+
 logger = logging.getLogger(__name__)
 
 
@@ -755,6 +765,17 @@ async def add_user_key(
         existing_key = result.scalar_one_or_none()
 
         if existing_key:
+            # Check if the key already belongs to the same user
+            if existing_key.user_id == user_id:
+                logger.info(
+                    f"Key already owned by the same user: key={key_number}, user_id={user_id}"
+                )
+                raise KeyAlreadyOwnedByUserError(
+                    key_number=key_number,
+                    user_id=user_id,
+                    gs_key=existing_key,
+                )
+
             # Key exists in DB under another user but i-TAT didn't flag it.
             # Treat as a conflict to avoid unique constraint violation.
             logger.warning(
@@ -798,6 +819,8 @@ async def add_user_key(
         return gs_key
 
     except KeyConflictError:
+        raise
+    except KeyAlreadyOwnedByUserError:
         raise
     except SQLAlchemyError as e:
         logger.error(

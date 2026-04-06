@@ -58,6 +58,8 @@ from database.models import KeyConflictStatus, SubscriptionStatus, TicketType, W
 from services.calendar_service import get_current_work_mode
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
+    KeyAlreadyOwnedByUserError,
+    KeyConflictError,
     add_user_key,
     add_user_organization,
     get_user_by_max_id,
@@ -749,6 +751,29 @@ async def process_consultation_new_key(
         )
         await _show_key_selection(chat_id, user_id, selected_keys, 0, session, messenger_adapter)
 
+    except KeyAlreadyOwnedByUserError:
+        logger.info(f"User tried to add their own key again: key={key_number}")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="ℹ️ Этот ключ уже добавлен в ваш профиль. Вы не можете добавить свой же ключ повторно.",
+            parse_mode="HTML"
+        )
+    except KeyConflictError as e:
+        logger.warning(
+            f"Key conflict (DB fallback) in consultation: key={key_number}, "
+            f"owner_user_id={e.existing_user_id}"
+        )
+        await session.commit()
+        try:
+            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+            await notify_admins_key_conflict(session, user_id, key_number)
+        except Exception as notify_error:
+            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=CONSULTATION_KEY_CONFLICT,
+            parse_mode="HTML",
+        )
     except Exception as e:
         logger.error(f"Error adding key in consultation: {e}", exc_info=True)
         await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")

@@ -51,6 +51,7 @@ from services.i_tat_service import get_itat_client
 from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket
 from services.user_service import (
+    KeyAlreadyOwnedByUserError,
     KeyConflictError,
     add_user_key,
     add_user_organization,
@@ -1537,6 +1538,29 @@ async def process_add_key(
         # Show keys list
         await show_keys_list(chat_id, user.id, session, messenger_adapter)
     
+    except KeyAlreadyOwnedByUserError as e:
+        logger.info(
+            f"User tried to add their own key again: user_id={user.id}, key={normalized_key}"
+        )
+        await context.clear()
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from bots.max_bot.payloads import ProfileViewPayload
+        keyboard = Keyboard(
+            buttons=[
+                [KeyboardButton(
+                    text="⬅️ Назад к ключам",
+                    payload=ProfileViewPayload(section="keys", page=0).pack()
+                )]
+            ],
+            inline=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"ℹ️ Ключ <b>{normalized_key}</b> уже добавлен в ваш профиль. Вы не можете добавить свой же ключ повторно.",
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
     except KeyConflictError as e:
         logger.warning(
             f"Key conflict (DB fallback): user_id={user.id}, key={normalized_key}, "

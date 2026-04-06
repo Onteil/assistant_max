@@ -54,7 +54,7 @@ from bots.max_bot.texts import (
     REGISTRATION_SUBMITTED,
 )
 from database.models import KeyConflictStatus, RegistrationStatus
-from services.i_tat_service import get_itat_client
+from services.i_tat_service import NonRetryableAPIError, get_itat_client
 from services.itat_retry_helper import call_itat_with_retry
 from services.user_service import (
     KeyConflictError,
@@ -1354,6 +1354,35 @@ async def submit_registration(
             parse_mode="HTML"
         )
     
+    except NonRetryableAPIError as e:
+        if e.status_code == 409:
+            logger.warning(
+                f"Registration conflict (409): user already registered in i-TAT: user_id={user_id}"
+            )
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "⚠️ <b>Вы уже зарегистрированы в системе.</b>\n\n"
+                    "Ваша учётная запись уже существует в i-TAT. "
+                    "Если вы не можете войти или возникли проблемы — "
+                    "пожалуйста, обратитесь в поддержку."
+                ),
+                parse_mode="HTML"
+            )
+        else:
+            logger.error(
+                f"Non-retryable API error submitting registration: user_id={user_id}, "
+                f"status={e.status_code}, error={e}",
+                exc_info=True
+            )
+            await session.rollback()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+
     except Exception as e:
         logger.error(
             f"Error submitting registration: user_id={user_id}, error={e}",
