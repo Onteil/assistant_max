@@ -496,8 +496,12 @@ async def send_staff_notification(
     from maxapi.enums.parse_mode import ParseMode
     
     try:
-        # Determine bot type by checking class name
-        is_max_bot = bot.__class__.__name__ == 'Bot' and hasattr(bot, 'api_url')
+        # Determine bot type by checking if it's a maxapi Bot instance
+        try:
+            from maxapi.bot import Bot as MaxBot
+            is_max_bot = isinstance(bot, MaxBot)
+        except ImportError:
+            is_max_bot = False
         
         # Get staff member to retrieve messenger ID
         if session:
