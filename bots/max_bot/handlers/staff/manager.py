@@ -2333,10 +2333,10 @@ async def handle_ticket_action(
             await context.update_data(ticket_id=ticket_id)
 
             role_display = {
-                "MANAGER": ("💼", "Менеджер"),
-                "TECHNICAL_SUPPORT": ("🔧", "ТП"),
-                "DUTY_ENGINEER": ("👷", "Дежурный инженер"),
-                "ADMINISTRATOR": ("👑", "Администратор"),
+                "manager": ("💼", "Менеджер"),
+                "technical_support": ("🔧", "ТП"),
+                "duty_engineer": ("👷", "Дежурный инженер"),
+                "administrator": ("👑", "Администратор"),
             }
 
             buttons = []
