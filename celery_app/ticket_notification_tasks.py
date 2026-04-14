@@ -110,7 +110,8 @@ async def _process_pending_tickets_async() -> dict:
                     Ticket.queue_notification_sent_at.is_(None),
                 )
             ).options(
-                selectinload(Ticket.user),
+                selectinload(Ticket.user).selectinload(User.max_messenger_data),
+                selectinload(Ticket.organization),
                 selectinload(Ticket.gs_keys),
                 selectinload(Ticket.file_attachments),
             )
@@ -175,10 +176,17 @@ async def _process_pending_tickets_async() -> dict:
                     else:
                         sent = False
                     
-                    # Mark ticket as notified to prevent duplicate notifications
+                    # Mark ticket as notified ONLY if notification was sent successfully
                     if sent:
                         ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
                         await session.commit()
+                        logger.info(
+                            f"Ticket {ticket.id} marked as notified from queue"
+                        )
+                    else:
+                        logger.warning(
+                            f"Ticket {ticket.id} notification failed - will retry on next run"
+                        )
                 
                 except Exception as e:
                     stats["errors"] += 1
@@ -343,6 +351,11 @@ async def _process_invoice_ticket(
     
     if ticket.assigned_staff_id:
         # Notify assigned manager
+        logger.info(
+            f"Processing invoice ticket {ticket.id} from queue: "
+            f"assigned_staff_id={ticket.assigned_staff_id}"
+        )
+        
         notification_sent = await send_staff_notification(
             bot=max_bot,
             staff_id=ticket.assigned_staff_id,
@@ -383,6 +396,11 @@ async def _process_invoice_ticket(
                         f"Failed to forward attachments for invoice ticket {ticket.id}: {e}",
                         exc_info=True
                     )
+        else:
+            logger.error(
+                f"Failed to send manager notification for ticket {ticket.id}, "
+                f"staff_id={ticket.assigned_staff_id} - notification will be retried"
+            )
         return notification_sent
     else:
         # No manager - notify all admins

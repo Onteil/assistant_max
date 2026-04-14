@@ -289,24 +289,50 @@ class CalendarService:
                 work_mode = rule.work_mode
                 work_start = rule.work_start_time
                 work_end = rule.work_end_time
+                
+                # If work mode is NON_WORKING, return immediately
+                if work_mode == WorkMode.NON_WORKING:
+                    return WorkMode.NON_WORKING
+                
+                # Check if current time falls within rule's work hours
+                current_time = dt.time()
+                if work_start and work_end:
+                    if work_start <= current_time < work_end:
+                        # Within rule's work hours - return rule's work mode
+                        return work_mode
+                    else:
+                        # Outside rule's work hours - fall back to base schedule
+                        base_mode, base_start, base_end = self._get_base_schedule_mode(dt)
+                        if base_mode == WorkMode.NON_WORKING:
+                            return WorkMode.NON_WORKING
+                        if base_start and base_end:
+                            if base_start <= current_time < base_end:
+                                return base_mode
+                            else:
+                                return WorkMode.NON_WORKING
+                        else:
+                            return base_mode
+                else:
+                    # No time range specified in rule, return the mode
+                    return work_mode
             else:
                 # No rules, use base schedule
                 work_mode, work_start, work_end = self._get_base_schedule_mode(dt)
-            
-            # If work mode is NON_WORKING, return immediately
-            if work_mode == WorkMode.NON_WORKING:
-                return WorkMode.NON_WORKING
-            
-            # Check if current time falls within work hours
-            current_time = dt.time()
-            if work_start and work_end:
-                if work_start <= current_time < work_end:
-                    return work_mode
-                else:
+                
+                # If work mode is NON_WORKING, return immediately
+                if work_mode == WorkMode.NON_WORKING:
                     return WorkMode.NON_WORKING
-            else:
-                # No time range specified, return the mode
-                return work_mode
+                
+                # Check if current time falls within work hours
+                current_time = dt.time()
+                if work_start and work_end:
+                    if work_start <= current_time < work_end:
+                        return work_mode
+                    else:
+                        return WorkMode.NON_WORKING
+                else:
+                    # No time range specified, return the mode
+                    return work_mode
                 
         except Exception as e:
             # Log error and return safe default

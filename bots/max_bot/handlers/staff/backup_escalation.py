@@ -120,14 +120,21 @@ async def handle_backup_escalation_take_over(
             )
             return
         
-        # Verify staff is assigned to this ticket
-        if ticket.assigned_staff_id != staff.id:
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"❌ Вы не назначены на эту заявку. Текущий исполнитель: {ticket.assigned_staff.full_name if ticket.assigned_staff else 'Не назначен'}",
-                parse_mode="HTML"
-            )
-            return
+        # For INVOICE/RENEWAL tickets: verify staff is assigned to this ticket
+        # For TECHNICAL_SUPPORT/CONSULTATION tickets: allow any backup manager to take it
+        from database.models import TicketType
+        if ticket.ticket_type in (TicketType.INVOICE, TicketType.RENEWAL):
+            if ticket.assigned_staff_id != staff.id:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Вы не назначены на эту заявку. Текущий исполнитель: {ticket.assigned_staff.full_name if ticket.assigned_staff else 'Не назначен'}",
+                    parse_mode="HTML"
+                )
+                return
+        
+        # For TECHNICAL_SUPPORT/CONSULTATION: Set assigned_staff_id to backup manager taking the ticket
+        if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+            ticket.assigned_staff_id = staff.id
         
         # Take ticket into work (changes status to IN_PROGRESS and cancels escalation)
         try:
@@ -140,7 +147,7 @@ async def handle_backup_escalation_take_over(
             
             logger.info(
                 f"Backup manager {staff.id} took over ticket {ticket_id} "
-                f"at escalation level {escalation_level}"
+                f"(ticket_type={ticket.ticket_type.value}, escalation_level={escalation_level})"
             )
         
         except Exception as e:

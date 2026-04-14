@@ -551,7 +551,8 @@ async def send_staff_notification(
             if not chat_id:
                 logger.error(
                     f"No MAX chat_id found for staff member: staff_id={staff_id}, "
-                    f"max_user_id={staff.max_user_id}, staff_name={staff.full_name}"
+                    f"max_user_id={staff.max_user_id}, staff_name={staff.full_name}. "
+                    f"Staff member may not have started conversation with MAX bot yet."
                 )
                 return False
         else:

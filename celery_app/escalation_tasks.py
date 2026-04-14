@@ -536,10 +536,21 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
         # Skip directly to admin escalation since no backup manager available
         return await _escalate_to_admins(ticket, session)
     
+    # Get MAX chat_id from MAX_Messenger_Data table (not from staff_members.max_chat_id)
+    backup_chat_id = None
+    if backup_manager.max_user_id:
+        from database.models import MAX_Messenger_Data
+        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+            MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
+        )
+        result_chat = await session.execute(stmt_chat)
+        backup_chat_id = result_chat.scalar_one_or_none()
+    
     # Check if backup manager has MAX messenger
-    if not backup_manager.max_chat_id:
+    if not backup_chat_id:
         logger.error(
-            f"Backup manager {backup_manager.id} has no MAX chat_id, "
+            f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
+            f"has no MAX chat_id in MAX_Messenger_Data table, "
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified
@@ -598,14 +609,13 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     )
     
     # Build keyboard with "Take Over" button
-    # Import payload class
-    import json
-    take_over_payload = json.dumps({
-        "prefix": "backup_esc",
-        "action": "take_over",
-        "ticket_id": ticket.id,
-        "escalation_level": 1
-    })
+    from bots.max_bot.payloads import BackupEscalationPayload
+    
+    take_over_payload = BackupEscalationPayload(
+        action="take_over",
+        ticket_id=ticket.id,
+        escalation_level=1
+    ).pack()
     
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -622,7 +632,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
         max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
         
         await max_bot.send_message(
-            chat_id=backup_manager.max_chat_id,
+            chat_id=backup_chat_id,
             text=notification_text,
             attachments=[keyboard]
         )
@@ -630,7 +640,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
         logger.info(
             f"Escalation notification sent to backup_manager_1: "
             f"ticket_id={ticket.id}, backup_id={backup_manager.id}, "
-            f"chat_id={backup_manager.max_chat_id}"
+            f"max_user_id={backup_manager.max_user_id}, chat_id={backup_chat_id}"
         )
     
     except MaxApiError as e:
@@ -638,7 +648,8 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
         if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
             logger.warning(
                 f"MAX bot blocked by backup manager: "
-                f"backup_id={backup_manager.id}, chat_id={backup_manager.max_chat_id}"
+                f"backup_id={backup_manager.id}, max_user_id={backup_manager.max_user_id}, "
+                f"chat_id={backup_chat_id}"
             )
         else:
             logger.error(f"Failed to send escalation notification: {e}", exc_info=True)
@@ -771,20 +782,25 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         # Skip directly to admin escalation since no backup manager available
         return await _escalate_to_admins(ticket, session)
     
+    # Get MAX chat_id from MAX_Messenger_Data table (not from staff_members.max_chat_id)
+    backup_chat_id = None
+    if backup_manager.max_user_id:
+        from database.models import MAX_Messenger_Data
+        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+            MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
+        )
+        result_chat = await session.execute(stmt_chat)
+        backup_chat_id = result_chat.scalar_one_or_none()
+    
     # Check if backup manager has MAX messenger
-    if not backup_manager.max_chat_id:
+    if not backup_chat_id:
         logger.error(
-            f"Backup manager {backup_manager.id} has no MAX chat_id, "
+            f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
+            f"has no MAX chat_id in MAX_Messenger_Data table, "
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified
         return await _escalate_to_admins(ticket, session)
-        
-        return {
-            "status": "skipped_to_admins",
-            "message": "Backup manager has no MAX chat_id",
-            "ticket_id": ticket.id
-        }
     
     # Reassign ticket to backup_manager_2
     old_staff_id = ticket.assigned_staff_id
@@ -839,13 +855,13 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     )
     
     # Build keyboard with "Take Over" button
-    import json
-    take_over_payload = json.dumps({
-        "prefix": "backup_esc",
-        "action": "take_over",
-        "ticket_id": ticket.id,
-        "escalation_level": 2
-    })
+    from bots.max_bot.payloads import BackupEscalationPayload
+    
+    take_over_payload = BackupEscalationPayload(
+        action="take_over",
+        ticket_id=ticket.id,
+        escalation_level=2
+    ).pack()
     
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -862,7 +878,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
         
         await max_bot.send_message(
-            chat_id=backup_manager.max_chat_id,
+            chat_id=backup_chat_id,
             text=notification_text,
             attachments=[keyboard]
         )
@@ -870,7 +886,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         logger.info(
             f"Escalation notification sent to backup_manager_2: "
             f"ticket_id={ticket.id}, backup_id={backup_manager.id}, "
-            f"chat_id={backup_manager.max_chat_id}"
+            f"max_user_id={backup_manager.max_user_id}, chat_id={backup_chat_id}"
         )
     
     except MaxApiError as e:
@@ -878,7 +894,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
             logger.warning(
                 f"MAX bot blocked by backup manager: "
-                f"backup_id={backup_manager.id}, chat_id={backup_manager.max_chat_id}"
+                f"backup_id={backup_manager.id}, max_user_id={backup_manager.max_user_id}, "
+                f"chat_id={backup_chat_id}"
             )
         else:
             logger.error(f"Failed to send escalation notification: {e}", exc_info=True)
@@ -1506,13 +1523,764 @@ async def cancel_escalation_monitoring(ticket_id: int) -> bool:
 
 
 
+async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
+    """
+    Escalate technical support ticket to all backup_manager_1 (Level 0 → Level 1).
+    
+    Collects all unique backup_manager_1 from all active support staff,
+    deduplicates them, and sends one notification per backup manager.
+    
+    Args:
+        ticket: Ticket object with loaded relationships
+        session: Database session
+    
+    Returns:
+        Dict with execution result
+    
+    Requirements: Technical Support Escalation with deduplication
+    """
+    from maxapi import Bot as MAXBot
+    from maxapi.enums.parse_mode import ParseMode
+    from maxapi.exceptions import MaxApiError
+    from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+    from maxapi.types import CallbackButton
+    from constants import MAX_BOT_TOKEN
+    
+    # Get all active support staff based on ticket type
+    if ticket.ticket_type == TicketType.CONSULTATION:
+        # For CONSULTATION: get estimate tech specialists
+        stmt = select(Staff_Member).where(
+            and_(
+                Staff_Member.is_active == True,
+                Staff_Member.is_estimate_tech_specialist == True
+            )
+        ).options(
+            selectinload(Staff_Member.backup_manager_1)
+        )
+    else:
+        # For TECHNICAL_SUPPORT: get technical support staff
+        stmt = select(Staff_Member).where(
+            and_(
+                Staff_Member.is_active == True,
+                Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT
+            )
+        ).options(
+            selectinload(Staff_Member.backup_manager_1)
+        )
+    
+    result = await session.execute(stmt)
+    support_staff = result.scalars().all()
+    
+    if not support_staff:
+        logger.warning(
+            f"No active support staff found for ticket {ticket.id}, "
+            f"escalating directly to admins"
+        )
+        ticket.escalation_level = 2
+        await session.commit()
+        
+        # Schedule next check immediately
+        reminder_task = check_technical_support_ticket.apply_async(
+            args=[ticket.id],
+            countdown=10  # 10 seconds
+        )
+        ticket.escalation_task_reminder_id = reminder_task.id
+        await session.commit()
+        
+        return {
+            "status": "skipped_to_admins",
+            "message": "No support staff found",
+            "ticket_id": ticket.id
+        }
+    
+    # Collect all unique backup_manager_1 IDs (deduplication)
+    backup_manager_ids = set()
+    for staff in support_staff:
+        if staff.backup_manager_1_id:
+            backup_manager_ids.add(staff.backup_manager_1_id)
+    
+    if not backup_manager_ids:
+        logger.warning(
+            f"No backup_manager_1 configured for any support staff, "
+            f"escalating directly to backup_manager_2 (level 1)"
+        )
+        ticket.escalation_level = 1
+        await session.commit()
+        
+        # Schedule next check immediately to try backup_manager_2
+        reminder_task = check_technical_support_ticket.apply_async(
+            args=[ticket.id],
+            countdown=10
+        )
+        ticket.escalation_task_reminder_id = reminder_task.id
+        await session.commit()
+        
+        return {
+            "status": "skipped_to_level_1",
+            "message": "No backup_manager_1 configured, trying backup_manager_2",
+            "ticket_id": ticket.id
+        }
+    
+    # Get backup manager objects
+    stmt = select(Staff_Member).where(
+        Staff_Member.id.in_(backup_manager_ids)
+    )
+    result = await session.execute(stmt)
+    backup_managers = result.scalars().all()
+    
+    # Build notification message
+    ticket_type_names = {
+        TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация"
+    }
+    
+    ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+    user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+    user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+    
+    # Calculate time elapsed
+    from utils.timezone_helpers import get_moscow_now_naive
+    elapsed = get_moscow_now_naive() - ticket.created_at
+    minutes = int(elapsed.total_seconds() // 60)
+    
+    notification_text = (
+        f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки в течение 10 минут\n\n"
+        f"Вы назначены резервным менеджером (Резерв 1) для одного или нескольких сотрудников техподдержки.\n\n"
+        f"<b>Тип:</b> {ticket_type}\n"
+        f"<b>Клиент:</b> {user_name}\n"
+        f"<b>Телефон:</b> {user_phone}\n"
+    )
+    
+    if ticket.organization:
+        org_text = ticket.organization.inn
+        if ticket.organization.organization_name:
+            org_text += f" ({ticket.organization.organization_name})"
+        notification_text += f"<b>Организация:</b> {org_text}\n"
+    
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+        notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+    
+    if ticket.description:
+        desc_preview = ticket.description[:150]
+        if len(ticket.description) > 150:
+            desc_preview += "..."
+        notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+    
+    notification_text += (
+        f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
+        f"⚠️ <b>Если не возьмете в работу в течение 10 минут, заявка будет передана следующему резервному менеджеру.</b>"
+    )
+    
+    # Build keyboard with "Take Over" button
+    from bots.max_bot.payloads import BackupEscalationPayload
+    
+    take_over_payload = BackupEscalationPayload(
+        action="take_over",
+        ticket_id=ticket.id,
+        escalation_level=1
+    ).pack()
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        CallbackButton(
+            text="✋ Взять в работу",
+            payload=take_over_payload
+        )
+    )
+    keyboard = builder.as_markup()
+    
+    # Send notifications to all unique backup managers
+    notified_count = 0
+    failed_count = 0
+    
+    max_bot = None
+    try:
+        max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        for backup_manager in backup_managers:
+            try:
+                # Get MAX chat_id from MAX_Messenger_Data table
+                backup_chat_id = None
+                if backup_manager.max_user_id:
+                    from database.models import MAX_Messenger_Data
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    backup_chat_id = result_chat.scalar_one_or_none()
+                
+                if not backup_chat_id:
+                    logger.error(
+                        f"Backup manager {backup_manager.id} has no MAX chat_id, skipping"
+                    )
+                    failed_count += 1
+                    continue
+                
+                await max_bot.send_message(
+                    chat_id=backup_chat_id,
+                    text=notification_text,
+                    attachments=[keyboard]
+                )
+                
+                notified_count += 1
+                logger.info(
+                    f"Backup manager notified (level 1): backup_id={backup_manager.id}, "
+                    f"ticket_id={ticket.id}"
+                )
+            
+            except MaxApiError as e:
+                error_str = str(e).lower()
+                if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                    logger.warning(
+                        f"MAX bot blocked by backup manager: backup_id={backup_manager.id}"
+                    )
+                else:
+                    logger.error(f"Failed to send notification: {e}", exc_info=True)
+                failed_count += 1
+            
+            except Exception as e:
+                logger.error(f"Failed to send notification: {e}", exc_info=True)
+                failed_count += 1
+    
+    finally:
+        if max_bot and max_bot.session:
+            await max_bot.session.close()
+    
+    # Update ticket escalation level
+    ticket.escalation_level = 1
+    
+    # Log action
+    action_log = Action_Log(
+        ticket_id=ticket.id,
+        action_type=ActionType.TICKET_ESCALATED,
+        action_details={
+            "escalation_level": 1,
+            "backup_type": "backup_manager_1",
+            "unique_backup_managers": len(backup_managers),
+            "notified_count": notified_count,
+            "failed_count": failed_count,
+            "time_elapsed_minutes": minutes
+        }
+    )
+    session.add(action_log)
+    
+    # Schedule next escalation check
+    timeout_seconds = get_escalation_timeout_sync()
+    reminder_task = check_technical_support_ticket.apply_async(
+        args=[ticket.id],
+        countdown=timeout_seconds
+    )
+    ticket.escalation_task_reminder_id = reminder_task.id
+    
+    await session.commit()
+    
+    return {
+        "status": "success" if notified_count > 0 else "error",
+        "message": f"Escalated to {notified_count} backup_manager_1",
+        "ticket_id": ticket.id,
+        "escalation_level": 1,
+        "notified_count": notified_count,
+        "failed_count": failed_count,
+        "time_elapsed_minutes": minutes
+    }
+
+
+async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
+    """
+    Escalate technical support ticket to all backup_manager_2 (Level 1 → Level 2).
+    
+    Collects all unique backup_manager_2 from all active support staff,
+    deduplicates them, and sends one notification per backup manager.
+    
+    Args:
+        ticket: Ticket object with loaded relationships
+        session: Database session
+    
+    Returns:
+        Dict with execution result
+    
+    Requirements: Technical Support Escalation with deduplication
+    """
+    from maxapi import Bot as MAXBot
+    from maxapi.enums.parse_mode import ParseMode
+    from maxapi.exceptions import MaxApiError
+    from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+    from maxapi.types import CallbackButton
+    from constants import MAX_BOT_TOKEN
+    
+    # Get all active support staff based on ticket type
+    if ticket.ticket_type == TicketType.CONSULTATION:
+        stmt = select(Staff_Member).where(
+            and_(
+                Staff_Member.is_active == True,
+                Staff_Member.is_estimate_tech_specialist == True
+            )
+        ).options(
+            selectinload(Staff_Member.backup_manager_2)
+        )
+    else:
+        stmt = select(Staff_Member).where(
+            and_(
+                Staff_Member.is_active == True,
+                Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT
+            )
+        ).options(
+            selectinload(Staff_Member.backup_manager_2)
+        )
+    
+    result = await session.execute(stmt)
+    support_staff = result.scalars().all()
+    
+    if not support_staff:
+        logger.warning(
+            f"No active support staff found for ticket {ticket.id}, "
+            f"escalating directly to admins"
+        )
+        ticket.escalation_level = 2
+        await session.commit()
+        
+        reminder_task = check_technical_support_ticket.apply_async(
+            args=[ticket.id],
+            countdown=10
+        )
+        ticket.escalation_task_reminder_id = reminder_task.id
+        await session.commit()
+        
+        return {
+            "status": "skipped_to_admins",
+            "message": "No support staff found",
+            "ticket_id": ticket.id
+        }
+    
+    # Collect all unique backup_manager_2 IDs (deduplication)
+    backup_manager_ids = set()
+    for staff in support_staff:
+        if staff.backup_manager_2_id:
+            backup_manager_ids.add(staff.backup_manager_2_id)
+    
+    if not backup_manager_ids:
+        logger.warning(
+            f"No backup_manager_2 configured for any support staff, "
+            f"escalating directly to admins"
+        )
+        ticket.escalation_level = 2
+        await session.commit()
+        
+        reminder_task = check_technical_support_ticket.apply_async(
+            args=[ticket.id],
+            countdown=10
+        )
+        ticket.escalation_task_reminder_id = reminder_task.id
+        await session.commit()
+        
+        return {
+            "status": "skipped_to_admins",
+            "message": "No backup_manager_2 configured",
+            "ticket_id": ticket.id
+        }
+    
+    # Get backup manager objects
+    stmt = select(Staff_Member).where(
+        Staff_Member.id.in_(backup_manager_ids)
+    )
+    result = await session.execute(stmt)
+    backup_managers = result.scalars().all()
+    
+    # Build notification message
+    ticket_type_names = {
+        TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация"
+    }
+    
+    ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+    user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+    user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+    
+    # Calculate time elapsed
+    from utils.timezone_helpers import get_moscow_now_naive
+    elapsed = get_moscow_now_naive() - ticket.created_at
+    minutes = int(elapsed.total_seconds() // 60)
+    
+    notification_text = (
+        f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки и первыми резервными менеджерами в течение 20 минут\n\n"
+        f"Вы назначены вторым резервным менеджером (Резерв 2) для одного или нескольких сотрудников техподдержки.\n\n"
+        f"<b>Тип:</b> {ticket_type}\n"
+        f"<b>Клиент:</b> {user_name}\n"
+        f"<b>Телефон:</b> {user_phone}\n"
+    )
+    
+    if ticket.organization:
+        org_text = ticket.organization.inn
+        if ticket.organization.organization_name:
+            org_text += f" ({ticket.organization.organization_name})"
+        notification_text += f"<b>Организация:</b> {org_text}\n"
+    
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+        notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+    
+    if ticket.description:
+        desc_preview = ticket.description[:150]
+        if len(ticket.description) > 150:
+            desc_preview += "..."
+        notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+    
+    notification_text += (
+        f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
+        f"🚨 <b>КРИТИЧНО: Если не возьмете в работу в течение 10 минут, заявка будет эскалирована администраторам!</b>"
+    )
+    
+    # Build keyboard with "Take Over" button
+    from bots.max_bot.payloads import BackupEscalationPayload
+    
+    take_over_payload = BackupEscalationPayload(
+        action="take_over",
+        ticket_id=ticket.id,
+        escalation_level=2
+    ).pack()
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        CallbackButton(
+            text="✋ Взять в работу",
+            payload=take_over_payload
+        )
+    )
+    keyboard = builder.as_markup()
+    
+    # Send notifications to all unique backup managers
+    notified_count = 0
+    failed_count = 0
+    
+    max_bot = None
+    try:
+        max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        for backup_manager in backup_managers:
+            try:
+                # Get MAX chat_id from MAX_Messenger_Data table
+                backup_chat_id = None
+                if backup_manager.max_user_id:
+                    from database.models import MAX_Messenger_Data
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    backup_chat_id = result_chat.scalar_one_or_none()
+                
+                if not backup_chat_id:
+                    logger.error(
+                        f"Backup manager {backup_manager.id} has no MAX chat_id, skipping"
+                    )
+                    failed_count += 1
+                    continue
+                
+                await max_bot.send_message(
+                    chat_id=backup_chat_id,
+                    text=notification_text,
+                    attachments=[keyboard]
+                )
+                
+                notified_count += 1
+                logger.info(
+                    f"Backup manager notified (level 2): backup_id={backup_manager.id}, "
+                    f"ticket_id={ticket.id}"
+                )
+            
+            except MaxApiError as e:
+                error_str = str(e).lower()
+                if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                    logger.warning(
+                        f"MAX bot blocked by backup manager: backup_id={backup_manager.id}"
+                    )
+                else:
+                    logger.error(f"Failed to send notification: {e}", exc_info=True)
+                failed_count += 1
+            
+            except Exception as e:
+                logger.error(f"Failed to send notification: {e}", exc_info=True)
+                failed_count += 1
+    
+    finally:
+        if max_bot and max_bot.session:
+            await max_bot.session.close()
+    
+    # Update ticket escalation level
+    ticket.escalation_level = 2
+    
+    # Log action
+    action_log = Action_Log(
+        ticket_id=ticket.id,
+        action_type=ActionType.TICKET_ESCALATED,
+        action_details={
+            "escalation_level": 2,
+            "backup_type": "backup_manager_2",
+            "unique_backup_managers": len(backup_managers),
+            "notified_count": notified_count,
+            "failed_count": failed_count,
+            "time_elapsed_minutes": minutes
+        }
+    )
+    session.add(action_log)
+    
+    # Schedule final escalation check
+    timeout_seconds = get_escalation_timeout_sync()
+    reminder_task = check_technical_support_ticket.apply_async(
+        args=[ticket.id],
+        countdown=timeout_seconds
+    )
+    ticket.escalation_task_reminder_id = reminder_task.id
+    
+    await session.commit()
+    
+    return {
+        "status": "success" if notified_count > 0 else "error",
+        "message": f"Escalated to {notified_count} backup_manager_2",
+        "ticket_id": ticket.id,
+        "escalation_level": 2,
+        "notified_count": notified_count,
+        "failed_count": failed_count,
+        "time_elapsed_minutes": minutes
+    }
+
+
+async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
+    """
+    Final escalation to administrators for technical support tickets (Level 2 → Admins).
+    
+    Notifies all administrators and escalation channels.
+    
+    Args:
+        ticket: Ticket object with loaded relationships
+        session: Database session
+    
+    Returns:
+        Dict with execution result
+    
+    Requirements: Technical Support Escalation
+    """
+    from maxapi import Bot as MAXBot
+    from maxapi.enums.parse_mode import ParseMode
+    from maxapi.exceptions import MaxApiError
+    from constants import MAX_BOT_TOKEN
+    
+    # Get active administrators
+    admins = await get_active_admins(session)
+    
+    if not admins:
+        logger.error(
+            f"No active admins found for technical support escalation: "
+            f"ticket_id={ticket.id}"
+        )
+        return {
+            "status": "error",
+            "message": "No active admins found",
+            "ticket_id": ticket.id
+        }
+    
+    # Calculate time elapsed
+    from utils.timezone_helpers import get_moscow_now_naive
+    elapsed = get_moscow_now_naive() - ticket.created_at
+    minutes = int(elapsed.total_seconds() // 60)
+    
+    # Build notification message
+    ticket_type_names = {
+        TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация"
+    }
+    
+    ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+    user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+    user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+    
+    if ticket.ticket_type == TicketType.CONSULTATION:
+        header = f"🚨 <b>КРИТИЧЕСКАЯ ЭСКАЛАЦИЯ: Заявка на консультацию #{ticket.id}</b>\n\n"
+        reason = "Заявка не была взята в работу сметными тех. специалистами и резервными менеджерами в течение 30 минут"
+    else:
+        header = f"🚨 <b>КРИТИЧЕСКАЯ ЭСКАЛАЦИЯ: Заявка техподдержки #{ticket.id}</b>\n\n"
+        reason = "Заявка не была взята в работу сотрудниками техподдержки и резервными менеджерами в течение 30 минут"
+    
+    notification_text = (
+        f"{header}"
+        f"📋 <b>Причина:</b> {reason}\n\n"
+        f"<b>Тип:</b> {ticket_type}\n"
+        f"<b>Клиент:</b> {user_name}\n"
+        f"<b>Телефон:</b> {user_phone}\n"
+    )
+    
+    if ticket.organization:
+        org_text = ticket.organization.inn
+        if ticket.organization.organization_name:
+            org_text += f" ({ticket.organization.organization_name})"
+        notification_text += f"<b>Организация:</b> {org_text}\n"
+    
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+        notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+    
+    if ticket.description:
+        desc_preview = ticket.description[:150]
+        if len(ticket.description) > 150:
+            desc_preview += "..."
+        notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+    
+    notification_text += (
+        f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
+        f"⚠️ <b>Требуется немедленное внимание администратора!</b>"
+    )
+    
+    # Build "К заявке" button
+    from bots.max_bot.payloads import ManagerViewTicketPayload
+    from maxapi.types.attachments.buttons import CallbackButton
+    from maxapi.types.attachments.attachment import ButtonsPayload
+
+    view_ticket_buttons = [[
+        CallbackButton(
+            text="📋 К заявке",
+            payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+        )
+    ]]
+    
+    # Send notifications to all admins
+    notified_count = 0
+    failed_count = 0
+    failed_admins = []
+    
+    max_bot = None
+    try:
+        max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        for admin in admins:
+            try:
+                chat_id = await _get_admin_max_chat_id(session, admin)
+                
+                if chat_id is None:
+                    logger.error(
+                        f"No MAX chat_id found for admin: admin_id={admin.id}"
+                    )
+                    failed_count += 1
+                    failed_admins.append(admin.id)
+                    continue
+                
+                await max_bot.send_message(
+                    chat_id=chat_id,
+                    text=notification_text,
+                    attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
+                )
+                
+                notified_count += 1
+                logger.info(
+                    f"Admin notified about technical support escalation: "
+                    f"admin_id={admin.id}, ticket_id={ticket.id}"
+                )
+            
+            except MaxApiError as e:
+                error_str = str(e).lower()
+                if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+                    logger.warning(f"MAX bot blocked by admin: admin_id={admin.id}")
+                else:
+                    logger.error(f"MAX API error notifying admin: {e}")
+                failed_count += 1
+                failed_admins.append(admin.id)
+            
+            except Exception as e:
+                logger.error(f"Failed to notify admin: {e}", exc_info=True)
+                failed_count += 1
+                failed_admins.append(admin.id)
+    
+    finally:
+        if max_bot and max_bot.session:
+            await max_bot.session.close()
+    
+    # Send to escalation duty channel
+    channels_notified = []
+    
+    def is_max_chat_id(chat_id: str) -> bool:
+        try:
+            chat_id_int = int(chat_id)
+            return abs(chat_id_int) > 10000000000000
+        except (ValueError, TypeError):
+            return False
+    
+    max_bot = None
+    try:
+        if MAX_BOT_TOKEN:
+            max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        from services.settings_service import get_escalation_channels
+        
+        duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
+        for duty_channel in duty_channels:
+            if is_max_chat_id(duty_channel) and max_bot:
+                try:
+                    await max_bot.send_message(
+                        chat_id=int(duty_channel),
+                        text=notification_text,
+                        attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
+                    )
+                    channels_notified.append(f"escalation_duty_channel:{duty_channel}")
+                    logger.info(
+                        f"Technical support escalation sent to duty channel: {duty_channel}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send to duty channel {duty_channel}: {e}")
+    
+    finally:
+        if max_bot and max_bot.session:
+            await max_bot.session.close()
+    
+    # Log action
+    action_log = Action_Log(
+        ticket_id=ticket.id,
+        action_type=ActionType.TICKET_ESCALATED,
+        action_details={
+            "escalation_level": "admins",
+            "admins_notified": notified_count,
+            "admins_failed": failed_count,
+            "channels_notified": channels_notified,
+            "time_elapsed_minutes": minutes
+        }
+    )
+    session.add(action_log)
+    await session.commit()
+    
+    # Determine status
+    if notified_count == 0 and not channels_notified:
+        status = "error"
+        message = "Failed to notify any admins or channels"
+    elif notified_count == 0:
+        status = "partial"
+        message = f"Notified {len(channels_notified)} channel(s) but no admins"
+    else:
+        status = "success"
+        message = f"Notified {notified_count} admins and {len(channels_notified)} channel(s)"
+    
+    return {
+        "status": status,
+        "message": message,
+        "ticket_id": ticket.id,
+        "admins_notified": notified_count,
+        "admins_failed": failed_count,
+        "failed_admins": failed_admins if failed_admins else None,
+        "channels_notified": channels_notified,
+        "time_elapsed_minutes": minutes
+    }
+
+
+
+
+
 async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any]:
     """
     Async implementation of technical support ticket escalation check.
     
-    Checks if TECHNICAL_SUPPORT ticket is still NEW after 10 minutes.
-    If yes, notifies all active administrators and sends notification to
-    escalation_duty_channel (group chat) as per TZ section 14.2.
+    Implements 3-level escalation for TECHNICAL_SUPPORT and CONSULTATION tickets:
+    - Level 0 (10 min): Notify all backup_manager_1 from all support staff (deduplicated)
+    - Level 1 (20 min): Notify all backup_manager_2 from all support staff (deduplicated)
+    - Level 2 (30 min): Notify all administrators and escalation channels
     
     Args:
         ticket_id: ID of the ticket to check
@@ -1520,10 +2288,8 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
     Returns:
         Dict with execution result including:
         - status: "success", "partial", or "error"
-        - admins_notified: Number of successfully notified admins
-        - admins_failed: Number of failed admin notifications
-        - channels_notified: List of channels that received notification
-        - time_elapsed_minutes: Minutes since ticket creation
+        - level: Current escalation level
+        - notified_count: Number of successfully notified staff
     
     Requirements: Technical Support Escalation, TZ section 7.1 and 14.2
     """
@@ -1597,261 +2363,32 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 "work_mode": current_work_mode.value
             }
         
-        # Get active administrators
-        try:
-            admins = await get_active_admins(session)
-            
-            if not admins:
-                logger.error(
-                    f"No active admins found for technical support escalation: "
-                    f"ticket_id={ticket_id}"
-                )
-                return {
-                    "status": "error",
-                    "message": "No active admins found",
-                    "ticket_id": ticket_id
-                }
+        # Route based on current escalation level
+        current_level = ticket.escalation_level
+        logger.info(
+            f"Processing technical support escalation: ticket_id={ticket_id}, "
+            f"current_level={current_level}, ticket_type={ticket.ticket_type.value}"
+        )
         
-        except Exception as e:
-            logger.error(
-                f"Failed to get active admins: ticket_id={ticket_id}, error={e}",
-                exc_info=True
-            )
+        # Level 0: Escalate to all backup_manager_1 (deduplicated)
+        if current_level == 0:
+            return await _escalate_technical_support_to_backup_level_1(ticket, session)
+        
+        # Level 1: Escalate to all backup_manager_2 (deduplicated)
+        elif current_level == 1:
+            return await _escalate_technical_support_to_backup_level_2(ticket, session)
+        
+        # Level 2: Escalate to administrators and channels
+        elif current_level == 2:
+            return await _escalate_technical_support_to_admins(ticket, session)
+        
+        else:
+            logger.error(f"Invalid escalation level: ticket_id={ticket_id}, level={current_level}")
             return {
                 "status": "error",
-                "message": f"Failed to get admins: {str(e)}",
+                "message": f"Invalid escalation level: {current_level}",
                 "ticket_id": ticket_id
             }
-        
-        # Calculate time elapsed
-        from utils.timezone_helpers import get_moscow_now_naive
-        elapsed = get_moscow_now_naive() - ticket.created_at
-        minutes = int(elapsed.total_seconds() // 60)
-        
-        # Build notification message with REASON
-        ticket_type_names = {
-            TicketType.INVOICE: "💰 Счёт",
-            TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
-            TicketType.CONSULTATION: "💬 Консультация",
-            TicketType.RENEWAL: "🔄 Продление"
-        }
-        
-        ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
-        user_name = ticket.user.full_name if ticket.user else "Неизвестно"
-        user_phone = ticket.user.phone_number if ticket.user else "Не указано"
-        
-        # Header and reason differ by ticket type
-        if ticket.ticket_type == TicketType.CONSULTATION:
-            header = f"⚠️ <b>Уведомление о заявке на консультацию #{ticket.id}</b>\n\n"
-            reason = "Заявка не была взята в работу сметным тех. специалистом в течение определенного времени"
-        else:
-            header = f"⚠️ <b>Уведомление о заявке техподдержки #{ticket.id}</b>\n\n"
-            reason = "Заявка не была взята в работу сотрудниками техподдержки в течение определенного времени"
-        
-        notification_text = (
-            f"{header}"
-            f"📋 <b>Причина:</b> {reason}\n\n"
-            f"<b>Тип:</b> {ticket_type}\n"
-            f"<b>Клиент:</b> {user_name}\n"
-            f"<b>Телефон:</b> {user_phone}\n"
-        )
-        
-        if ticket.organization:
-            org_text = ticket.organization.inn
-            if ticket.organization.organization_name:
-                org_text += f" ({ticket.organization.organization_name})"
-            notification_text += f"<b>Организация:</b> {org_text}\n"
-        
-        if ticket.gs_keys:
-            keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
-            notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
-        
-        if ticket.description:
-            desc_preview = ticket.description[:150]
-            if len(ticket.description) > 150:
-                desc_preview += "..."
-            notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
-        
-        notification_text += (
-            f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
-            f"⚠️ <b>Требуется внимание администратора</b>"
-        )
-        
-        # Send notifications to all admins
-        notified_count = 0
-        failed_count = 0
-        failed_admins = []
-        
-        # Initialize MAX bot
-        max_bot = None
-        
-        # Build "К заявке" button
-        from bots.max_bot.payloads import ManagerViewTicketPayload
-        from maxapi.types.attachments.buttons import CallbackButton
-        from maxapi.types.attachments.attachment import ButtonsPayload
-
-        view_ticket_buttons = [[
-            CallbackButton(
-                text="📋 К заявке",
-                payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
-            )
-        ]]
-        
-        try:
-            from constants import MAX_BOT_TOKEN
-            max_bot = MAXBot(
-                token=MAX_BOT_TOKEN,
-                parse_mode=ParseMode.HTML
-            )
-            
-            for admin in admins:
-                try:
-                    # Resolve chat_id: staff.max_chat_id first, then MAX_Messenger_Data
-                    chat_id = await _get_admin_max_chat_id(session, admin)
-
-                    if chat_id is None:
-                        logger.error(
-                            f"No MAX chat_id found for admin: admin_id={admin.id}, "
-                            f"max_user_id={admin.max_user_id}"
-                        )
-                        failed_count += 1
-                        failed_admins.append(admin.id)
-                        continue
-
-                    # Send via MAX
-                    try:
-                        await max_bot.send_message(
-                            chat_id=chat_id,
-                            text=notification_text,
-                            attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
-                        )
-
-                        notified_count += 1
-                        logger.info(
-                            f"Admin notified about technical support ticket: "
-                            f"admin_id={admin.id}, chat_id={chat_id}, ticket_id={ticket_id}"
-                        )
-
-                    except MaxApiError as e:
-                        error_str = str(e).lower()
-                        if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
-                            logger.warning(
-                                f"MAX bot blocked by admin: admin_id={admin.id}, chat_id={chat_id}"
-                            )
-                        else:
-                            logger.error(
-                                f"MAX API error notifying admin: admin_id={admin.id}, error={e}"
-                            )
-                        failed_count += 1
-                        failed_admins.append(admin.id)
-
-                except Exception as e:
-                    failed_count += 1
-                    failed_admins.append(admin.id)
-                    logger.error(
-                        f"Failed to notify admin: admin_id={admin.id}, "
-                        f"ticket_id={ticket_id}, error={str(e)}"
-                    )
-        
-        finally:
-            # Close bot session
-            if max_bot and max_bot.session:
-                await max_bot.session.close()
-        
-        # Send to escalation duty channel (as per TZ section 14.2)
-        channels_notified = []
-        
-        # Helper function to determine messenger type
-        def is_max_chat_id(chat_id: str) -> bool:
-            """Determine if chat_id is for MAX messenger."""
-            try:
-                chat_id_int = int(chat_id)
-                # MAX chat IDs are typically very long negative numbers (> 10^13 in absolute value)
-                return abs(chat_id_int) > 10000000000000
-            except (ValueError, TypeError):
-                return False
-        
-        # Initialize MAX bot for channel notifications
-        max_bot = None
-        
-        try:
-            from constants import MAX_BOT_TOKEN
-            if MAX_BOT_TOKEN:
-                try:
-                    max_bot = MAXBot(
-                        token=MAX_BOT_TOKEN,
-                        parse_mode=ParseMode.HTML
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to initialize MAX bot for duty channel: {e}")
-            
-            # Get escalation duty channel settings
-            from services.settings_service import get_escalation_channels
-            
-            duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
-            if duty_channels:
-                for duty_channel in duty_channels:
-                    if is_max_chat_id(duty_channel) and max_bot:
-                        try:
-                            await max_bot.send_message(
-                                chat_id=int(duty_channel),
-                                text=notification_text,
-                                attachments=[ButtonsPayload(buttons=view_ticket_buttons).pack()]
-                            )
-                            channels_notified.append(f"escalation_duty_channel:{duty_channel} (MAX)")
-                            logger.info(
-                                f"Technical support escalation sent to MAX duty channel: {duty_channel}, "
-                                f"ticket_id={ticket_id}"
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send technical support escalation to MAX duty channel {duty_channel}: {e}",
-                                exc_info=True
-                            )
-                    else:
-                        logger.warning(
-                            f"Cannot send to duty channel {duty_channel}: MAX bot not available"
-                        )
-            else:
-                logger.info(
-                    f"No escalation_duty_channel configured for technical support escalation: "
-                    f"ticket_id={ticket_id}"
-                )
-        
-        finally:
-            # Close bot session
-            if max_bot and max_bot.session:
-                await max_bot.session.close()
-        
-        # Determine overall status
-        if notified_count == 0 and not channels_notified:
-            status = "error"
-            message = "Failed to notify any admins or channels"
-        elif notified_count == 0:
-            status = "partial"
-            message = f"Notified {len(channels_notified)} channel(s) but no admins"
-        elif failed_count > 0:
-            status = "success"
-            message = f"{notified_count}/{len(admins)} admins and {len(channels_notified)} channel(s) notified"
-        else:
-            status = "success"
-            message = f"All {notified_count} admins and {len(channels_notified)} channel(s) notified"
-        
-        logger.info(
-            f"Technical support ticket notification completed: ticket_id={ticket_id}, "
-            f"notified={notified_count}, failed={failed_count}, channels={len(channels_notified)}"
-        )
-        
-        return {
-            "status": status,
-            "message": message,
-            "ticket_id": ticket_id,
-            "admins_notified": notified_count,
-            "admins_failed": failed_count,
-            "failed_admins": failed_admins if failed_admins else None,
-            "channels_notified": channels_notified,
-            "time_elapsed_minutes": minutes
-        }
 
 
 async def schedule_technical_support_monitoring(ticket_id: int) -> str:

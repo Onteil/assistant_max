@@ -28,6 +28,7 @@ from bots.max_bot.payloads import (
     OperationsMenuPayload,
     EscalationPayload,
     AdminMenuPayload,
+    ManagerViewTicketPayload,
 )
 from database.models import (
     Action_Log,
@@ -615,11 +616,15 @@ async def handle_escalation_reassign_confirm(
             )
             return
         
-        # Get escalation with ticket
+        # Get escalation with ticket and all relationships
         stmt = (
             select(Escalation)
             .where(Escalation.id == escalation_id)
-            .options(selectinload(Escalation.ticket))
+            .options(
+                selectinload(Escalation.ticket).selectinload(Ticket.user),
+                selectinload(Escalation.ticket).selectinload(Ticket.gs_keys),
+                selectinload(Escalation.ticket).selectinload(Ticket.organization)
+            )
         )
         result = await session.execute(stmt)
         escalation = result.scalar_one_or_none()
@@ -674,6 +679,121 @@ async def handle_escalation_reassign_confirm(
         session.add(action_log)
         
         await session.commit()
+        
+        # Send notification to assigned staff with full ticket details
+        try:
+            if staff.max_chat_id:
+                # Build notification message with ticket details
+                ticket_type_names = {
+                    TicketType.INVOICE: "📄 Запрос счета",
+                    TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
+                    TicketType.CONSULTATION: "💬 Консультация",
+                    TicketType.RENEWAL: "🔄 Продление подписки"
+                }
+                
+                # Format created_at
+                from utils.timezone_helpers import format_moscow_datetime
+                created_at_str = format_moscow_datetime(ticket.created_at)
+                
+                # Build message
+                notification_text = f"🔄 <b>Заявка #{ticket.id} переназначена на вас</b>\n\n"
+                notification_text += f"📋 <b>Тип:</b> {ticket_type_names.get(ticket.ticket_type, ticket.ticket_type.value)}\n"
+                
+                # User information
+                notification_text += f"👤 <b>От пользователя:</b> {ticket.user.full_name or ticket.user.phone_number}\n"
+                notification_text += f"🆔 <b>ID пользователя:</b> <code>{ticket.user.max_user_id}</code>\n"
+                
+                # Organization(s)
+                if ticket.organization_inn:
+                    orgs = [org.strip() for org in ticket.organization_inn.split(',') if org.strip()]
+                    if len(orgs) > 1:
+                        notification_text += f"\n🏢 <b>Организации:</b>\n"
+                        for idx, org in enumerate(orgs, 1):
+                            notification_text += f"   {idx}. <code>{org}</code>\n"
+                    else:
+                        notification_text += f"\n🏢 <b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
+                
+                # GS Keys
+                try:
+                    if ticket.gs_keys and len(ticket.gs_keys) > 0:
+                        if len(ticket.gs_keys) > 1:
+                            notification_text += f"🔑 <b>Ключи ГС:</b>\n"
+                            for idx, key in enumerate(ticket.gs_keys, 1):
+                                notification_text += f"   {idx}. <code>{key.key_number}</code>\n"
+                        else:
+                            notification_text += f"🔑 <b>Ключ ГС:</b> <code>{ticket.gs_keys[0].key_number}</code>\n"
+                except Exception as e:
+                    logger.warning(f"Failed to access gs_keys for ticket {ticket.id}: {e}")
+                
+                # Email if present
+                try:
+                    if hasattr(ticket.user, 'email') and ticket.user.email:
+                        notification_text += f"📧 <b>Email:</b> {ticket.user.email}\n"
+                except Exception as e:
+                    logger.warning(f"Failed to access user email for ticket {ticket.id}: {e}")
+                
+                # Created timestamp
+                notification_text += f"\n📅 <b>Дата создания:</b> {created_at_str}\n"
+                
+                # Delivery method
+                if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
+                    delivery_method_names = {
+                        "telegram": "💬 В чат",
+                        "email": "📧 На Email",
+                        "none": "❌ Не указан"
+                    }
+                    delivery_method_text = delivery_method_names.get(
+                        ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method),
+                        str(ticket.delivery_method)
+                    )
+                    notification_text += f"📦 <b>Способ получения:</b> {delivery_method_text}\n"
+                    
+                    # Add delivery email if method is email
+                    if (ticket.delivery_method.value if hasattr(ticket.delivery_method, 'value') else str(ticket.delivery_method)) == "email":
+                        if hasattr(ticket, 'delivery_email') and ticket.delivery_email:
+                            notification_text += f"   └─ <b>Email для доставки:</b> {ticket.delivery_email}\n"
+                
+                # Description
+                if ticket.description:
+                    description = ticket.description[:200]
+                    if len(ticket.description) > 200:
+                        description += "..."
+                    notification_text += f"\n📝 <b>Описание:</b>\n{description}\n"
+                else:
+                    notification_text += f"\n📝 <b>Описание:</b> <i>Без описания</i>\n"
+                
+                # Build keyboard with "К заявке" button
+                from maxapi.types.attachments.buttons import CallbackButton
+                from maxapi.types.attachments.attachment import ButtonsPayload
+                
+                buttons = [[
+                    CallbackButton(
+                        text="📋 К заявке",
+                        payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+                    )
+                ]]
+                
+                await messenger_adapter.send_message(
+                    chat_id=staff.max_chat_id,
+                    text=notification_text,
+                    parse_mode="HTML",
+                    attachments=[ButtonsPayload(buttons=buttons).pack()]
+                )
+                
+                logger.info(
+                    f"Notification sent to staff {staff.id} ({staff.full_name}) "
+                    f"about reassigned ticket {ticket.id}"
+                )
+            else:
+                logger.warning(
+                    f"Cannot send notification to staff {staff.id} ({staff.full_name}): "
+                    f"max_chat_id is not set"
+                )
+        except Exception as e:
+            logger.error(
+                f"Failed to send notification to staff {staff.id}: {e}",
+                exc_info=True
+            )
         
         # Success message
         message_text = (

@@ -168,7 +168,7 @@ async def _trigger_queue_processing_async(reason: str) -> dict[str, Any]:
     queue="work_mode_monitor"
 )
 def check_work_mode_transition(self) -> dict[str, Any]:
-    """Runs every 5 minutes. Triggers process_pending_tickets on NON_WORKING → REGULAR/EXTENDED."""
+    """Runs every 2 minutes. Triggers process_pending_tickets on NON_WORKING → REGULAR/EXTENDED."""
     try:
         return asyncio.run(_check_work_mode_transition_async())
     except Exception as e:
