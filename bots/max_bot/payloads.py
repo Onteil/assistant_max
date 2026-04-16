@@ -664,7 +664,7 @@ class ManagerTicketActionPayload(CallbackPayload, prefix='mgr_ticket_action'):
     
     Fields:
         action: Action type - "take", "close", "transfer", "history", "back_to_list",
-                "cancel_close", "cancel_transfer", "transfer_to_consultation", "transfer_to_support"
+                "cancel_close", "view_card"
         ticket_id: ID of the ticket
     """
     action: str

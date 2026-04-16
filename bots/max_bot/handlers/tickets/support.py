@@ -1767,19 +1767,22 @@ async def create_support_ticket(
         
         # Get response time message based on work mode
         if work_mode == WorkMode.NON_WORKING:
+            # Non-working hours: show queue message instead of standard template
             from bots.max_bot.texts import get_support_non_working_hours_message
-            response_time_message = get_support_non_working_hours_message()
+            message_text = get_support_non_working_hours_message()
         else:
+            # Working hours: use standard template
             response_time_message = response_time_messages[work_mode]
+            message_text = SUPPORT_TICKET_CREATED.format(
+                ticket_id=ticket.id,
+                routing_message=routing_messages[work_mode],
+                response_time_message=response_time_message
+            )
         
         # Send success message to user
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=SUPPORT_TICKET_CREATED.format(
-                ticket_id=ticket.id,
-                routing_message=routing_messages[work_mode],
-                response_time_message=response_time_message
-            ),
+            text=message_text,
             parse_mode="HTML"
         )
         
@@ -2098,8 +2101,33 @@ async def _notify_admin_about_unassigned_user_renewal(
         result = await session.execute(stmt)
         admin = result.scalar_one_or_none()
         
-        if not admin or not admin.max_chat_id:
-            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+        if not admin:
+            logger.warning(f"Admin {assigned_admin_id} not found")
+            return
+        
+        # Get chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
+        chat_id = admin.max_chat_id
+        
+        # If not found in Staff_Member, try MAX_Messenger_Data table
+        if not chat_id and admin.max_user_id:
+            from database.models import MAX_Messenger_Data
+            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                MAX_Messenger_Data.max_user_id == admin.max_user_id
+            )
+            result_chat = await session.execute(stmt_chat)
+            chat_id = result_chat.scalar_one_or_none()
+            
+            if chat_id:
+                logger.info(
+                    f"Found chat_id in MAX_Messenger_Data for admin {admin.id} "
+                    f"(max_user_id={admin.max_user_id}): chat_id={chat_id}"
+                )
+        
+        if not chat_id:
+            logger.warning(
+                f"Cannot notify admin {assigned_admin_id} - no MAX chat_id found "
+                f"in Staff_Member or MAX_Messenger_Data tables (max_user_id={admin.max_user_id})"
+            )
             return
         
         user_name = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Неизвестно"
@@ -2138,7 +2166,7 @@ async def _notify_admin_about_unassigned_user_renewal(
         
         try:
             await max_bot_instance.send_message(
-                chat_id=admin.max_chat_id,
+                chat_id=chat_id,
                 text=notification_text,
                 attachments=[keyboard_payload]
             )
@@ -2190,8 +2218,33 @@ async def _notify_admin_about_no_support_staff(
         result = await session.execute(stmt)
         admin = result.scalar_one_or_none()
         
-        if not admin or not admin.max_chat_id:
-            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+        if not admin:
+            logger.warning(f"Admin {assigned_admin_id} not found")
+            return
+        
+        # Get chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
+        chat_id = admin.max_chat_id
+        
+        # If not found in Staff_Member, try MAX_Messenger_Data table
+        if not chat_id and admin.max_user_id:
+            from database.models import MAX_Messenger_Data
+            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                MAX_Messenger_Data.max_user_id == admin.max_user_id
+            )
+            result_chat = await session.execute(stmt_chat)
+            chat_id = result_chat.scalar_one_or_none()
+            
+            if chat_id:
+                logger.info(
+                    f"Found chat_id in MAX_Messenger_Data for admin {admin.id} "
+                    f"(max_user_id={admin.max_user_id}): chat_id={chat_id}"
+                )
+        
+        if not chat_id:
+            logger.warning(
+                f"Cannot notify admin {assigned_admin_id} - no MAX chat_id found "
+                f"in Staff_Member or MAX_Messenger_Data tables (max_user_id={admin.max_user_id})"
+            )
             return
         
         user_name = user.full_name or f"{user.first_name} {user.last_name}".strip() or "Неизвестно"
@@ -2239,7 +2292,7 @@ async def _notify_admin_about_no_support_staff(
         
         try:
             await max_bot_instance.send_message(
-                chat_id=admin.max_chat_id,
+                chat_id=chat_id,
                 text=notification_text,
                 attachments=[keyboard_payload]
             )

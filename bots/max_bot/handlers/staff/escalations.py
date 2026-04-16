@@ -682,7 +682,25 @@ async def handle_escalation_reassign_confirm(
         
         # Send notification to assigned staff with full ticket details
         try:
-            if staff.max_chat_id:
+            # Get chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
+            chat_id = staff.max_chat_id
+            
+            # If not found in Staff_Member, try MAX_Messenger_Data table
+            if not chat_id and staff.max_user_id:
+                from database.models import MAX_Messenger_Data
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == staff.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.info(
+                        f"Found chat_id in MAX_Messenger_Data for staff {staff.id} "
+                        f"(max_user_id={staff.max_user_id}): chat_id={chat_id}"
+                    )
+            
+            if chat_id:
                 # Build notification message with ticket details
                 ticket_type_names = {
                     TicketType.INVOICE: "📄 Запрос счета",
@@ -774,7 +792,7 @@ async def handle_escalation_reassign_confirm(
                 ]]
                 
                 await messenger_adapter.send_message(
-                    chat_id=staff.max_chat_id,
+                    chat_id=chat_id,
                     text=notification_text,
                     parse_mode="HTML",
                     attachments=[ButtonsPayload(buttons=buttons).pack()]
@@ -787,7 +805,8 @@ async def handle_escalation_reassign_confirm(
             else:
                 logger.warning(
                     f"Cannot send notification to staff {staff.id} ({staff.full_name}): "
-                    f"max_chat_id is not set"
+                    f"max_chat_id not found in Staff_Member or MAX_Messenger_Data tables "
+                    f"(max_user_id={staff.max_user_id})"
                 )
         except Exception as e:
             logger.error(

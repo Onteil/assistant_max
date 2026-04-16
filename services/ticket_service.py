@@ -523,7 +523,7 @@ async def send_staff_notification(
         chat_id = None
         
         if is_max_bot:
-            # MAX bot: use max_user_id and query for chat_id
+            # MAX bot: use max_user_id and get chat_id
             if not staff.max_user_id:
                 logger.error(
                     f"Staff member has no MAX user ID: staff_id={staff_id}, "
@@ -533,26 +533,32 @@ async def send_staff_notification(
             
             messenger_id = staff.max_user_id
             
-            # Query MAX_Messenger_Data for chat_id
-            if session:
-                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                    MAX_Messenger_Data.max_user_id == staff.max_user_id
-                )
-                result_chat = await session.execute(stmt_chat)
-                chat_id = result_chat.scalar_one_or_none()
-            else:
-                async with get_session() as new_session:
+            # First, try to get chat_id from Staff_Member table
+            chat_id = staff.max_chat_id
+            
+            # If not found in Staff_Member, try MAX_Messenger_Data table
+            # (fallback for cases where staff member is also a user)
+            if not chat_id:
+                if session:
                     stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
                         MAX_Messenger_Data.max_user_id == staff.max_user_id
                     )
-                    result_chat = await new_session.execute(stmt_chat)
+                    result_chat = await session.execute(stmt_chat)
                     chat_id = result_chat.scalar_one_or_none()
+                else:
+                    async with get_session() as new_session:
+                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                            MAX_Messenger_Data.max_user_id == staff.max_user_id
+                        )
+                        result_chat = await new_session.execute(stmt_chat)
+                        chat_id = result_chat.scalar_one_or_none()
             
             if not chat_id:
                 logger.error(
                     f"No MAX chat_id found for staff member: staff_id={staff_id}, "
                     f"max_user_id={staff.max_user_id}, staff_name={staff.full_name}. "
-                    f"Staff member may not have started conversation with MAX bot yet."
+                    f"Staff member may not have started conversation with MAX bot yet. "
+                    f"Checked both Staff_Member.max_chat_id and MAX_Messenger_Data table."
                 )
                 return False
         else:

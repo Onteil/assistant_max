@@ -579,17 +579,12 @@ async def get_available_employees_for_transfer(
     """
     Get list of employees available for ticket transfer.
     
+    Returns ALL active employees except the current one.
+    Any employee can transfer any ticket to any other employee.
+    
     Filters by:
     - is_active = True
-    - Appropriate role for ticket type:
-      * INVOICE / RENEWAL → MANAGER or ADMINISTRATOR
-      * TECHNICAL_SUPPORT → TECHNICAL_SUPPORT (non-estimate), DUTY_ENGINEER, or ADMINISTRATOR
-      * CONSULTATION → TECHNICAL_SUPPORT with is_estimate_tech_specialist=True, or ADMINISTRATOR
     - Excludes current assigned employee
-    
-    Cross-type transfer (cross_type parameter):
-    - "to_consultation": TS ticket → show only estimate specialists (is_estimate_tech_specialist=True)
-    - "to_support": CONSULTATION ticket → show only regular TS (is_estimate_tech_specialist=False)
     
     Args:
         session: Database session
@@ -599,14 +594,12 @@ async def get_available_employees_for_transfer(
             If use_internal_id=False (legacy), this is the Telegram user ID.
         use_internal_id: If True, exclude by Staff_Member.id instead of tg_user_id.
             Use True when calling from MAX bot to avoid NULL tg_user_id issues.
-        cross_type: Optional cross-type transfer direction:
-            "to_consultation" — find estimate specialists for TS→CONSULTATION transfer
-            "to_support" — find regular TS for CONSULTATION→TS transfer
+        cross_type: Optional cross-type transfer direction (deprecated, kept for compatibility)
     
     Returns:
         List of available Staff_Member objects
     
-    Requirements: 8.1, 17.1, 17.2, 17.3, 17.4, 17.5
+    Requirements: 8.1, 17.1, 17.2, 17.3, 17.4, 17.5, 71
     """
     try:
         exclude_condition = (
@@ -615,81 +608,18 @@ async def get_available_employees_for_transfer(
             else Staff_Member.tg_user_id != current_employee_id
         )
 
-        # Cross-type transfer: TS ticket → estimate specialists (becomes CONSULTATION)
-        if cross_type == "to_consultation":
-            stmt = (
-                select(Staff_Member)
-                .where(
-                    and_(
-                        Staff_Member.is_active,
-                        Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_estimate_tech_specialist.is_(True),
-                        exclude_condition
-                    )
+        # Return ALL active employees except current one
+        # No filtering by role or ticket type - any employee can receive any ticket
+        stmt = (
+            select(Staff_Member)
+            .where(
+                and_(
+                    Staff_Member.is_active,
+                    exclude_condition
                 )
-                .order_by(Staff_Member.full_name.asc())
             )
-
-        # Cross-type transfer: CONSULTATION ticket → regular TS (becomes TECHNICAL_SUPPORT)
-        elif cross_type == "to_support":
-            stmt = (
-                select(Staff_Member)
-                .where(
-                    and_(
-                        Staff_Member.is_active,
-                        Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_estimate_tech_specialist.is_(False),
-                        exclude_condition
-                    )
-                )
-                .order_by(Staff_Member.full_name.asc())
-            )
-
-        else:
-            # Standard same-type transfer: determine allowed roles by ticket type
-            if ticket.ticket_type in (TicketType.INVOICE, TicketType.RENEWAL):
-                # Invoice and Renewal tickets are handled by Managers or Administrators
-                allowed_roles = [StaffRole.MANAGER, StaffRole.ADMINISTRATOR]
-                extra_conditions = []
-            elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
-                # Regular TS transfer: TS (non-estimate), Duty Engineers, Administrators
-                allowed_roles = [
-                    StaffRole.TECHNICAL_SUPPORT,
-                    StaffRole.DUTY_ENGINEER,
-                    StaffRole.ADMINISTRATOR,
-                ]
-                # Exclude estimate specialists from same-type TS transfer
-                extra_conditions = [
-                    or_(
-                        Staff_Member.staff_role != StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_estimate_tech_specialist.is_(False)
-                    )
-                ]
-            elif ticket.ticket_type == TicketType.CONSULTATION:
-                # Consultation transfer: only estimate specialists + Administrators
-                allowed_roles = [StaffRole.TECHNICAL_SUPPORT, StaffRole.ADMINISTRATOR]
-                extra_conditions = [
-                    or_(
-                        Staff_Member.staff_role != StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_estimate_tech_specialist.is_(True)
-                    )
-                ]
-            else:
-                # Fallback for any future ticket types: managers + admins
-                allowed_roles = [StaffRole.MANAGER, StaffRole.ADMINISTRATOR]
-                extra_conditions = []
-
-            conditions = [
-                Staff_Member.is_active,
-                Staff_Member.staff_role.in_(allowed_roles),
-                exclude_condition,
-                *extra_conditions,
-            ]
-            stmt = (
-                select(Staff_Member)
-                .where(and_(*conditions))
-                .order_by(Staff_Member.full_name.asc())
-            )
+            .order_by(Staff_Member.full_name.asc())
+        )
 
         result = await session.execute(stmt)
         employees = result.scalars().all()
@@ -697,7 +627,7 @@ async def get_available_employees_for_transfer(
         logger.info(
             f"Found {len(employees)} available employees for transfer: "
             f"ticket_id={ticket.id}, ticket_type={ticket.ticket_type.value}, "
-            f"cross_type={cross_type}, current_employee_id={current_employee_id}"
+            f"current_employee_id={current_employee_id}"
         )
 
         return list(employees)

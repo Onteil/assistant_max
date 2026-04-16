@@ -2398,16 +2398,15 @@ async def create_invoice_ticket(
         work_mode = await get_current_work_mode(session)
         is_working = work_mode != WorkMode.NON_WORKING
         
-        if is_working:
-            response_time_message = INVOICE_RESPONSE_TIME_WORKING
-        else:
-            # Import the new non-working hours message
-            from bots.max_bot.texts import get_invoice_non_working_hours_message
-            response_time_message = get_invoice_non_working_hours_message()
-        
         # Send success message to user
-        # Use different message template based on whether user has assigned manager
-        if has_manager:
+        # In NON_WORKING mode, show queue message instead of manager info
+        if not is_working:
+            # Non-working hours: show queue message
+            from bots.max_bot.texts import get_invoice_non_working_hours_message
+            message_text = get_invoice_non_working_hours_message()
+        elif has_manager:
+            # Working hours with assigned manager
+            response_time_message = INVOICE_RESPONSE_TIME_WORKING
             message_text = INVOICE_CREATED.format(
                 ticket_id=ticket.id,
                 manager_name=manager_name,
@@ -2415,6 +2414,8 @@ async def create_invoice_ticket(
                 response_time_message=response_time_message
             )
         else:
+            # Working hours without assigned manager
+            response_time_message = INVOICE_RESPONSE_TIME_WORKING
             message_text = INVOICE_CREATED_NO_MANAGER.format(
                 ticket_id=ticket.id,
                 response_time_message=response_time_message
@@ -2645,8 +2646,33 @@ async def _notify_admin_about_unassigned_user(
         result = await session.execute(stmt)
         admin = result.scalar_one_or_none()
         
-        if not admin or not admin.max_chat_id:
-            logger.warning(f"Cannot notify admin {assigned_admin_id} - no MAX chat_id")
+        if not admin:
+            logger.warning(f"Admin {assigned_admin_id} not found")
+            return
+        
+        # Get chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
+        chat_id = admin.max_chat_id
+        
+        # If not found in Staff_Member, try MAX_Messenger_Data table
+        if not chat_id and admin.max_user_id:
+            from database.models import MAX_Messenger_Data
+            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                MAX_Messenger_Data.max_user_id == admin.max_user_id
+            )
+            result_chat = await session.execute(stmt_chat)
+            chat_id = result_chat.scalar_one_or_none()
+            
+            if chat_id:
+                logger.info(
+                    f"Found chat_id in MAX_Messenger_Data for admin {admin.id} "
+                    f"(max_user_id={admin.max_user_id}): chat_id={chat_id}"
+                )
+        
+        if not chat_id:
+            logger.warning(
+                f"Cannot notify admin {assigned_admin_id} - no MAX chat_id found "
+                f"in Staff_Member or MAX_Messenger_Data tables (max_user_id={admin.max_user_id})"
+            )
             return
         
         # Build notification message
@@ -2709,7 +2735,7 @@ async def _notify_admin_about_unassigned_user(
         
         try:
             await max_bot_instance.send_message(
-                chat_id=admin.max_chat_id,
+                chat_id=chat_id,
                 text=notification_text,
                 attachments=[keyboard_payload]
             )
