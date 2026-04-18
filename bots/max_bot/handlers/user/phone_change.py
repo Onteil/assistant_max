@@ -550,12 +550,23 @@ async def approve_phone_change(
         target_chat_id = target_max_data.max_chat_id if target_max_data else None
 
         # Call i-TAT API
+        # Use source_user.max_user_id — i-TAT validates that user's current phone == old_phone
+        source_max_user_id = source_user.max_user_id
+        if not source_max_user_id:
+            # Fallback: look up in MAX_Messenger_Data
+            source_max_data = (
+                await session.execute(
+                    select(MAX_Messenger_Data).where(MAX_Messenger_Data.user_id == source_user.id)
+                )
+            ).scalar_one_or_none()
+            source_max_user_id = source_max_data.max_user_id if source_max_data else None
+
         api_response = await call_itat_with_retry(
             session=session,
             operation="change_phone",
             payload=dict(
                 messenger="max",
-                user_id=target_user.max_user_id,
+                user_id=source_max_user_id,
                 old_phone=old_phone,
                 new_phone=new_phone,
                 staff_id=staff_id,
