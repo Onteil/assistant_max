@@ -91,6 +91,8 @@ async def create_ticket(
             description=ticket_data.get("description"),
             delivery_method=ticket_data.get("delivery_method"),
             delivery_email=ticket_data.get("delivery_email"),
+            old_phone=ticket_data.get("old_phone"),
+            new_phone=ticket_data.get("new_phone"),
             escalation_level=0
         )
         

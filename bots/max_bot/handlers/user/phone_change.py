@@ -513,6 +513,18 @@ async def approve_phone_change(
         old_phone = ticket.old_phone
         new_phone = ticket.new_phone
 
+        # Fallback for legacy tickets created before old_phone/new_phone columns were populated
+        if (not old_phone or not new_phone) and ticket.description:
+            import re
+            phones = re.findall(r'\+7\d{10}', ticket.description)
+            if len(phones) >= 2:
+                old_phone = old_phone or phones[0]
+                new_phone = new_phone or phones[1]
+                logger.info(
+                    f"Recovered phone data from description: "
+                    f"ticket_id={ticket_id}, old={old_phone}, new={new_phone}"
+                )
+
         if not old_phone or not new_phone:
             logger.error(f"Missing phone data in ticket: ticket_id={ticket_id}")
             return False
@@ -620,6 +632,18 @@ async def reject_phone_change(
         user = ticket.user
         old_phone = ticket.old_phone
         new_phone = ticket.new_phone
+
+        # Fallback for legacy tickets created before old_phone/new_phone columns were populated
+        if (not old_phone or not new_phone) and ticket.description:
+            import re
+            phones = re.findall(r'\+7\d{10}', ticket.description)
+            if len(phones) >= 2:
+                old_phone = old_phone or phones[0]
+                new_phone = new_phone or phones[1]
+                logger.info(
+                    f"Recovered phone data from description: "
+                    f"ticket_id={ticket_id}, old={old_phone}, new={new_phone}"
+                )
 
         ticket.ticket_status = TicketStatus.CLOSED
         ticket.resolution_comment = f"Запрос на смену номера отклонён. Причина: {reason}"

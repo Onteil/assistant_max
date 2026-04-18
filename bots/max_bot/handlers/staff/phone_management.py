@@ -210,21 +210,72 @@ async def handle_phone_change_view(
             return
         
         user = ticket.user
-        user_name = f"{user.first_name} {user.last_name}" if user.first_name and user.last_name else "Не указано"
-        
+
+        # Load target account data separately (avoid lazy load issues)
+        target_user = None
+        target_max_user_id = None
+        if ticket.new_phone:
+            from services.user_service import get_user_by_phone
+            from database.models import MAX_Messenger_Data
+            target_user = await get_user_by_phone(session, ticket.new_phone)
+            if target_user:
+                target_max_data = (
+                    await session.execute(
+                        select(MAX_Messenger_Data).where(MAX_Messenger_Data.user_id == target_user.id)
+                    )
+                ).scalar_one_or_none()
+                target_max_user_id = target_max_data.max_user_id if target_max_data else None
+
+        def _fmt_name(u) -> str:
+            return (
+                u.full_name
+                or f"{u.last_name or ''} {u.first_name or ''} {u.middle_name or ''}".strip()
+                or "Не указано"
+            )
+
         # Build message text
+        status_labels = {
+            "new": "🆕 Новая",
+            "in_progress": "🔄 В работе",
+            "closed": "✅ Закрыта",
+            "cancelled": "❌ Отменена",
+        }
+        status_label = status_labels.get(ticket.ticket_status.value, ticket.ticket_status.value)
+
         text = (
             f"📱 <b>Заявка на смену номера #{ticket.id}</b>\n\n"
-            f"👤 <b>Пользователь:</b> {user_name}\n"
+            f"<b>━━━ Заявитель (старый номер) ━━━</b>\n"
+            f"👤 <b>ФИО:</b> {_fmt_name(user)}\n"
+            f"📞 <b>Текущий номер:</b> <code>{ticket.old_phone or '—'}</code>\n"
             f"📧 <b>Email:</b> {user.email or 'Не указан'}\n"
-            f"📞 <b>Текущий номер:</b> <code>{ticket.old_phone}</code>\n"
-            f"📞 <b>Новый номер:</b> <code>{ticket.new_phone}</code>\n"
-            f"📅 <b>Дата запроса:</b> {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-            f"📋 <b>Статус:</b> {ticket.ticket_status.value}\n\n"
+            f"🆔 <b>MAX ID:</b> <code>{user.max_user_id or '—'}</code>\n"
+            f"🪪 <b>ID в системе:</b> <code>{user.id}</code>\n\n"
         )
-        
-        if ticket.description:
-            text += f"💬 <b>Комментарий:</b> {ticket.description}\n\n"
+
+        if target_user:
+            text += (
+                f"<b>━━━ Целевой аккаунт (новый номер) ━━━</b>\n"
+                f"👤 <b>ФИО:</b> {_fmt_name(target_user)}\n"
+                f"📞 <b>Новый номер:</b> <code>{ticket.new_phone or '—'}</code>\n"
+                f"📧 <b>Email:</b> {target_user.email or 'Не указан'}\n"
+                f"🆔 <b>MAX ID:</b> <code>{target_max_user_id or '—'}</code>\n"
+                f"🪪 <b>ID в системе:</b> <code>{target_user.id}</code>\n\n"
+            )
+        else:
+            text += (
+                f"<b>━━━ Целевой аккаунт (новый номер) ━━━</b>\n"
+                f"📞 <b>Новый номер:</b> <code>{ticket.new_phone or '—'}</code>\n"
+                f"⚠️ Аккаунт не найден (возможно удалён)\n\n"
+            )
+
+        text += (
+            f"<b>━━━ Заявка ━━━</b>\n"
+            f"📅 <b>Дата запроса:</b> {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+            f"📋 <b>Статус:</b> {status_label}\n"
+        )
+
+        if ticket.resolution_comment:
+            text += f"💬 <b>Решение:</b> {ticket.resolution_comment}\n"
         
         # Build keyboard
         buttons = []

@@ -75,7 +75,7 @@ async def log_ticket_to_itat(
             "ticket_type": ticket_type_map.get(ticket.ticket_type, "Прочее"),
             "status": status,
             "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
-            "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None
+            "updated_at": (ticket.updated_at or ticket.created_at).isoformat() if (ticket.updated_at or ticket.created_at) else None
         }
         
         # Add optional parameters
