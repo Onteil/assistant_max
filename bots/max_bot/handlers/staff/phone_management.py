@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
-from bots.max_bot.payloads import PhoneChangePayload, AdminMenuPayload
+from bots.max_bot.payloads import PhoneChangePayload, AdminMenuPayload, OperationsMenuPayload
 from bots.max_bot.states import OperationsStates
 from database.models import Ticket, TicketType, TicketStatus, Staff_Member, ActionType, Action_Log
 from bots.max_bot.handlers.user.phone_change import approve_phone_change, reject_phone_change
@@ -246,7 +246,7 @@ async def handle_phone_change_view(
 
         text = (
             f"📱 <b>Заявка на смену номера #{ticket.id}</b>\n\n"
-            f"<b>━━━ Заявитель (старый номер) ━━━</b>\n"
+            f"<b>Заявитель (старый номер)</b>\n"
             f"👤 <b>ФИО:</b> {_fmt_name(user)}\n"
             f"📞 <b>Текущий номер:</b> <code>{ticket.old_phone or '—'}</code>\n"
             f"📧 <b>Email:</b> {user.email or 'Не указан'}\n"
@@ -256,7 +256,7 @@ async def handle_phone_change_view(
 
         if target_user:
             text += (
-                f"<b>━━━ Целевой аккаунт (новый номер) ━━━</b>\n"
+                f"<b>Целевой аккаунт (новый номер)</b>\n"
                 f"👤 <b>ФИО:</b> {_fmt_name(target_user)}\n"
                 f"📞 <b>Новый номер:</b> <code>{ticket.new_phone or '—'}</code>\n"
                 f"📧 <b>Email:</b> {target_user.email or 'Не указан'}\n"
@@ -411,7 +411,7 @@ async def handle_phone_change_approve(
                     [
                         KeyboardButton(
                             text="◀️ К списку запросов",
-                            payload=PhoneChangePayload(action="list").pack()
+                            payload=OperationsMenuPayload(action="phone_changes").pack()
                         )
                     ]
                 ],
@@ -582,7 +582,7 @@ async def handle_phone_change_reject_reason(
             keyboard = Keyboard(
                 buttons=[[KeyboardButton(
                     text="◀️ К списку запросов",
-                    payload=PhoneChangePayload(action="list").pack()
+                    payload=OperationsMenuPayload(action="phone_changes").pack()
                 )]],
                 inline=True
             )
