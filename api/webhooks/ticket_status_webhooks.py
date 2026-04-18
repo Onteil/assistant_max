@@ -256,45 +256,52 @@ async def ticket_status_update_webhook(
             user.tg_user_id if payload.messenger == "telegram" else user.max_user_id
         )
         
-        if user_messenger_id:
-            # Build notification message
-            status_messages = {
-                TicketStatus.NEW: "📝 Ваша заявка зарегистрирована",
-                TicketStatus.IN_PROGRESS: "⏳ Ваша заявка взята в работу",
-                TicketStatus.WAITING_CLIENT: "⏸️ Ваша заявка ожидает вашего ответа",
-                TicketStatus.CLOSED: "✅ Ваша заявка закрыта",
-                TicketStatus.CANCELLED: "❌ Ваша заявка отменена",
-            }
-            
-            notification_text = (
-                f"{status_messages.get(new_status_enum, 'Статус заявки изменен')}\n"
-                f"Заявка #{payload.ticket_id}\n"
-                f"Новый статус: {payload.status}"
-            )
-            
-            try:
-                # TODO: Implement actual notification sending via messenger bots
-                # For now, log the notification
-                logger.info(
-                    f"Should send notification to {payload.messenger} user {user_messenger_id}: "
-                    f"{notification_text}"
+        if user_messenger_id and new_status_enum in (TicketStatus.CLOSED, TicketStatus.CANCELLED):
+            # Build notification text for closed/cancelled statuses only
+            if new_status_enum == TicketStatus.CLOSED:
+                if payload.messenger == "telegram":
+                    from bots.tg_bot.texts import SUPPORT_TICKET_CLOSED
+                else:
+                    from bots.max_bot.texts import SUPPORT_TICKET_CLOSED
+                comment = ticket.resolution_comment or "Не указан"
+                notification_text = SUPPORT_TICKET_CLOSED.format(
+                    ticket_id=payload.ticket_id,
+                    comment=comment,
                 )
-                
-                # When bot integration is ready:
-                # if payload.messenger == "telegram":
-                #     from bots.tg_bot.loaders import tg_bot
-                #     await tg_bot.send_message(chat_id=user_messenger_id, text=notification_text)
-                # else:
-                #     from bots.max_bot.loaders import max_bot
-                #     await max_bot.send_message(chat_id=user_messenger_id, text=notification_text)
-                
+            else:  # CANCELLED
+                if payload.messenger == "telegram":
+                    from bots.tg_bot.texts import SUPPORT_TICKET_CANCELLED
+                else:
+                    from bots.max_bot.texts import SUPPORT_TICKET_CANCELLED
+                notification_text = SUPPORT_TICKET_CANCELLED.format(
+                    ticket_id=payload.ticket_id,
+                )
+
+            try:
+                from api.utils.messenger_utils import send_message_to_user
+                result = await send_message_to_user(
+                    messenger=payload.messenger,
+                    user_id=user.id,
+                    text=notification_text,
+                    session=session,
+                    parse_mode="HTML",
+                )
+                if result["success"]:
+                    logger.info(
+                        f"Ticket {new_status_enum.value} notification sent to "
+                        f"{payload.messenger} user {user.id}"
+                    )
+                else:
+                    logger.warning(
+                        f"Failed to send ticket notification to user {user.id}: {result['message']}"
+                    )
             except Exception as e:
                 # Requirement 4.8: Log warning if notification fails, but continue
                 logger.warning(
                     f"Failed to send notification to user {user.id}: {e}",
                     exc_info=True
                 )
-        else:
+        elif not user_messenger_id:
             logger.warning(
                 f"User {user.id} has no {payload.messenger} user ID, cannot send notification"
             )

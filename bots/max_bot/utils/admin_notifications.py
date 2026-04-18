@@ -178,10 +178,11 @@ async def notify_admins_key_conflict(
             return
         
         # Find the current owner of the key (if exists in our DB)
+        # Note: conflict_status may already be PENDING_REVIEW at this point,
+        # so we do NOT filter by conflict_status here
         stmt = select(User).join(User.gs_keys).where(
             GS_Key.key_number == key_number,
             User.id != new_user_id,
-            GS_Key.conflict_status == KeyConflictStatus.NONE
         ).options(selectinload(User.gs_keys))
         result = await session.execute(stmt)
         current_owner = result.scalar_one_or_none()

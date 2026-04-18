@@ -168,6 +168,75 @@ async def handle_message_ticket_select(
         except Exception as e:
             logger.warning(f"Could not check manager focus state: {e}")
 
+        # --- Off-hours and no-staff checks ---
+        from services.calendar_service import get_current_work_mode
+        from database.models import WorkMode
+        from bots.max_bot.handlers.user.messages import _is_off_hours_for_ticket
+
+        work_mode = await get_current_work_mode(session)
+        off_hours = _is_off_hours_for_ticket(ticket.ticket_type, work_mode)
+
+        if off_hours:
+            await forward_client_message_to_manager(
+                session=session,
+                messenger_adapter=messenger_adapter,
+                ticket=ticket,
+                user=user,
+                message_text=message_text,
+                message_type_val=message_type_val,
+                file_url=file_url,
+                attachment_type=attachment_type,
+                file_name=file_name,
+                file_size=file_size,
+                manager_in_focus=manager_in_focus,
+                save_only=True,
+            )
+            from bots.max_bot.texts import get_off_hours_reply_message
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=get_off_hours_reply_message(
+                    ticket_type_value=ticket.ticket_type.value,
+                    work_mode_value=work_mode.value,
+                ),
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Ticket select: message saved (off-hours): "
+                f"max_user_id={max_user_id}, ticket_id={ticket_id}, work_mode={work_mode.value}"
+            )
+            return
+
+        if not ticket.assigned_staff_id:
+            await forward_client_message_to_manager(
+                session=session,
+                messenger_adapter=messenger_adapter,
+                ticket=ticket,
+                user=user,
+                message_text=message_text,
+                message_type_val=message_type_val,
+                file_url=file_url,
+                attachment_type=attachment_type,
+                file_name=file_name,
+                file_size=file_size,
+                manager_in_focus=manager_in_focus,
+                save_only=True,
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Ваше сообщение сохранено (Заявка #{ticket_id}).\n\n"
+                    "⏳ По данной заявке специалист ещё не назначен — "
+                    "ожидайте, вам ответят как только сотрудник возьмёт заявку в работу."
+                ),
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Ticket select: message saved (no staff assigned): "
+                f"max_user_id={max_user_id}, ticket_id={ticket_id}"
+            )
+            return
+        # --- End checks ---
+
         await forward_client_message_to_manager(
             session=session,
             messenger_adapter=messenger_adapter,

@@ -26,6 +26,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.payloads import PhoneChangeConfirmPayload
 from bots.max_bot.states import ProfileStates
 from database.models import (
     Action_Log,
@@ -209,7 +210,6 @@ async def process_phone_change(
             or "Не указано"
         )
 
-        from bots.max_bot.payloads import PhoneChangeConfirmPayload
         confirm_keyboard = Keyboard(
             buttons=[
                 [
@@ -252,7 +252,7 @@ async def process_phone_change(
 
 async def confirm_phone_change(
     event: MessageCallback,
-    payload,  # PhoneChangeConfirmPayload
+    payload: PhoneChangeConfirmPayload,
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
@@ -282,15 +282,16 @@ async def confirm_phone_change(
     await context.clear()
 
     if payload.action == "cancel":
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Смена номера отменена.",
-            parse_mode="HTML",
-        )
         from bots.max_bot.handlers.user.profile import show_profile
         user = await get_user_by_max_id(session, max_user_id)
         if user:
             await show_profile(chat_id, user.id, session, messenger_adapter)
+        else:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Смена номера отменена.",
+                parse_mode="HTML",
+            )
         return
 
     # action == "confirm"

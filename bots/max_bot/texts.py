@@ -90,6 +90,7 @@ from bots.tg_bot.texts import (
     SUPPORT_RESPONSE_TIME_NON_WORKING,
     SUPPORT_TICKET_ASSIGNED,
     SUPPORT_TICKET_CLOSED,
+    SUPPORT_TICKET_CANCELLED,
     
     # Renewal messages
     RENEWAL_STATUS_ACTIVE,

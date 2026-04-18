@@ -1229,25 +1229,79 @@ def create_user_router() -> Router:
                 if active_tickets_count == 1:
                     # Exactly one active ticket — auto-route immediately
                     ticket = active_tickets[0]
-                    from bots.max_bot.handlers.user.messages import handle_client_message_to_ticket_max
+                    from bots.max_bot.handlers.user.messages import (
+                        handle_client_message_to_ticket_max,
+                        get_message_type_name,
+                        _is_off_hours_for_ticket,
+                    )
+                    from services.calendar_service import get_current_work_mode
                     from database.models import TicketStatus
-                    await handle_client_message_to_ticket_max(
-                        event=event,
-                        session=session,
-                        ticket=ticket,
-                        messenger_adapter=messenger_adapter
-                    )
-                    from bots.max_bot.handlers.user.messages import get_message_type_name
-                    message_type_name = get_message_type_name(event)
-                    await messenger_adapter.send_message(
-                        chat_id=chat_id,
-                        text=f"✅ Ваше сообщение ({message_type_name}) отправлено менеджеру (Заявка #{ticket.id})",
-                        parse_mode="HTML"
-                    )
-                    logger.info(
-                        f"Auto-routed message to single active ticket: "
-                        f"user_id={max_user_id}, ticket_id={ticket.id}"
-                    )
+
+                    work_mode = await get_current_work_mode(session)
+                    off_hours = _is_off_hours_for_ticket(ticket.ticket_type, work_mode)
+
+                    if off_hours:
+                        # Save to DB but don't forward
+                        await handle_client_message_to_ticket_max(
+                            event=event,
+                            session=session,
+                            ticket=ticket,
+                            messenger_adapter=messenger_adapter,
+                            save_only=True,
+                        )
+                        from bots.max_bot.texts import get_off_hours_reply_message
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text=get_off_hours_reply_message(
+                                ticket_type_value=ticket.ticket_type.value,
+                                work_mode_value=work_mode.value,
+                            ),
+                            parse_mode="HTML",
+                        )
+                        logger.info(
+                            f"Auto-route: message saved (off-hours): "
+                            f"user_id={max_user_id}, ticket_id={ticket.id}, "
+                            f"work_mode={work_mode.value}"
+                        )
+                    elif not ticket.assigned_staff_id:
+                        # Ticket exists but no staff assigned yet — save and notify
+                        await handle_client_message_to_ticket_max(
+                            event=event,
+                            session=session,
+                            ticket=ticket,
+                            messenger_adapter=messenger_adapter,
+                            save_only=True,
+                        )
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"✅ Ваше сообщение сохранено (Заявка #{ticket.id}).\n\n"
+                                "⏳ По данной заявке специалист ещё не назначен — "
+                                "ожидайте, вам ответят как только сотрудник возьмёт заявку в работу."
+                            ),
+                            parse_mode="HTML",
+                        )
+                        logger.info(
+                            f"Auto-route: message saved (no staff assigned): "
+                            f"user_id={max_user_id}, ticket_id={ticket.id}"
+                        )
+                    else:
+                        await handle_client_message_to_ticket_max(
+                            event=event,
+                            session=session,
+                            ticket=ticket,
+                            messenger_adapter=messenger_adapter
+                        )
+                        message_type_name = get_message_type_name(event)
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text=f"✅ Ваше сообщение ({message_type_name}) отправлено менеджеру (Заявка #{ticket.id})",
+                            parse_mode="HTML"
+                        )
+                        logger.info(
+                            f"Auto-routed message to single active ticket: "
+                            f"user_id={max_user_id}, ticket_id={ticket.id}"
+                        )
                 
                 elif active_tickets_count > 1:
                     # Multiple active tickets — store pending message metadata and show selection menu

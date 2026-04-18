@@ -240,7 +240,31 @@ async def route_client_message_to_ticket(
                 f"ticket_type={ticket.ticket_type.value}, work_mode={work_mode.value}"
             )
             return True
-        # --- End off-hours check ---
+
+        # --- No staff assigned yet ---
+        if not ticket.assigned_staff_id:
+            await handle_client_message_to_ticket_max(
+                event=event,
+                session=session,
+                ticket=ticket,
+                messenger_adapter=messenger_adapter,
+                save_only=True,
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ Ваше сообщение сохранено (Заявка #{ticket.id}).\n\n"
+                    "⏳ По данной заявке специалист ещё не назначен — "
+                    "ожидайте, вам ответят как только сотрудник возьмёт заявку в работу."
+                ),
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Client message saved (no staff assigned): "
+                f"client_id={max_user_id}, ticket_id={ticket.id}"
+            )
+            return True
+        # --- End checks ---
 
         # Route message to manager
         await handle_client_message_to_ticket_max(

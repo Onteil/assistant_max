@@ -89,9 +89,17 @@ async def handle_phone_change_list(
         tickets = result.scalars().all()
         
         if not tickets:
+            back_keyboard = Keyboard(
+                buttons=[[KeyboardButton(
+                    text="◀️ Назад",
+                    payload=PhoneChangePayload(action="back").pack()
+                )]],
+                inline=True
+            )
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="📱 <b>Запросы на смену номера</b>\n\nНет активных запросов на смену номера телефона.",
+                keyboard=back_keyboard,
                 parse_mode="HTML"
             )
             return
