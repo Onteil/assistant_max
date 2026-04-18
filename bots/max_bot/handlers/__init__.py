@@ -813,6 +813,7 @@ def create_user_router() -> Router:
         messenger_adapter: MAXMessengerAdapter
     ):
         """Route phone change management actions to appropriate handlers."""
+        logger.info(f"route_phone_change: action={payload.action}, ticket_id={payload.ticket_id}")
         from bots.max_bot.handlers.staff.phone_management import (
             handle_phone_change_list,
             handle_phone_change_view,

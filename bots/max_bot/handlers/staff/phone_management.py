@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
-from bots.max_bot.payloads import PhoneChangePayload
+from bots.max_bot.payloads import PhoneChangePayload, AdminMenuPayload
 from bots.max_bot.states import OperationsStates
 from database.models import Ticket, TicketType, TicketStatus, Staff_Member, ActionType, Action_Log
 from bots.max_bot.handlers.user.phone_change import approve_phone_change, reject_phone_change
@@ -92,7 +92,7 @@ async def handle_phone_change_list(
             back_keyboard = Keyboard(
                 buttons=[[KeyboardButton(
                     text="◀️ Назад",
-                    payload=PhoneChangePayload(action="back").pack()
+                    payload=AdminMenuPayload(action="operations").pack()
                 )]],
                 inline=True
             )
@@ -111,11 +111,13 @@ async def handle_phone_change_list(
         for ticket in tickets[:10]:  # Limit to 10 tickets
             user = ticket.user
             user_name = f"{user.first_name} {user.last_name}" if user.first_name and user.last_name else "Не указано"
-            
+            old_phone = ticket.old_phone or "—"
+            new_phone = ticket.new_phone or "—"
+
             text += (
                 f"🎫 <b>Заявка #{ticket.id}</b>\n"
                 f"👤 {user_name}\n"
-                f"📞 {ticket.old_phone} → {ticket.new_phone}\n"
+                f"📞 {old_phone} → {new_phone}\n"
                 f"📅 {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
             )
             
@@ -131,7 +133,7 @@ async def handle_phone_change_list(
         buttons.append([
             KeyboardButton(
                 text="◀️ Назад",
-                payload=PhoneChangePayload(action="back").pack()
+                payload=AdminMenuPayload(action="operations").pack()
             )
         ])
         
