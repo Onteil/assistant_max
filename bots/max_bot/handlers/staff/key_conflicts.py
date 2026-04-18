@@ -195,19 +195,24 @@ async def handle_key_conflict_list(
             if page > 0:
                 nav_row.append(
                     KeyboardButton(
-                        text="⬅️ Назад",
+                        text="⬅️",
                         payload=KeyConflictPayload(action="list", page=page - 1).pack()
                     )
                 )
+            nav_row.append(
+                KeyboardButton(
+                    text=f"{page + 1}/{total_pages}",
+                    payload=KeyConflictPayload(action="list", page=page).pack()
+                )
+            )
             if page < total_pages - 1:
                 nav_row.append(
                     KeyboardButton(
-                        text="Вперед ➡️",
+                        text="➡️",
                         payload=KeyConflictPayload(action="list", page=page + 1).pack()
                     )
                 )
-            if nav_row:
-                buttons.append(nav_row)
+            buttons.append(nav_row)
         
         # Back button
         buttons.append([
@@ -725,14 +730,17 @@ async def handle_key_rejection(
     Reject key transfer request.
 
     Workflow:
-    1. Reset GS_Key.conflict_status back to NONE (key stays with current owner)
-    2. Send notification to new user (KEY_CONFLICT_REJECTED)
-    3. Log action in Action_Log
+    1. Call i-TAT API POST /assets/resolve_conflict with action="reject"
+    2. Reset GS_Key.conflict_status back to NONE (key stays with current owner)
+    3. Send notification to new user (KEY_CONFLICT_REJECTED)
+    4. Log action in Action_Log
 
     Uses replace_message pattern.
 
     Requirements: 9.1-9.8
     """
+    import httpx
+
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
@@ -826,22 +834,68 @@ async def handle_key_rejection(
             )
             logger.info(f"i-TAT API key conflict rejection successful: {api_response}")
             
-        except Exception as api_error:
-            logger.error(f"i-TAT API error for key conflict rejection: {api_error}", exc_info=True)
-            # Show error to admin for debugging
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
+        except httpx.TimeoutException as e:
+            api_error_message = f"Превышено время ожидания ответа от CRM\n<b>Тип:</b> TimeoutException\n<b>Детали:</b> {str(e)}"
+            logger.error(f"i-TAT API timeout for key conflict rejection: {e}", exc_info=True)
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
+                text=f"❌ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
                      f"<b>Метод:</b> POST /assets/resolve_conflict\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>Конфликт отклонен локально, но не синхронизирован с 1С.</i>",
+                     f"{api_error_message}\n\n"
+                     f"<i>Попробуйте позже или обратитесь к администратору.</i>",
                 parse_mode="HTML"
             )
-            # Continue with local processing even if API fails
-        
+            return
+
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            response_text = e.response.text[:200] if e.response.text else "Нет текста ответа"
+            if status_code == 400:
+                api_error_message = f"Неверные параметры запроса\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
+            elif status_code == 404:
+                api_error_message = f"Ключ не найден в CRM\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
+            elif status_code >= 500:
+                api_error_message = f"Ошибка сервера CRM\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
+            else:
+                api_error_message = f"Ошибка API\n<b>Код:</b> {status_code}\n<b>Ответ:</b> {response_text}"
+            logger.error(f"i-TAT API HTTP error for key conflict rejection: {status_code} - {e.response.text}", exc_info=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /assets/resolve_conflict\n"
+                     f"{api_error_message}\n\n"
+                     f"<i>Попробуйте позже или обратитесь к администратору.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        except httpx.ConnectError as e:
+            api_error_message = f"Не удалось подключиться к CRM\n<b>Тип:</b> ConnectError\n<b>Детали:</b> {str(e)}"
+            logger.error(f"i-TAT API connection error for key conflict rejection: {e}", exc_info=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /assets/resolve_conflict\n"
+                     f"{api_error_message}\n\n"
+                     f"<i>Попробуйте позже или обратитесь к администратору.</i>",
+                parse_mode="HTML"
+            )
+            return
+
+        except Exception as e:
+            error_type = type(e).__name__
+            api_error_message = f"Неизвестная ошибка при обращении к CRM\n<b>Тип:</b> {error_type}\n<b>Детали:</b> {str(e)}"
+            logger.error(f"Unexpected error calling i-TAT API for key conflict rejection: {e}", exc_info=True)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка отклонения конфликта через i-TAT API</b>\n\n"
+                     f"<b>Метод:</b> POST /assets/resolve_conflict\n"
+                     f"{api_error_message}\n\n"
+                     f"<i>Попробуйте позже или обратитесь к администратору.</i>",
+                parse_mode="HTML"
+            )
+            return
+
         # Conflict is stored on the existing key record (no duplicate row for new user).
         # On rejection: reset conflict status back to NONE so the key is clean again.
         gs_key.conflict_status = KeyConflictStatus.NONE

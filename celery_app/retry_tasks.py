@@ -139,3 +139,54 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
             await api_client.close()
 
     return stats
+
+
+@shared_task(
+    name="celery_app.retry_tasks.cleanup_old_api_retries",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=300,
+    queue="api_retries",
+)
+def cleanup_old_api_retries(self) -> dict[str, Any]:
+    """
+    Delete completed/failed API retry records older than 30 days.
+
+    Runs daily at 4:00 AM via Celery Beat.
+
+    Returns:
+        Dict with count of deleted records
+    """
+    loop = None
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        async def _run():
+            from constants import AsyncSessionLocal
+            from services.retry_service import cleanup_old_retries
+
+            async with AsyncSessionLocal() as session:
+                deleted = await cleanup_old_retries(session, days_old=30)
+                await session.commit()
+                return {"deleted": deleted}
+
+        result = loop.run_until_complete(_run())
+        logger.info(f"cleanup_old_api_retries completed: deleted={result['deleted']}")
+        return result
+
+    except Exception as exc:
+        logger.error(f"cleanup_old_api_retries task error: {exc}", exc_info=True)
+        try:
+            raise self.retry(exc=exc, countdown=300 * (2 ** self.request.retries))
+        except self.MaxRetriesExceededError:
+            return {"status": "error", "message": str(exc)}
+
+    finally:
+        if loop is not None:
+            try:
+                from constants import engine
+                loop.run_until_complete(engine.dispose())
+                loop.close()
+            except Exception as e:
+                logger.warning(f"Error closing event loop: {e}")

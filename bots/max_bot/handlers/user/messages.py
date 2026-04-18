@@ -10,6 +10,12 @@ File Forwarding:
 - Cleans up temporary files after sending
 - Falls back to URL links if file forwarding fails
 
+Off-Hours Logic (ТЗ sections 3, 6.1, 7.1):
+- INVOICE / RENEWAL / CONSULTATION: only REGULAR hours → forward to staff.
+  In EXTENDED or NON_WORKING → save message, notify client.
+- TECHNICAL_SUPPORT: REGULAR + EXTENDED → forward to staff (duty engineer in EXTENDED).
+  Only NON_WORKING → save message, notify client.
+
 Requirements: 6.1, 6.3, 6.7, 13.4
 """
 
@@ -22,7 +28,8 @@ from maxapi.types import MessageCreated
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
-from database.models import TicketStatus
+from database.models import TicketStatus, TicketType, WorkMode
+from services.calendar_service import get_current_work_mode
 from services.ticket_service import get_ticket_by_id
 
 logger = logging.getLogger(__name__)
@@ -103,6 +110,33 @@ def extract_attachment_metadata(event: MessageCreated) -> dict[str, Any]:
     }
 
 
+def _is_off_hours_for_ticket(ticket_type: TicketType, work_mode: WorkMode) -> bool:
+    """
+    Determine whether the current work_mode means off-hours for the given ticket type.
+
+    Per ТЗ sections 3.1, 6.1, 7.1:
+    - TECHNICAL_SUPPORT: duty engineer covers EXTENDED → only NON_WORKING is off-hours.
+    - All other types (INVOICE, RENEWAL, CONSULTATION): only REGULAR is on-hours.
+      EXTENDED and NON_WORKING are both off-hours (no manager available).
+
+    Args:
+        ticket_type: TicketType enum value
+        work_mode: WorkMode enum value (REGULAR, EXTENDED, NON_WORKING)
+
+    Returns:
+        True if the message should NOT be forwarded to staff right now.
+    """
+    if work_mode == WorkMode.REGULAR:
+        return False  # Always forward during regular hours
+
+    if work_mode == WorkMode.EXTENDED:
+        # Duty engineer handles TP in extended hours → not off-hours for TP
+        return ticket_type != TicketType.TECHNICAL_SUPPORT
+
+    # NON_WORKING — off-hours for everyone
+    return True
+
+
 async def route_client_message_to_ticket(
     event: MessageCreated,
     context: MemoryContext,
@@ -114,6 +148,12 @@ async def route_client_message_to_ticket(
     
     Checks FSM context for active_ticket_id and forwards message to manager.
     Handles text, photos, documents, voice messages, and videos.
+
+    Off-hours behaviour (ТЗ 3, 6.1, 7.1):
+    - INVOICE / RENEWAL / CONSULTATION: only REGULAR → forward.
+      EXTENDED or NON_WORKING → save + notify client.
+    - TECHNICAL_SUPPORT: REGULAR + EXTENDED → forward.
+      NON_WORKING → save + notify client.
     
     maxapi Pattern Notes:
     - Uses event.message.sender.user_id for user identification
@@ -167,7 +207,41 @@ async def route_client_message_to_ticket(
             # Clear closed ticket from context and fall through to auto-routing logic
             await context.update_data(active_ticket_id=None)
             return False
-        
+
+        # --- Off-hours check ---
+        work_mode = await get_current_work_mode(session)
+        off_hours = _is_off_hours_for_ticket(ticket.ticket_type, work_mode)
+
+        if off_hours:
+            # Save message to DB (so staff sees it when they open the ticket)
+            # but do NOT forward to staff right now
+            await handle_client_message_to_ticket_max(
+                event=event,
+                session=session,
+                ticket=ticket,
+                messenger_adapter=messenger_adapter,
+                save_only=True,
+            )
+
+            from bots.max_bot.texts import get_off_hours_reply_message
+            off_hours_text = get_off_hours_reply_message(
+                ticket_type_value=ticket.ticket_type.value,
+                work_mode_value=work_mode.value,
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=off_hours_text,
+                parse_mode="HTML",
+            )
+
+            logger.info(
+                f"Client message saved (off-hours, not forwarded): "
+                f"client_id={max_user_id}, ticket_id={ticket.id}, "
+                f"ticket_type={ticket.ticket_type.value}, work_mode={work_mode.value}"
+            )
+            return True
+        # --- End off-hours check ---
+
         # Route message to manager
         await handle_client_message_to_ticket_max(
             event=event,
@@ -211,19 +285,21 @@ async def handle_client_message_to_ticket_max(
     event: MessageCreated,
     session: AsyncSession,
     ticket,
-    messenger_adapter: MAXMessengerAdapter
+    messenger_adapter: MAXMessengerAdapter,
+    save_only: bool = False,
 ) -> None:
     """
     Handle incoming client message to ticket (MAX version).
     
     Stores message in database, changes ticket status if needed,
     and forwards message to assigned manager.
-    
+
     Args:
         event: MessageCreated event from maxapi
         session: Database session
         ticket: Ticket object
         messenger_adapter: MAXMessengerAdapter for sending messages
+        save_only: If True, save to DB but do NOT forward to manager (off-hours mode).
     
     Requirements: 6.1, 6.3, 6.7, 13.4
     """
@@ -283,6 +359,7 @@ async def handle_client_message_to_ticket_max(
         file_name=meta["file_name"],
         file_size=meta["file_size"],
         manager_in_focus=manager_in_focus,
+        save_only=save_only,
     )
 
 

@@ -1121,7 +1121,7 @@ async def format_archive_search_results(
         
         for ticket in tickets:
             # Get user info
-            user = await session.get(User, ticket.tg_user_id)
+            user = await session.get(User, ticket.user_id)
             client_name = user.full_name if user else "Неизвестный клиент"
             
             # Format ticket type

@@ -41,7 +41,7 @@ async def notify_admins_webhook_error(
     Called when a webhook endpoint encounters an error during processing.
     Notifies admins about the error with details for debugging.
     
-    IMPORTANT: Uses max_chat_id from staff_members table for sending messages.
+    Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
     
     Args:
         session: Database session
@@ -51,17 +51,18 @@ async def notify_admins_webhook_error(
         payload_summary: Optional summary of the webhook payload
     """
     try:
-        # Query all administrators with MAX chat_id
+        from database.models import MAX_Messenger_Data
+        
+        # Query all active administrators (removed max_chat_id filter for fallback support)
         stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None)
+            Staff_Member.is_active == True
         )
         result = await session.execute(stmt)
         admins = result.scalars().all()
         
         if not admins:
-            logger.warning("No active administrators with MAX chat_id found to send webhook error notification")
+            logger.warning("No active administrators found to send webhook error notification")
             return
         
         # Format error date in Moscow timezone
@@ -82,23 +83,47 @@ async def notify_admins_webhook_error(
         
         message_text += f"\n📅 Время: {error_date}\n"
         
-        # Send notification to all administrators using max_chat_id
+        # Send notification to all administrators with fallback mechanism
         bot = MaxBot(token=MAX_BOT_TOKEN)
         
         sent_count = 0
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
                 await bot.send_message(
-                    chat_id=admin.max_chat_id,
+                    chat_id=chat_id,
                     text=message_text
                 )
                 sent_count += 1
-                logger.info(f"Sent webhook error notification to admin {admin.id} (chat_id: {admin.max_chat_id})")
+                logger.info(f"Sent webhook error notification to admin {admin.id} (chat_id: {chat_id})")
                 
             except Exception as send_error:
                 logger.error(
                     f"Failed to send webhook error notification to admin {admin.id} "
-                    f"(chat_id: {admin.max_chat_id}): {send_error}",
+                    f"(chat_id: {chat_id}): {send_error}",
                     exc_info=True
                 )
         
@@ -161,17 +186,16 @@ async def notify_admins_key_conflict(
         result = await session.execute(stmt)
         current_owner = result.scalar_one_or_none()
         
-        # Query all administrators with MAX chat_id
+        # Query all active administrators (removed max_chat_id filter for fallback support)
         stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None)
+            Staff_Member.is_active == True
         )
         result = await session.execute(stmt)
         admins = result.scalars().all()
         
         if not admins:
-            logger.warning("No active administrators with MAX chat_id found to send key conflict notification")
+            logger.warning("No active administrators found to send key conflict notification")
             return
         
         # Format conflict date in Moscow timezone
@@ -195,23 +219,47 @@ async def notify_admins_key_conflict(
             f"🔧 Для разрешения конфликта перейдите в раздел 'Операции' → 'Конфликты ключей'"
         )
         
-        # Send notification to all administrators using max_chat_id
+        # Send notification to all administrators with fallback mechanism
         bot = MaxBot(token=MAX_BOT_TOKEN)
         
         sent_count = 0
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
                 await bot.send_message(
-                    chat_id=admin.max_chat_id,
+                    chat_id=chat_id,
                     text=message_text
                 )
                 sent_count += 1
-                logger.info(f"Sent key conflict notification to admin {admin.id} (chat_id: {admin.max_chat_id})")
+                logger.info(f"Sent key conflict notification to admin {admin.id} (chat_id: {chat_id})")
                 
             except Exception as send_error:
                 logger.error(
                     f"Failed to send key conflict notification to admin {admin.id} "
-                    f"(chat_id: {admin.max_chat_id}): {send_error}",
+                    f"(chat_id: {chat_id}): {send_error}",
                     exc_info=True
                 )
         
@@ -247,7 +295,7 @@ async def notify_admins_new_registration(
     Called when a user completes registration and status is set to PENDING.
     Notifies admins with all data entered by the user during registration.
 
-    IMPORTANT: Uses max_chat_id from staff_members table for sending messages.
+    Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
 
     Args:
         session: Database session
@@ -256,6 +304,8 @@ async def notify_admins_new_registration(
         key_number: GS Key entered during registration (from FSM context)
     """
     try:
+        from database.models import MAX_Messenger_Data
+        
         # Get user details
         stmt = select(User).where(User.id == user_id)
         result = await session.execute(stmt)
@@ -265,17 +315,16 @@ async def notify_admins_new_registration(
             logger.error(f"User {user_id} not found for new registration notification")
             return
 
-        # Query all administrators with MAX chat_id
+        # Query all active administrators (removed max_chat_id filter for fallback support)
         stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None)
+            Staff_Member.is_active == True
         )
         result = await session.execute(stmt)
         admins = result.scalars().all()
 
         if not admins:
-            logger.warning("No active administrators with MAX chat_id found to send new registration notification")
+            logger.warning("No active administrators found to send new registration notification")
             return
 
         # Format registration date in Moscow timezone
@@ -305,26 +354,50 @@ async def notify_admins_new_registration(
             f"⏳ Статус: Ожидает подтверждения"
         )
 
-        # Send notification to all administrators using max_chat_id
+        # Send notification to all administrators with fallback mechanism
         bot = MaxBot(token=MAX_BOT_TOKEN)
 
         sent_count = 0
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
                 await bot.send_message(
-                    chat_id=admin.max_chat_id,
+                    chat_id=chat_id,
                     text=message_text
                 )
                 sent_count += 1
                 logger.info(
                     f"Sent new registration notification to admin {admin.id} "
-                    f"(chat_id: {admin.max_chat_id})"
+                    f"(chat_id: {chat_id})"
                 )
 
             except Exception as send_error:
                 logger.error(
                     f"Failed to send new registration notification to admin {admin.id} "
-                    f"(chat_id: {admin.max_chat_id}): {send_error}",
+                    f"(chat_id: {chat_id}): {send_error}",
                     exc_info=True
                 )
 
@@ -361,6 +434,8 @@ async def notify_admins_api_retry_queued(
 
     TEMPORARY: Used during testing phase to monitor retry queue activity.
     Remove this call once the system is stable in production.
+    
+    Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
 
     Args:
         session: Database session
@@ -371,16 +446,17 @@ async def notify_admins_api_retry_queued(
         user_id: Internal user DB id (optional)
     """
     try:
+        from database.models import MAX_Messenger_Data
+        
         stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None),
+            Staff_Member.is_active == True
         )
         result = await session.execute(stmt)
         admins = result.scalars().all()
 
         if not admins:
-            logger.warning("No active admins with MAX chat_id for retry_queued notification")
+            logger.warning("No active admins for retry_queued notification")
             return
 
         moscow_tz = timezone(timedelta(hours=3))
@@ -409,8 +485,32 @@ async def notify_admins_api_retry_queued(
         bot = MaxBot(token=MAX_BOT_TOKEN)
         sent_count = 0
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
-                await bot.send_message(chat_id=admin.max_chat_id, text=message_text)
+                await bot.send_message(chat_id=chat_id, text=message_text)
                 sent_count += 1
             except Exception as e:
                 logger.error(
@@ -449,6 +549,8 @@ async def notify_admins_api_retry_exhausted(
 
     This requires manual intervention — the operation was never successfully
     delivered to i-TAT after all retry attempts.
+    
+    Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
 
     Args:
         session: Database session
@@ -460,16 +562,17 @@ async def notify_admins_api_retry_exhausted(
         user_id: Internal user DB id (optional)
     """
     try:
+        from database.models import MAX_Messenger_Data
+        
         stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None),
+            Staff_Member.is_active == True
         )
         result = await session.execute(stmt)
         admins = result.scalars().all()
 
         if not admins:
-            logger.warning("No active admins with MAX chat_id for retry_exhausted notification")
+            logger.warning("No active admins for retry_exhausted notification")
             return
 
         moscow_tz = timezone(timedelta(hours=3))
@@ -498,8 +601,32 @@ async def notify_admins_api_retry_exhausted(
         bot = MaxBot(token=MAX_BOT_TOKEN)
         sent_count = 0
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
-                await bot.send_message(chat_id=admin.max_chat_id, text=message_text)
+                await bot.send_message(chat_id=chat_id, text=message_text)
                 sent_count += 1
             except Exception as e:
                 logger.error(
@@ -538,6 +665,8 @@ async def notify_admins_phone_change_request(
     Called when a user confirms a phone change request (ticket created).
     Notifies admins with details of both accounts and a direct link to the
     ticket management screen (approve/reject).
+    
+    Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
 
     Args:
         session: Database session
@@ -548,6 +677,8 @@ async def notify_admins_phone_change_request(
         ticket_id: ID of the created PHONE_CHANGE ticket
     """
     try:
+        from database.models import MAX_Messenger_Data
+        
         # Load both users
         source_stmt = select(User).where(User.id == source_user_id)
         target_stmt = select(User).where(User.id == target_user_id)
@@ -561,16 +692,15 @@ async def notify_admins_phone_change_request(
             )
             return
 
-        # Query all active administrators with MAX chat_id
+        # Query all active administrators (removed max_chat_id filter for fallback support)
         admins_stmt = select(Staff_Member).where(
             Staff_Member.staff_role == StaffRole.ADMINISTRATOR,
-            Staff_Member.is_active == True,
-            Staff_Member.max_chat_id.isnot(None),
+            Staff_Member.is_active == True
         )
         admins = (await session.execute(admins_stmt)).scalars().all()
 
         if not admins:
-            logger.warning("No active administrators with MAX chat_id for phone change notification")
+            logger.warning("No active administrators for phone change notification")
             return
 
         moscow_tz = timezone(timedelta(hours=3))
@@ -616,21 +746,45 @@ async def notify_admins_phone_change_request(
         sent_count = 0
 
         for admin in admins:
+            # Resolve chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+            chat_id = admin.max_chat_id
+            
+            if not chat_id and admin.max_user_id:
+                # Fallback: lookup in MAX_Messenger_Data by max_user_id
+                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                    MAX_Messenger_Data.max_user_id == admin.max_user_id
+                )
+                result_chat = await session.execute(stmt_chat)
+                chat_id = result_chat.scalar_one_or_none()
+                
+                if chat_id:
+                    logger.debug(
+                        f"Found chat_id in MAX_Messenger_Data (fallback): "
+                        f"admin_id={admin.id}, max_user_id={admin.max_user_id}, chat_id={chat_id}"
+                    )
+            
+            if not chat_id:
+                logger.warning(
+                    f"No MAX chat_id found for admin {admin.id}, "
+                    f"checked both Staff_Member and MAX_Messenger_Data"
+                )
+                continue
+            
             try:
                 await bot.send_message(
-                    chat_id=admin.max_chat_id,
+                    chat_id=chat_id,
                     text=message_text,
                     attachments=attachments,
                 )
                 sent_count += 1
                 logger.info(
                     f"Sent phone change notification to admin {admin.id} "
-                    f"(chat_id={admin.max_chat_id})"
+                    f"(chat_id={chat_id})"
                 )
             except Exception as send_error:
                 logger.error(
                     f"Failed to send phone change notification to admin {admin.id} "
-                    f"(chat_id={admin.max_chat_id}): {send_error}",
+                    f"(chat_id={chat_id}): {send_error}",
                     exc_info=True,
                 )
 

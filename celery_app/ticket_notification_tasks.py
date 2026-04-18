@@ -470,13 +470,23 @@ async def _process_invoice_ticket(
             for admin in admins:
                 try:
                     # Send via MAX only
-                    if admin.max_user_id and max_bot:
-                        # Get MAX chat_id from database
-                        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                            MAX_Messenger_Data.max_user_id == admin.max_user_id
-                        )
-                        result_chat = await session.execute(stmt_chat)
-                        chat_id = result_chat.scalar_one_or_none()
+                    if max_bot:
+                        # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+                        chat_id = admin.max_chat_id
+                        
+                        # Fallback to MAX_Messenger_Data if not in Staff_Member
+                        if not chat_id and admin.max_user_id:
+                            stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                                MAX_Messenger_Data.max_user_id == admin.max_user_id
+                            )
+                            result_chat = await session.execute(stmt_chat)
+                            chat_id = result_chat.scalar_one_or_none()
+                            
+                            if chat_id:
+                                logger.info(
+                                    f"Using fallback chat_id from MAX_Messenger_Data for admin {admin.id} "
+                                    f"(max_user_id={admin.max_user_id})"
+                                )
                         
                         if chat_id is None:
                             logger.error(
@@ -561,12 +571,24 @@ async def _process_renewal_ticket(
 
         for admin in admins:
             try:
-                if admin.max_user_id and max_bot:
-                    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
-                        MAX_Messenger_Data.max_user_id == admin.max_user_id
-                    )
-                    result_chat = await session.execute(stmt_chat)
-                    chat_id = result_chat.scalar_one_or_none()
+                if max_bot:
+                    # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+                    chat_id = admin.max_chat_id
+                    
+                    # Fallback to MAX_Messenger_Data if not in Staff_Member
+                    if not chat_id and admin.max_user_id:
+                        stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
+                            MAX_Messenger_Data.max_user_id == admin.max_user_id
+                        )
+                        result_chat = await session.execute(stmt_chat)
+                        chat_id = result_chat.scalar_one_or_none()
+                        
+                        if chat_id:
+                            logger.info(
+                                f"Using fallback chat_id from MAX_Messenger_Data for admin {admin.id} "
+                                f"(max_user_id={admin.max_user_id})"
+                            )
+                    
                     if chat_id:
                         await max_bot.send_message(
                             chat_id=chat_id,
@@ -617,16 +639,17 @@ async def _process_support_ticket(
     """
     Process TECHNICAL_SUPPORT ticket created during non-working hours.
 
-    Unlike INVOICE/RENEWAL, support tickets don't have an assigned manager —
-    they are picked up by any available support staff. So we notify all admins
-    and the escalation_duty_channel that the ticket is waiting.
+    At the start of working hours, notifies all active support staff
+    (is_estimate_tech_specialist=False) first. Falls back to admins if no
+    support staff is available. Also notifies the escalation_duty_channel.
+    Schedules escalation monitoring after successful notification.
 
     Returns True if at least one notification was sent successfully.
     """
-    from database.models import MAX_Messenger_Data
+    from database.models import MAX_Messenger_Data, Staff_Member, StaffRole
     from services.escalation_service import get_active_admins
-    from services.settings_service import get_setting
     from utils.timezone_helpers import get_moscow_now_naive
+    from sqlalchemy import and_ as sa_and_
 
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
@@ -635,7 +658,7 @@ async def _process_support_ticket(
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
 
     notification_text = (
-        f"🛠 <b>Заявка ТП не взята в работу (нерабочее время)</b>\n\n"
+        f"🛠 <b>Заявка ТП из очереди (нерабочее время)</b>\n\n"
         f"<b>Заявка:</b> #{ticket.id}\n"
         f"<b>Создана:</b> {ticket.created_at.strftime('%d.%m.%Y %H:%M')}\n\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -650,6 +673,7 @@ async def _process_support_ticket(
 
     notification_text += (
         f"\n⏱ <b>Ожидает:</b> {minutes} мин\n"
+        f"💬 <b>Клиенту сообщено:</b> \"Техподдержка ответит в начале рабочего дня\"\n"
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )
 
@@ -657,7 +681,7 @@ async def _process_support_ticket(
     from bots.max_bot.payloads import ManagerViewTicketPayload
     from maxapi.types.attachments.buttons import CallbackButton
     from maxapi.types.attachments.attachment import ButtonsPayload
-    
+
     buttons = [[
         CallbackButton(
             text="📋 К заявке",
@@ -665,38 +689,76 @@ async def _process_support_ticket(
         )
     ]]
 
-    # Notify all admins
-    admins = await get_active_admins(session)
     notified_chat_ids = []
-    for admin in admins:
+
+    # Try to notify active support staff first (excluding estimate tech specialists)
+    stmt_support = select(Staff_Member).where(
+        sa_and_(
+            Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
+            Staff_Member.is_active == True,
+            Staff_Member.max_user_id.isnot(None),
+            Staff_Member.is_estimate_tech_specialist == False,
+        )
+    )
+    result_support = await session.execute(stmt_support)
+    support_staff = result_support.scalars().all()
+
+    if support_staff:
+        recipients = support_staff
+        no_staff_suffix = ""
+    else:
+        # No support staff — fall back to admins with reason
+        logger.warning(
+            f"No active support staff found for queued support ticket {ticket.id}, "
+            f"falling back to admins"
+        )
+        recipients = await get_active_admins(session)
+        no_staff_suffix = (
+            "\n\n⚠️ <b>Причина уведомления администратора:</b> "
+            "В системе нет активных сотрудников техподдержки. "
+            "Заявка требует ручного назначения."
+        )
+
+    for recipient in recipients:
         try:
-            if admin.max_user_id and max_bot:
-                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                    MAX_Messenger_Data.max_user_id == admin.max_user_id
-                )
-                result_chat = await session.execute(stmt_chat)
-                chat_id = result_chat.scalar_one_or_none()
+            if max_bot:
+                # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+                chat_id = recipient.max_chat_id
+
+                if not chat_id and recipient.max_user_id:
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == recipient.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    chat_id = result_chat.scalar_one_or_none()
+
+                    if chat_id:
+                        logger.info(
+                            f"Using fallback chat_id from MAX_Messenger_Data for recipient {recipient.id} "
+                            f"(max_user_id={recipient.max_user_id})"
+                        )
 
                 if chat_id:
+                    text = notification_text + no_staff_suffix
                     await max_bot.send_message(
                         chat_id=chat_id,
-                        text=notification_text,
+                        text=text,
                         attachments=[ButtonsPayload(buttons=buttons).pack()]
                     )
                     stats["notifications_sent"] += 1
                     notified_chat_ids.append(chat_id)
                     logger.info(
-                        f"Admin notified for support ticket {ticket.id}, "
-                        f"admin_id={admin.id}"
+                        f"Recipient notified for queued support ticket {ticket.id}, "
+                        f"recipient_id={recipient.id}"
                     )
                 else:
                     logger.warning(
-                        f"No MAX chat_id for admin {admin.id}, "
-                        f"max_user_id={admin.max_user_id}"
+                        f"No MAX chat_id for recipient {recipient.id}, "
+                        f"max_user_id={recipient.max_user_id}"
                     )
         except Exception as e:
             logger.error(
-                f"Failed to notify admin {admin.id} for support ticket {ticket.id}: {e}",
+                f"Failed to notify recipient {recipient.id} for support ticket {ticket.id}: {e}",
                 exc_info=True
             )
 
@@ -740,6 +802,20 @@ async def _process_support_ticket(
                     f"for support ticket {ticket.id}: {e}",
                     exc_info=True
                 )
+
+    # Schedule escalation monitoring now that working hours have started
+    if notified_chat_ids:
+        try:
+            from celery_app.escalation_tasks import schedule_technical_support_monitoring
+            await schedule_technical_support_monitoring(ticket_id=ticket.id)
+            logger.info(
+                f"Escalation monitoring scheduled for queued support ticket {ticket.id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to schedule escalation for queued support ticket {ticket.id}: {e}",
+                exc_info=True
+            )
 
     return bool(notified_chat_ids)
 
@@ -832,12 +908,23 @@ async def _process_consultation_ticket(
 
     for recipient in recipients:
         try:
-            if recipient.max_user_id and max_bot:
-                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                    MAX_Messenger_Data.max_user_id == recipient.max_user_id
-                )
-                result_chat = await session.execute(stmt_chat)
-                chat_id = result_chat.scalar_one_or_none()
+            if max_bot:
+                # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+                chat_id = recipient.max_chat_id
+                
+                # Fallback to MAX_Messenger_Data if not in Staff_Member
+                if not chat_id and recipient.max_user_id:
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == recipient.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    chat_id = result_chat.scalar_one_or_none()
+                    
+                    if chat_id:
+                        logger.info(
+                            f"Using fallback chat_id from MAX_Messenger_Data for recipient {recipient.id} "
+                            f"(max_user_id={recipient.max_user_id})"
+                        )
 
                 if chat_id:
                     text = notification_text + no_specialist_suffix

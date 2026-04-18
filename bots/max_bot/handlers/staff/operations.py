@@ -136,12 +136,12 @@ async def handle_operations_menu(
                     payload=OperationsMenuPayload(action="key_conflicts").pack()
                 )
             ],
-            # [
-            #     KeyboardButton(
-            #         text=f"📱 Смена номеров{phone_changes_counter}",
-            #         payload=OperationsMenuPayload(action="phone_changes").pack()
-            #     )
-            # ],
+            [
+                KeyboardButton(
+                    text=f"📱 Смена номеров{phone_changes_counter}",
+                    payload=OperationsMenuPayload(action="phone_changes").pack()
+                )
+            ],
             [
                 KeyboardButton(
                     text="📢 Рассылка",
@@ -180,12 +180,12 @@ async def handle_operations_menu(
                            "Передача ключа новому владельцу или отклонение претензии.\n\n")
         
         # Add phone changes section
-        # if operations_counts['phone_changes'] > 0:
-        #     operations_text += f"📱 <b>Смена номеров</b> ({operations_counts['phone_changes']})\n"
-        # else:
-        #     operations_text += "📱 <b>Смена номеров</b>\n"
-        # operations_text += ("Обработка запросов на смену номера телефона. "
-        #                    "Проверка и подтверждение изменений контактных данных.\n\n")
+        if operations_counts['phone_changes'] > 0:
+            operations_text += f"📱 <b>Смена номеров</b> ({operations_counts['phone_changes']})\n"
+        else:
+            operations_text += "📱 <b>Смена номеров</b>\n"
+        operations_text += ("Обработка запросов на смену номера телефона. "
+                           "Проверка и подтверждение изменений контактных данных.\n\n")
         
         # Add broadcast section (no counter needed)
         operations_text += ("📢 <b>Рассылка</b>\n"

@@ -538,3 +538,47 @@ MAIN_MENU_WELCOME_TEXT =  """
 
 Выберите нужное действие 👇
 """
+
+
+# ========== Off-Hours Message for Active Ticket Replies ==========
+
+def get_off_hours_reply_message(ticket_type_value: str, work_mode_value: str) -> str:
+    """
+    Return notification text when client sends a message to an active ticket
+    outside of working hours for that ticket type.
+
+    Rules (per ТЗ sections 3, 6.1, 7.1):
+    - INVOICE / RENEWAL: only REGULAR hours → manager available.
+      In EXTENDED or NON_WORKING → show off-hours notice.
+    - TECHNICAL_SUPPORT / CONSULTATION: REGULAR + EXTENDED → staff available.
+      Only NON_WORKING → show off-hours notice.
+
+    Args:
+        ticket_type_value: TicketType enum value string
+        work_mode_value: WorkMode enum value string ("regular", "extended", "non_working")
+
+    Returns:
+        Human-readable HTML-formatted message string.
+    """
+    emoji, greeting = _get_time_greeting()
+
+    # Extended hours: duty engineer handles TP/Consultation, but not Invoice/Renewal
+    if work_mode_value == "extended":
+        return (
+            f"{emoji} <b>{greeting}</b>\n\n"
+            "🕐 Сейчас <b>продлённое рабочее время</b> (17:00–20:00 МСК).\n\n"
+            "Менеджер по счетам и коммерческим вопросам работает в основное время "
+            "<b>Пн–Пт 08:00–17:00 МСК</b>.\n\n"
+            "✅ Ваше сообщение сохранено и будет передано специалисту в начале рабочего дня.\n\n"
+            "<i>⚠️ В праздничные дни график работы может меняться.</i>"
+        )
+
+    # Non-working hours: nobody available
+    return (
+        f"{emoji} <b>{greeting}</b>\n\n"
+        "🕐 Сейчас <b>нерабочее время</b>.\n\n"
+        "📅 <b>Основной график работы:</b> Пн–Пт 08:00–17:00 МСК\n"
+        "📅 <b>Продлённое время (дежурство ТП):</b> Пн–Пт 17:00–20:00, Сб 09:00–13:00\n\n"
+        "✅ Ваше сообщение сохранено и будет передано специалисту в начале рабочего дня.\n\n"
+        "<i>⚠️ В праздничные дни график работы может меняться.</i>"
+    )

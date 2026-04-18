@@ -536,21 +536,29 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
         # Skip directly to admin escalation since no backup manager available
         return await _escalate_to_admins(ticket, session)
     
-    # Get MAX chat_id from MAX_Messenger_Data table (not from staff_members.max_chat_id)
-    backup_chat_id = None
-    if backup_manager.max_user_id:
+    # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+    backup_chat_id = backup_manager.max_chat_id
+    
+    # Fallback to MAX_Messenger_Data if not in Staff_Member
+    if not backup_chat_id and backup_manager.max_user_id:
         from database.models import MAX_Messenger_Data
         stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
             MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
         )
         result_chat = await session.execute(stmt_chat)
         backup_chat_id = result_chat.scalar_one_or_none()
+        
+        if backup_chat_id:
+            logger.info(
+                f"Using fallback chat_id from MAX_Messenger_Data for backup_manager_1 {backup_manager.id} "
+                f"(max_user_id={backup_manager.max_user_id})"
+            )
     
     # Check if backup manager has MAX messenger
     if not backup_chat_id:
         logger.error(
             f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
-            f"has no MAX chat_id in MAX_Messenger_Data table, "
+            f"has no MAX chat_id in Staff_Member or MAX_Messenger_Data table, "
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified
@@ -782,21 +790,29 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         # Skip directly to admin escalation since no backup manager available
         return await _escalate_to_admins(ticket, session)
     
-    # Get MAX chat_id from MAX_Messenger_Data table (not from staff_members.max_chat_id)
-    backup_chat_id = None
-    if backup_manager.max_user_id:
+    # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+    backup_chat_id = backup_manager.max_chat_id
+    
+    # Fallback to MAX_Messenger_Data if not in Staff_Member
+    if not backup_chat_id and backup_manager.max_user_id:
         from database.models import MAX_Messenger_Data
         stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
             MAX_Messenger_Data.max_user_id == backup_manager.max_user_id
         )
         result_chat = await session.execute(stmt_chat)
         backup_chat_id = result_chat.scalar_one_or_none()
+        
+        if backup_chat_id:
+            logger.info(
+                f"Using fallback chat_id from MAX_Messenger_Data for backup_manager_2 {backup_manager.id} "
+                f"(max_user_id={backup_manager.max_user_id})"
+            )
     
     # Check if backup manager has MAX messenger
     if not backup_chat_id:
         logger.error(
             f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
-            f"has no MAX chat_id in MAX_Messenger_Data table, "
+            f"has no MAX chat_id in Staff_Member or MAX_Messenger_Data table, "
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified

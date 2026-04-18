@@ -84,6 +84,11 @@ app.conf.beat_schedule = {
         "schedule": crontab(minute="*/5"),  # Run every 5 minutes
         "options": {"queue": "api_retries"},
     },
+    "cleanup-old-api-retries-daily": {
+        "task": "celery_app.retry_tasks.cleanup_old_api_retries",
+        "schedule": crontab(minute=0, hour=4),  # Run daily at 4:00 AM
+        "options": {"queue": "api_retries"},
+    },
 }
 
 

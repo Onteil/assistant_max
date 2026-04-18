@@ -828,6 +828,10 @@ def create_user_router() -> Router:
             await handle_phone_change_approve(event, payload, context, session, messenger_adapter)
         elif payload.action == "reject":
             await handle_phone_change_reject(event, payload, context, session, messenger_adapter)
+        elif payload.action == "cancel_reject":
+            # Cancel rejection reason input — clear FSM and return to ticket view
+            await context.clear()
+            await handle_phone_change_view(event, payload, context, session, messenger_adapter)
         elif payload.action == "back":
             # Navigate back to admin panel or operations menu
             from bots.max_bot.handlers.staff.admin_panel import handle_admin_menu_action
@@ -845,6 +849,13 @@ def create_user_router() -> Router:
 
     # User-side phone change confirmation/cancellation
     user_router.message_callback(PhoneChangeConfirmPayload.filter())(confirm_phone_change)
+
+    # Admin rejection reason text input
+    from bots.max_bot.handlers.staff.phone_management import handle_phone_change_reject_reason
+    user_router.message_created(
+        F.message.body.text,
+        OperationsStates.entering_phone_change_reject_reason
+    )(handle_phone_change_reject_reason)
     
     # ========== Settings Handlers ==========
     

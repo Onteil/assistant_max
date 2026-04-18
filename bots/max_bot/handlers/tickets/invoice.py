@@ -1551,11 +1551,11 @@ async def process_description(
             description = event.message.body.text.strip()
             
             # Validate description length
-            if len(description) > 1000:
+            if len(description) > 2000:
                 logger.warning(f"Description too long: length={len(description)}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=f"{ERROR_TEXT_TOO_LONG}\n\nМаксимальная длина описания: 1000 символов. Ваше описание: {len(description)} символов.",
+                    text=ERROR_TEXT_TOO_LONG.format(max_length=2000, actual_length=len(description)),
                     keyboard=get_description_input_keyboard(),
                     parse_mode="HTML"
                 )

@@ -485,7 +485,7 @@ async def approve_phone_change(
     ticket_id: int,
     staff_id: int,
     messenger_adapter: MAXMessengerAdapter,
-) -> bool:
+) -> bool | str:
     """
     Approve phone number change request.
 
@@ -504,6 +504,10 @@ async def approve_phone_change(
             logger.error(f"Phone change ticket not found: ticket_id={ticket_id}")
             return False
 
+        if ticket.ticket_status == TicketStatus.CLOSED:
+            logger.warning(f"Phone change ticket already closed: ticket_id={ticket_id}")
+            return "already_closed"
+
         source_user = ticket.user
         old_phone = ticket.old_phone
         new_phone = ticket.new_phone
@@ -515,7 +519,7 @@ async def approve_phone_change(
         target_user = await get_user_by_phone(session, new_phone)
         if not target_user:
             logger.error(f"Target account not found for new_phone={new_phone}")
-            return False
+            return "target_not_found"
 
         if target_user.id == source_user.id:
             logger.error(f"Source and target are the same user: user_id={source_user.id}")
@@ -594,7 +598,7 @@ async def reject_phone_change(
     staff_id: int,
     reason: str,
     messenger_adapter: MAXMessengerAdapter,
-) -> bool:
+) -> bool | str:
     """
     Reject phone number change request.
 
@@ -607,6 +611,10 @@ async def reject_phone_change(
         if not ticket or ticket.ticket_type != TicketType.PHONE_CHANGE:
             logger.error(f"Phone change ticket not found: ticket_id={ticket_id}")
             return False
+
+        if ticket.ticket_status == TicketStatus.CLOSED:
+            logger.warning(f"Phone change ticket already closed: ticket_id={ticket_id}")
+            return "already_closed"
 
         user = ticket.user
         old_phone = ticket.old_phone

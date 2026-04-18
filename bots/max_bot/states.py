@@ -110,6 +110,7 @@ class OperationsStates(StatesGroup):
     creating_broadcast_content = State()  # Administrator entering broadcast message content
     selecting_broadcast_target = State()  # Administrator selecting target audience
     confirming_broadcast = State()  # Administrator confirming broadcast send
+    entering_phone_change_reject_reason = State()  # Administrator entering rejection reason
 
 
 class NPSStates(StatesGroup):

@@ -410,13 +410,23 @@ async def notify_staff_about_low_rating(
             if admin.tg_user_id:
                 messenger_type = "telegram"
                 messenger_id = admin.tg_user_id
-            elif admin.max_user_id:
-                # For MAX, get chat_id from max_messenger_data table
-                stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
-                    MAX_Messenger_Data.max_user_id == admin.max_user_id
-                )
-                result_chat = await session.execute(stmt_chat)
-                max_chat_id = result_chat.scalar_one_or_none()
+            elif admin.max_user_id or admin.max_chat_id:
+                # For MAX, get chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+                max_chat_id = admin.max_chat_id
+                
+                # Fallback to MAX_Messenger_Data if not in Staff_Member
+                if not max_chat_id and admin.max_user_id:
+                    stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+                        MAX_Messenger_Data.max_user_id == admin.max_user_id
+                    )
+                    result_chat = await session.execute(stmt_chat)
+                    max_chat_id = result_chat.scalar_one_or_none()
+                    
+                    if max_chat_id:
+                        logger.debug(
+                            f"Using fallback chat_id from MAX_Messenger_Data for admin {admin.id} "
+                            f"(max_user_id={admin.max_user_id})"
+                        )
                 
                 if max_chat_id:
                     messenger_type = "max"

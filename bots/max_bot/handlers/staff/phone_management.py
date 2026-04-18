@@ -7,15 +7,16 @@
 import logging
 from datetime import datetime
 
-from maxapi.types import MessageCallback
+from maxapi.types import MessageCallback, MessageCreated
 from maxapi.context import MemoryContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.payloads import PhoneChangePayload
+from bots.max_bot.states import OperationsStates
 from database.models import Ticket, TicketType, TicketStatus, Staff_Member, ActionType, Action_Log
-from services.i_tat_service import get_itat_client
 from bots.max_bot.handlers.user.phone_change import approve_phone_change, reject_phone_change
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,6 @@ async def handle_phone_change_list(
             )
             
             # Add button for this ticket
-            from bots.max_bot.payloads import PhoneChangePayload
             buttons.append([
                 KeyboardButton(
                     text=f"📱 Заявка #{ticket.id}",
@@ -300,18 +300,38 @@ async def handle_phone_change_approve(
                 logger.warning(f"Failed to delete old message: {e}")
         
         # Approve phone change
-        success = await approve_phone_change(
+        result = await approve_phone_change(
             session=session,
             ticket_id=payload.ticket_id,
             staff_id=admin.id,
             messenger_adapter=messenger_adapter
         )
         
-        if success:
+        if result == "already_closed":
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Эта заявка уже была обработана ранее.",
+                parse_mode="HTML"
+            )
+            return
+        
+        if result == "target_not_found":
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "❌ <b>Ошибка одобрения</b>\n\n"
+                    "Целевой аккаунт (новый номер) не найден в системе. "
+                    "Возможно, он был удалён после подачи заявки.\n\n"
+                    "Заявка не может быть одобрена."
+                ),
+                parse_mode="HTML"
+            )
+            return
+        
+        if result:
             # Log action locally
             action_log = Action_Log(
                 action_type=ActionType.PHONE_CHANGE_APPROVED,
-                user_id=None,  # Will be set by approve_phone_change
                 staff_id=admin.id,
                 ticket_id=payload.ticket_id,
                 action_details={
@@ -322,28 +342,6 @@ async def handle_phone_change_approve(
                 action_timestamp=datetime.utcnow()
             )
             session.add(action_log)
-            
-            # Log action to i-TAT API
-            try:
-                from services.i_tat_service import get_itat_client
-                itat_client = get_itat_client()
-                await itat_client.audit_log(
-                    messenger="max",
-                    action_type="phone_change_approved",
-                    action_timestamp=datetime.utcnow().isoformat(),
-                    staff_id=admin.id,
-                    ticket_id=payload.ticket_id,
-                    action_details={
-                        "action": "phone_change_approved",
-                        "admin_name": admin.full_name,
-                        "admin_max_id": max_user_id
-                    }
-                )
-                logger.info(f"i-TAT API audit log successful for phone change approval")
-            except Exception as audit_error:
-                logger.error(f"i-TAT API audit log error: {audit_error}")
-                # Continue even if audit logging fails
-            
             await session.commit()
             
             # Show success message
@@ -389,8 +387,8 @@ async def handle_phone_change_reject(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Reject phone change request.
-    
+    Start phone change rejection flow — ask admin for a reason.
+
     Args:
         event: MessageCallback event from maxapi
         payload: PhoneChangePayload with ticket_id
@@ -401,7 +399,7 @@ async def handle_phone_change_reject(
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-    
+
     try:
         # Verify user is administrator
         admin = await is_admin(session, max_user_id)
@@ -412,34 +410,103 @@ async def handle_phone_change_reject(
                 parse_mode="HTML"
             )
             return
-        
+
         # Delete old message
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
-        # For now, reject with a default reason
-        # In a full implementation, you might want to ask for a reason
-        reason = "Запрос отклонен администратором"
-        
-        # Reject phone change
-        success = await reject_phone_change(
+
+        # Store ticket_id in FSM and ask for reason
+        await context.update_data(reject_ticket_id=payload.ticket_id)
+        await context.set_state(OperationsStates.entering_phone_change_reject_reason)
+
+        keyboard = Keyboard(
+            buttons=[[KeyboardButton(
+                text="◀️ Назад к заявке",
+                payload=PhoneChangePayload(action="cancel_reject", ticket_id=payload.ticket_id).pack()
+            )]],
+            inline=True
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"❌ <b>Отклонение заявки #{payload.ticket_id}</b>\n\n"
+                "Введите причину отклонения запроса на смену номера:"
+            ),
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        logger.error(f"Error starting phone change rejection: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_phone_change_reject_reason(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process rejection reason text input from admin.
+
+    maxapi Pattern Notes:
+    - Registered with FSM state filter: OperationsStates.entering_phone_change_reject_reason
+    - Uses event.message.sender.user_id for user identification
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    reason = event.message.body.text.strip()
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await context.clear()
+            return
+
+        data = await context.get_data()
+        ticket_id = data.get("reject_ticket_id")
+        if not ticket_id:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Ошибка: заявка не найдена. Попробуйте снова.",
+                parse_mode="HTML"
+            )
+            return
+
+        await context.clear()
+
+        result = await reject_phone_change(
             session=session,
-            ticket_id=payload.ticket_id,
+            ticket_id=ticket_id,
             staff_id=admin.id,
             reason=reason,
             messenger_adapter=messenger_adapter
         )
-        
-        if success:
+
+        if result == "already_closed":
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Эта заявка уже была обработана ранее.",
+                parse_mode="HTML"
+            )
+            return
+
+        if result:
             # Log action locally
             action_log = Action_Log(
                 action_type=ActionType.PHONE_CHANGE_REJECTED,
-                user_id=None,  # Will be set by reject_phone_change
                 staff_id=admin.id,
-                ticket_id=payload.ticket_id,
+                ticket_id=ticket_id,
                 action_details={
                     "action": "phone_change_rejected",
                     "reason": reason,
@@ -449,47 +516,19 @@ async def handle_phone_change_reject(
                 action_timestamp=datetime.utcnow()
             )
             session.add(action_log)
-            
-            # Log action to i-TAT API
-            try:
-                from services.i_tat_service import get_itat_client
-                itat_client = get_itat_client()
-                await itat_client.audit_log(
-                    messenger="max",
-                    action_type="phone_change_rejected",
-                    action_timestamp=datetime.utcnow().isoformat(),
-                    staff_id=admin.id,
-                    ticket_id=payload.ticket_id,
-                    action_details={
-                        "action": "phone_change_rejected",
-                        "reason": reason,
-                        "admin_name": admin.full_name,
-                        "admin_max_id": max_user_id
-                    }
-                )
-                logger.info(f"i-TAT API audit log successful for phone change rejection")
-            except Exception as audit_error:
-                logger.error(f"i-TAT API audit log error: {audit_error}")
-                # Continue even if audit logging fails
-            
             await session.commit()
-            
-            # Show success message
+
             keyboard = Keyboard(
-                buttons=[
-                    [
-                        KeyboardButton(
-                            text="◀️ К списку запросов",
-                            payload=PhoneChangePayload(action="list").pack()
-                        )
-                    ]
-                ],
+                buttons=[[KeyboardButton(
+                    text="◀️ К списку запросов",
+                    payload=PhoneChangePayload(action="list").pack()
+                )]],
                 inline=True
             )
-            
+
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"❌ <b>Запрос отклонен</b>\n\nЗаявка #{payload.ticket_id} на смену номера телефона отклонена.\nПользователь уведомлен об отклонении.",
+                text=f"❌ <b>Запрос отклонён</b>\n\nЗаявка #{ticket_id} отклонена.\nПользователь уведомлён об отклонении.",
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -499,9 +538,10 @@ async def handle_phone_change_reject(
                 text="❌ Произошла ошибка при отклонении запроса.",
                 parse_mode="HTML"
             )
-        
+
     except Exception as e:
-        logger.error(f"Error rejecting phone change: {e}", exc_info=True)
+        logger.error(f"Error processing phone change rejection reason: {e}", exc_info=True)
+        await context.clear()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при отклонении запроса.",

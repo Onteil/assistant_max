@@ -273,13 +273,19 @@ async def get_sla_metrics(
         start_date_naive = start_date.replace(tzinfo=None)
         end_date_naive = end_date.replace(tzinfo=None)
         
-        # Subquery to get first staff message per ticket
+        # Subquery to get first staff message per ticket (only within the period)
         first_message_subq = (
             select(
                 Message.ticket_id,
                 func.min(Message.sent_at).label('first_response_at')
             )
-            .where(Message.sender_type == 'STAFF')
+            .where(
+                and_(
+                    Message.sender_type == 'STAFF',
+                    Message.sent_at >= start_date_naive,
+                    Message.sent_at <= end_date_naive,
+                )
+            )
             .group_by(Message.ticket_id)
             .subquery()
         )
@@ -391,8 +397,10 @@ async def get_stuck_tickets(
     try:
         logger.debug(f"Fetching stuck tickets: threshold={threshold_minutes} minutes")
         
-        # Calculate threshold timestamp
-        threshold_time = datetime.utcnow() - timedelta(minutes=threshold_minutes)
+        # Calculate threshold timestamp in Moscow time (DB stores Moscow naive datetimes)
+        from utils.timezone_helpers import get_moscow_now_naive
+        current_time = get_moscow_now_naive()
+        threshold_time = current_time - timedelta(minutes=threshold_minutes)
         
         # Build query with filters and eager loading
         stmt = (
@@ -416,7 +424,6 @@ async def get_stuck_tickets(
         
         # Convert to list of dicts with calculated elapsed time
         stuck_tickets = []
-        current_time = datetime.utcnow()
         
         # Map TicketType enum to string keys
         type_mapping = {
@@ -498,35 +505,10 @@ async def get_nps_metrics(
             f"end={end_date.isoformat()}"
         )
         
-        # Check if NPS response table exists
-        try:
-            from sqlalchemy import inspect
-            inspector = inspect(session.bind)
-            tables = await session.run_sync(lambda sync_session: inspector.get_table_names())
-            
-            has_nps_table = 'nps_responses' in tables
-            
-        except Exception as e:
-            logger.debug(f"Could not check for NPS table: {e}")
-            has_nps_table = False
-        
-        if not has_nps_table:
-            # No NPS response table exists - return placeholder values
-            logger.warning(
-                "NPS data requested but no NPS response table exists. "
-                "Returning placeholder values (0.0, 0). "
-                f"Period: {start_date.isoformat()} to {end_date.isoformat()}"
-            )
-            
-            return {
-                "average_score": 0.0,
-                "response_count": 0
-            }
-        
-        # Convert timezone-aware datetime to naive datetime for PostgreSQL
-        # Database stores timestamps as TIMESTAMP WITHOUT TIME ZONE
-        start_date_naive = start_date.replace(tzinfo=None)
-        end_date_naive = end_date.replace(tzinfo=None)
+        # NPS_Response.responded_at is stored as naive UTC (uses datetime.utcnow).
+        # calculate_period_dates returns Moscow-aware datetimes, so we convert to UTC naive.
+        start_date_utc_naive = start_date.astimezone(pytz.utc).replace(tzinfo=None)
+        end_date_utc_naive = end_date.astimezone(pytz.utc).replace(tzinfo=None)
         
         # Query NPS responses for the period
         stmt = (
@@ -536,8 +518,8 @@ async def get_nps_metrics(
             )
             .where(
                 and_(
-                    NPS_Response.responded_at >= start_date_naive,
-                    NPS_Response.responded_at <= end_date_naive
+                    NPS_Response.responded_at >= start_date_utc_naive,
+                    NPS_Response.responded_at <= end_date_utc_naive
                 )
             )
         )

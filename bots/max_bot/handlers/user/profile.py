@@ -380,6 +380,7 @@ async def delete_organization(
             
             if org_to_remove:
                 user.organizations.remove(org_to_remove)
+                await session.commit()
                 
                 # Update user assets via i-TAT API
                 assets_response = await call_itat_with_retry(
@@ -406,7 +407,7 @@ async def delete_organization(
                     field="organization",
                     old_value=inn,
                     new_value="",  # Removed
-                    max_user_id=user.max_messenger_data.max_user_id if user.max_messenger_data else 0
+                    max_user_id=user.max_user_id or 0
                 )
                 
                 await messenger_adapter.send_message(
@@ -497,7 +498,7 @@ async def delete_key(
         if key:
             key_number = key.key_number
             await session.delete(key)
-            await session.flush()
+            await session.commit()
             
             # Update user assets via i-TAT API
             assets_response = await call_itat_with_retry(
@@ -1274,6 +1275,7 @@ async def process_add_inn(
         
         # Add organization to user profile locally
         await add_user_organization(session, user.id, inn)
+        await session.commit()
 
         # Update user assets via i-TAT API
         assets_response = await call_itat_with_retry(
@@ -1449,16 +1451,18 @@ async def process_add_key(
                 normalized_key,
                 KeyConflictStatus.PENDING_REVIEW
             )
+            await session.commit()
             
             # Create KEY_CONFLICT ticket
             ticket_data = {
                 "ticket_type": TicketType.KEY_CONFLICT,
                 "user_id": user.id,
                 "description": f"Конфликт ключа {normalized_key}. Текущий владелец: {owner_info}",
-                "selected_keys": [key.id],
+                "selected_key_ids": [key.id],
             }
             
             ticket = await create_ticket(session, ticket_data)
+            await session.commit()
             
             logger.info(
                 f"KEY_CONFLICT ticket created: ticket_id={ticket.id}, key={normalized_key}"
@@ -1504,6 +1508,7 @@ async def process_add_key(
                 normalized_key,
                 KeyConflictStatus.NONE
             )
+            await session.commit()
             
             # Update user assets via i-TAT API
             assets_response = await call_itat_with_retry(

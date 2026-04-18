@@ -707,7 +707,7 @@ async def process_problem_description(
                 logger.warning(f"Problem description too long: length={len(text)}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=f"{ERROR_TEXT_TOO_LONG}\n\nМаксимальная длина описания: 4000 символов. Ваше описание: {len(text)} символов.",
+                    text=ERROR_TEXT_TOO_LONG.format(max_length=4000, actual_length=len(text)),
                     keyboard=get_problem_description_keyboard(),
                     parse_mode="HTML"
                 )

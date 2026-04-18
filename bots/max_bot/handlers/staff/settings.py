@@ -889,6 +889,39 @@ async def handle_duty_support_settings(
         )
 
 
+async def _show_nps_settings_screen(
+    chat_id: int,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+    success_prefix: str = ""
+) -> None:
+    """Helper: build and send the NPS settings screen (used after save/reset)."""
+    nps_settings = await get_settings_by_category(session, SettingCategory.NPS)
+    frequency_days = nps_settings.get("nps_frequency_days", 30)
+    trigger_after_payment = nps_settings.get("nps_trigger_after_payment", 10)
+    trigger_after_support = nps_settings.get("nps_trigger_after_support", 1)
+
+    buttons = [
+        [KeyboardButton(text=f"📊 Частота опросов: {frequency_days} дн.", payload=SettingsPayload(action="edit_nps_frequency", setting_key="nps_frequency_days").pack())],
+        [KeyboardButton(text=f"💳 После оплаты: {trigger_after_payment} дн.", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_payment").pack())],
+        [KeyboardButton(text=f"🛠 После поддержки: {trigger_after_support} дн.", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_support").pack())],
+        [KeyboardButton(text="🔄 Сбросить по умолчанию", payload=SettingsPayload(action="reset_nps").pack())],
+        [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())],
+    ]
+    keyboard = Keyboard(buttons=buttons, inline=True)
+
+    body = (
+        f"📊 <b>Настройка NPS опросов</b>\n\n"
+        f"📊 <b>Частота опросов:</b> {frequency_days} дней\n"
+        f"💳 <b>После оплаты:</b> {trigger_after_payment} дней\n"
+        f"🛠 <b>После поддержки:</b> {trigger_after_support} дней\n\n"
+        "Нажмите на параметр для изменения значения."
+    )
+    text = (success_prefix + "\n\n" + body) if success_prefix else body
+
+    await messenger_adapter.send_message(chat_id=chat_id, text=text, keyboard=keyboard, parse_mode="HTML")
+
+
 # ========== NPS Settings ==========
 
 
@@ -901,54 +934,17 @@ async def handle_nps_settings(
 ) -> None:
     """
     Display NPS survey configuration screen.
-    
-    Shows current NPS settings for frequency and triggers.
+
+    Shows current values for nps_frequency_days, nps_trigger_after_payment,
+    nps_trigger_after_support with edit buttons and a reset-to-defaults button.
     Uses replace_message pattern.
-    
-    Requirements: 5.1, 5.2, 8.1, 8.2
+
+    Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8
     """
-    chat_id = event.message.recipient.chat_id
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="📊 <b>Настройка NPS опросов</b>\n\nФункционал в разработке.",
-        parse_mode="HTML"
-    )
-
-
-async def handle_renewal_reminders_settings(
-    event: MessageCallback,
-    payload: SettingsPayload,
-    context: MemoryContext,
-    session: AsyncSession,
-    messenger_adapter: MAXMessengerAdapter
-) -> None:
-    """Display renewal reminder schedule configuration screen. TODO: Implement"""
-    chat_id = event.message.recipient.chat_id
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="🔔 <b>Настройка напоминаний о продлении</b>\n\nФункционал в разработке.",
-        parse_mode="HTML"
-    )
-
-
-async def handle_settings_history(
-    event: MessageCallback,
-    payload: SettingsPayload,
-    context: MemoryContext,
-    session: AsyncSession,
-    messenger_adapter: MAXMessengerAdapter
-) -> None:
-    """Display settings change history. TODO: Implement"""
-    chat_id = event.message.recipient.chat_id
-    await messenger_adapter.send_message(
-        chat_id=chat_id,
-        text="📜 <b>История изменений настроек</b>\n\nФункционал в разработке.",
-        parse_mode="HTML"
-    )
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
-    
+
     try:
         admin = await is_admin(session, max_user_id)
         if not admin:
@@ -958,47 +954,70 @@ async def handle_settings_history(
                 parse_mode="HTML"
             )
             return
-        
+
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
-        
+
         nps_settings = await get_settings_by_category(session, SettingCategory.NPS)
-        
         frequency_days = nps_settings.get("nps_frequency_days", 30)
         trigger_after_payment = nps_settings.get("nps_trigger_after_payment", 10)
         trigger_after_support = nps_settings.get("nps_trigger_after_support", 1)
-        
+
         buttons = [
-            [KeyboardButton(text=f"📊 Частота опросов: {frequency_days} дней", payload=SettingsPayload(action="edit_nps_frequency", setting_key="nps_frequency_days").pack())],
-            [KeyboardButton(text=f"💳 После оплаты: {trigger_after_payment} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_payment").pack())],
-            [KeyboardButton(text=f"🛠 После поддержки: {trigger_after_support} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_support").pack())],
-            [KeyboardButton(text="🔄 Сбросить по умолчанию", payload=SettingsPayload(action="reset_nps").pack())],
-            [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())]
+            [KeyboardButton(
+                text=f"📊 Частота опросов: {frequency_days} дн.",
+                payload=SettingsPayload(action="edit_nps_frequency", setting_key="nps_frequency_days").pack()
+            )],
+            [KeyboardButton(
+                text=f"💳 После оплаты: {trigger_after_payment} дн.",
+                payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_payment").pack()
+            )],
+            [KeyboardButton(
+                text=f"🛠 После поддержки: {trigger_after_support} дн.",
+                payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_support").pack()
+            )],
+            [KeyboardButton(
+                text="🔄 Сбросить по умолчанию",
+                payload=SettingsPayload(action="reset_nps").pack()
+            )],
+            [KeyboardButton(
+                text="◀️ Назад",
+                payload=SettingsPayload(action="menu").pack()
+            )],
         ]
-        
+
         keyboard = Keyboard(buttons=buttons, inline=True)
-        
+
         nps_text = (
             "📊 <b>Настройка NPS опросов</b>\n\n"
-            "Настройте частоту и условия отправки NPS опросов пользователям.\n\n"
-            f"<b>Частота опросов:</b> {frequency_days} дней\n"
-            "Минимальный интервал между опросами для одного пользователя.\n\n"
-            f"<b>После оплаты:</b> {trigger_after_payment} дней\n"
-            "Через сколько дней после оплаты отправлять опрос.\n\n"
-            f"<b>После поддержки:</b> {trigger_after_support} дней\n"
-            "Через сколько дней после закрытия тикета отправлять опрос.\n\n"
+            "Управляйте частотой и условиями отправки NPS опросов пользователям.\n\n"
+            f"📊 <b>Частота опросов:</b> {frequency_days} дней\n"
+            "Минимальный интервал между опросами для одного пользователя (1–365).\n\n"
+            f"💳 <b>После оплаты:</b> {trigger_after_payment} дней\n"
+            "Через сколько дней после подтверждения оплаты отправлять опрос (0–90).\n\n"
+            f"🛠 <b>После поддержки:</b> {trigger_after_support} дней\n"
+            "Через сколько дней после закрытия тикета ТП отправлять опрос (0–90).\n\n"
             "Нажмите на параметр для изменения значения."
         )
-        
-        await messenger_adapter.send_message(chat_id=chat_id, text=nps_text, keyboard=keyboard, parse_mode="HTML")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=nps_text,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
         logger.info(f"Administrator {max_user_id} accessed NPS settings")
-        
+
     except Exception as e:
         logger.error(f"Error showing NPS settings: {e}", exc_info=True)
-        await messenger_adapter.send_message(chat_id=chat_id, text="❌ Произошла ошибка при загрузке настроек.", parse_mode="HTML")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при загрузке настроек.",
+            parse_mode="HTML"
+        )
 
 
 # ========== Renewal Reminders Settings ==========
@@ -1227,36 +1246,12 @@ async def handle_nps_frequency_input(event: MessageCreated, context: MemoryConte
         
         if success:
             await context.clear()
-            
-            nps_settings = await get_settings_by_category(session, SettingCategory.NPS)
-            frequency_days = nps_settings.get("nps_frequency_days", 30)
-            trigger_after_payment = nps_settings.get("nps_trigger_after_payment", 10)
-            trigger_after_support = nps_settings.get("nps_trigger_after_support", 1)
-            
-            buttons = [
-                [KeyboardButton(text=f"📊 Частота опросов: {frequency_days} дней", payload=SettingsPayload(action="edit_nps_frequency", setting_key="nps_frequency_days").pack())],
-                [KeyboardButton(text=f"💳 После оплаты: {trigger_after_payment} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_payment").pack())],
-                [KeyboardButton(text=f"🛠 После поддержки: {trigger_after_support} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_support").pack())],
-                [KeyboardButton(text="🔄 Сбросить по умолчанию", payload=SettingsPayload(action="reset_nps").pack())],
-                [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())]
-            ]
-            
-            keyboard = Keyboard(buttons=buttons, inline=True)
-            
-            await messenger_adapter.send_message(
+            await _show_nps_settings_screen(
                 chat_id=chat_id,
-                text=(
-                    "✅ <b>Настройка NPS успешно обновлена</b>\n\n"
-                    "📊 <b>Настройка NPS опросов</b>\n\n"
-                    f"<b>Частота опросов:</b> {frequency_days} дней\n"
-                    f"<b>После оплаты:</b> {trigger_after_payment} дней\n"
-                    f"<b>После поддержки:</b> {trigger_after_support} дней\n\n"
-                    "Нажмите на параметр для изменения значения."
-                ),
-                keyboard=keyboard,
-                parse_mode="HTML"
+                session=session,
+                messenger_adapter=messenger_adapter,
+                success_prefix="✅ <b>Частота NPS опросов обновлена</b>"
             )
-            
             logger.info(f"Administrator {admin.id} updated NPS frequency to {input_value}")
         else:
             await messenger_adapter.send_message(
@@ -1348,36 +1343,12 @@ async def handle_nps_trigger_input(event: MessageCreated, context: MemoryContext
         
         if success:
             await context.clear()
-            
-            nps_settings = await get_settings_by_category(session, SettingCategory.NPS)
-            frequency_days = nps_settings.get("nps_frequency_days", 30)
-            trigger_after_payment = nps_settings.get("nps_trigger_after_payment", 10)
-            trigger_after_support = nps_settings.get("nps_trigger_after_support", 1)
-            
-            buttons = [
-                [KeyboardButton(text=f"📊 Частота опросов: {frequency_days} дней", payload=SettingsPayload(action="edit_nps_frequency", setting_key="nps_frequency_days").pack())],
-                [KeyboardButton(text=f"💳 После оплаты: {trigger_after_payment} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_payment").pack())],
-                [KeyboardButton(text=f"🛠 После поддержки: {trigger_after_support} дней", payload=SettingsPayload(action="edit_nps_trigger", setting_key="nps_trigger_after_support").pack())],
-                [KeyboardButton(text="🔄 Сбросить по умолчанию", payload=SettingsPayload(action="reset_nps").pack())],
-                [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())]
-            ]
-            
-            keyboard = Keyboard(buttons=buttons, inline=True)
-            
-            await messenger_adapter.send_message(
+            await _show_nps_settings_screen(
                 chat_id=chat_id,
-                text=(
-                    "✅ <b>Настройка NPS успешно обновлена</b>\n\n"
-                    "📊 <b>Настройка NPS опросов</b>\n\n"
-                    f"<b>Частота опросов:</b> {frequency_days} дней\n"
-                    f"<b>После оплаты:</b> {trigger_after_payment} дней\n"
-                    f"<b>После поддержки:</b> {trigger_after_support} дней\n\n"
-                    "Нажмите на параметр для изменения значения."
-                ),
-                keyboard=keyboard,
-                parse_mode="HTML"
+                session=session,
+                messenger_adapter=messenger_adapter,
+                success_prefix="✅ <b>Настройка NPS триггера обновлена</b>"
             )
-            
             logger.info(f"Administrator {admin.id} updated NPS trigger {setting_key} to {input_value}")
         else:
             await messenger_adapter.send_message(
@@ -2186,12 +2157,30 @@ async def handle_duty_account_input(
             await context.clear()
             
             # Show updated duty support settings
-            await handle_duty_support_settings(
-                event=event,
-                payload=SettingsPayload(action="duty_support"),
-                context=context,
-                session=session,
-                messenger_adapter=messenger_adapter
+            duty_account_updated = await get_setting(session, "duty_support_account")
+            account_status = duty_account_updated if duty_account_updated else "❌ Не настроен"
+            
+            buttons = [
+                [KeyboardButton(
+                    text=f"🌙 Аккаунт дежурной: {account_status}",
+                    payload=SettingsPayload(action="edit_duty_account", setting_key="duty_support_account").pack()
+                )],
+                [KeyboardButton(text="🔄 Сбросить по умолчанию", payload=SettingsPayload(action="reset_duty_support").pack())],
+                [KeyboardButton(text="◀️ Назад", payload=SettingsPayload(action="menu").pack())],
+            ]
+            keyboard = Keyboard(buttons=buttons, inline=True)
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"✅ <b>Аккаунт дежурной поддержки обновлён</b>\n\n"
+                    f"🌙 <b>Настройка дежурной поддержки</b>\n\n"
+                    f"<b>Текущий аккаунт:</b> {account_status}\n"
+                    f"<b>Сотрудник:</b> {staff_member.full_name}\n\n"
+                    "Заявки в нерабочее время будут направляться на этот аккаунт."
+                ),
+                keyboard=keyboard,
+                parse_mode="HTML"
             )
             
             logger.info(f"Administrator {admin.id} updated duty account to {duty_user_id} ({staff_member.full_name})")

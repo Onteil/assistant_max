@@ -935,7 +935,7 @@ async def process_consultation_description(
             if len(description) > 4000:
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=ERROR_TEXT_TOO_LONG,
+                    text=ERROR_TEXT_TOO_LONG.format(max_length=4000, actual_length=len(description)),
                     keyboard=get_consultation_description_keyboard(),
                     parse_mode="HTML",
                 )

@@ -37,6 +37,7 @@ from bots.max_bot.payloads import (
 )
 from database.models import Staff_Member, StaffRole, Action_Log, ActionType
 from services.itat_retry_helper import call_itat_with_retry
+from services.i_tat_service import get_itat_client
 
 logger = logging.getLogger(__name__)
 
@@ -504,14 +505,6 @@ async def handle_employee_position_input(
         
     except Exception as e:
         logger.error(f"Error handling employee position input: {e}", exc_info=True)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="❌ Произошла ошибка. Попробуйте позже.",
-            parse_mode="HTML"
-        )
-        
-    except Exception as e:
-        logger.error(f"Error handling employee name input: {e}", exc_info=True)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка. Попробуйте позже.",
@@ -1386,7 +1379,6 @@ async def handle_employee_name_edit_input(
         messenger_adapter: MAXMessengerAdapter for sending messages
     """
     chat_id = event.message.recipient.chat_id
-    max_user_id = event.message.sender.user_id
     max_user_id = event.message.sender.user_id
     
     try:
@@ -2811,22 +2803,6 @@ async def handle_unset_estimate_specialist(
             text="❌ Произошла ошибка при снятии флага.",
             parse_mode="HTML"
         )
-
-
-# ========== Backup Managers ==========
-
-
-async def handle_backup_manager_config(
-    event: MessageCallback,
-    payload: BackupManagerPayload,
-    context: MemoryContext,
-    session: AsyncSession,
-    messenger_adapter: MAXMessengerAdapter
-) -> None:
-    """Handle backup manager configuration interface."""
-    chat_id = event.message.recipient.chat_id
-    max_user_id = event.callback.user.user_id
-    message_id = event.message.bo
 
 
 # ========== Backup Managers ==========

@@ -442,7 +442,7 @@ async def view_client_archived_ticket(
         
         # Get current filter and page from context for back navigation
         data = await context.get_data()
-        current_filter = data.get("client_archive_filter", "invoice")
+        current_filter = data.get("client_archive_filter", "all")
         current_page = data.get("client_archive_page", 0)
         
         # Build keyboard with back button using proper payload
@@ -473,55 +473,70 @@ async def view_client_archived_ticket(
         # Check if combined text exceeds MAX limit
         combined_text = f"{ticket_details}\n\n{message_history}"
         
-        # Get message ID for editing
+        # Get message ID for replace_message pattern
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+        
+        # Delete old message (replace_message pattern)
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
         
         if len(combined_text) <= 4096:
             # Send as single message
-            if message_id:
-                await messenger_adapter.edit_message(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=combined_text,
-                    keyboard=keyboard,
-                    parse_mode="HTML"
-                )
-            else:
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text=combined_text,
-                    keyboard=keyboard,
-                    parse_mode="HTML"
-                )
-        else:
-            # Send details as message, history as file
-            if message_id:
-                await messenger_adapter.edit_message(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=ticket_details,
-                    keyboard=keyboard,
-                    parse_mode="HTML"
-                )
-            else:
-                await messenger_adapter.send_message(
-                    chat_id=chat_id,
-                    text=ticket_details,
-                    keyboard=keyboard,
-                    parse_mode="HTML"
-                )
-            
-            # Send message history as .txt file
-            file_content = message_history.encode('utf-8')
-            file_name = f"ticket_{ticket_id}_history.txt"
-            
-            # Note: MAX API file upload needs to be implemented
-            # For now, send truncated history as text
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"📎 История переписки по обращению #{ticket_id}\n\n{message_history[:3000]}...",
+                text=combined_text,
+                keyboard=keyboard,
                 parse_mode="HTML"
             )
+        else:
+            # Send details as message, history as file
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ticket_details,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+            
+            # Send message history as .txt file
+            import tempfile
+            import os
+            
+            try:
+                # Create temporary file
+                with tempfile.NamedTemporaryFile(
+                    mode='w',
+                    encoding='utf-8',
+                    suffix='.txt',
+                    delete=False
+                ) as tmp_file:
+                    tmp_file.write(message_history)
+                    tmp_file_path = tmp_file.name
+                
+                # Send file
+                await messenger_adapter.send_document(
+                    chat_id=chat_id,
+                    document_path=tmp_file_path,
+                    caption=f"📎 История переписки по обращению #{ticket_id}",
+                    parse_mode="HTML"
+                )
+                
+                # Clean up temporary file
+                os.unlink(tmp_file_path)
+                
+                logger.info(f"Sent history as file for ticket {ticket_id} (size: {len(message_history)} chars)")
+                
+            except Exception as e:
+                logger.error(f"Failed to send history as file for ticket {ticket_id}: {e}", exc_info=True)
+                # Fallback: send truncated history as text
+                truncated_history = message_history[:3000] + "\n\n... (история обрезана)"
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=f"📎 История переписки (обрезана):\n\n{truncated_history}",
+                    parse_mode="HTML"
+                )
         
         logger.info(
             f"Displayed archived ticket {ticket_id} for client {user.id} "

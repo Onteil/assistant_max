@@ -1035,10 +1035,17 @@ async def take_ticket_into_work(
         # Cancel escalation monitoring tasks
         try:
             # Import here to avoid circular dependency
-            from celery_app.escalation_tasks import cancel_escalation_monitoring
-            
-            await cancel_escalation_monitoring(ticket_id)
-            logger.info(f"Escalation monitoring cancelled: ticket_id={ticket_id}")
+            from celery_app.escalation_tasks import (
+                cancel_escalation_monitoring,
+                cancel_technical_support_monitoring,
+            )
+
+            if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+                await cancel_technical_support_monitoring(ticket_id)
+                logger.info(f"Technical support monitoring cancelled: ticket_id={ticket_id}")
+            else:
+                await cancel_escalation_monitoring(ticket_id)
+                logger.info(f"Escalation monitoring cancelled: ticket_id={ticket_id}")
         except Exception as e:
             logger.warning(
                 f"Failed to cancel escalation monitoring: ticket_id={ticket_id}, error={e}"
@@ -2459,6 +2466,7 @@ async def forward_client_message_to_manager(
     file_name: str | None = None,
     file_size: int | None = None,
     manager_in_focus: bool = False,
+    save_only: bool = False,
 ) -> None:
     """
     Store a client message in the database and forward it to the assigned manager.
@@ -2482,6 +2490,9 @@ async def forward_client_message_to_manager(
         manager_in_focus: True if manager is already in focus mode for this ticket.
             When True, action buttons are omitted from the notification since the
             manager is already in the conversation and doesn't need them.
+        save_only: If True, save the message to DB and update ticket status but
+            do NOT forward to the manager (used during off-hours to preserve
+            the message without disturbing staff).
     """
     import logging
     import uuid
@@ -2581,7 +2592,14 @@ async def forward_client_message_to_manager(
                 exc_info=True,
             )
 
-    # Forward to assigned manager
+    # Forward to assigned manager (skip if save_only mode — off-hours preservation)
+    if save_only:
+        logger.info(
+            f"save_only=True: message saved to DB but NOT forwarded to manager: "
+            f"ticket_id={ticket.id}, user_id={user.id}"
+        )
+        return
+
     if ticket.assigned_staff_id:
         try:
             staff_result = await session.execute(
