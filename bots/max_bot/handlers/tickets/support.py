@@ -28,7 +28,7 @@ from bots.max_bot.keyboards.tickets.support_kb import (
     get_renewal_keyboard,
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
-from bots.max_bot.payloads import RenewalActionPayload
+from bots.max_bot.payloads import RenewalActionPayload, SupportDescriptionNextPayload
 from bots.max_bot.states import SupportStates
 from bots.max_bot.texts import (
     ERROR_GENERAL,
@@ -663,31 +663,36 @@ async def process_problem_description(
 ) -> None:
     """
     Process problem description (text, photo, voice, document).
-    
+
+    Accumulates description and attachments in FSM context across multiple messages.
+    Shows updated keyboard with "Далее" button after first message received.
+    User must click "Далее" to proceed to key context selection.
+
     Validates text length (max 4000 characters).
     Handles photo attachments with optional caption.
     Handles voice message attachments.
     Handles document attachments with file type classification.
     Stores all attachments in FSM context data.
-    
+
     Args:
         event: Message event from MAX
         context: FSM context for state management
         session: Database session (injected by middleware)
         messenger_adapter: Messenger adapter for sending messages
-    
+
     Requirements: 3.7, 3.8, 3.9, 3.10, 8.3, 8.4, 8.5
     """
     chat_id = event.message.recipient.chat_id
-    
+
     logger.info(f"Processing problem description: chat_id={chat_id}")
-    
+
     try:
         # Get data from context
         data = await context.get_data()
         user_id = data.get("user_id")
         attachments = data.get("attachments", [])
-        
+        has_description = bool(data.get("problem_description"))
+
         if not user_id:
             logger.error(f"No user_id in context: chat_id={chat_id}")
             await messenger_adapter.send_message(
@@ -697,27 +702,30 @@ async def process_problem_description(
             )
             await context.clear()
             return
-        
+
         # Handle text message
         if event.message.body and event.message.body.text:
             text = event.message.body.text.strip()
-            
+
             # Validate text length
             if len(text) > 4000:
                 logger.warning(f"Problem description too long: length={len(text)}")
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
                     text=ERROR_TEXT_TOO_LONG.format(max_length=4000, actual_length=len(text)),
-                    keyboard=get_problem_description_keyboard(),
+                    keyboard=get_problem_description_keyboard(has_content=has_description or bool(attachments)),
                     parse_mode="HTML"
                 )
                 return
-            
-            # Store description
-            await context.update_data(problem_description=text)
-            
-            logger.info(f"Problem description stored: user_id={user_id}, length={len(text)}")
-        
+
+            # Append to existing description (user may send multiple messages)
+            existing_description = data.get("problem_description") or ""
+            combined = (existing_description + "\n" + text).strip() if existing_description else text
+            await context.update_data(problem_description=combined)
+            has_description = True
+
+            logger.info(f"Problem description stored: user_id={user_id}, length={len(combined)}")
+
         # Handle photo attachment
         if event.message.body and event.message.body.attachments:
             for attachment in event.message.body.attachments:
@@ -726,76 +734,140 @@ async def process_problem_description(
                     f"type={attachment.type!r}, payload={attachment.payload!r}"
                 )
                 if attachment.type == "image":
-                    # Upload photo to MAX API
                     photo_url = attachment.payload.url
                     caption = event.message.body.text if event.message.body else None
-                    
+
                     attachments.append({
                         "type": "image",
                         "url": photo_url,
                         "caption": caption
                     })
-                    
+
                     logger.info(f"Photo attachment added: user_id={user_id}, url={photo_url}")
-                
+
                 elif attachment.type in ("voice", "audio_video_note"):
-                    # Handle voice message
                     voice_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
-                    
+
                     attachments.append({
                         "type": "voice",
                         "url": voice_url
                     })
-                    
+
                     logger.info(f"Voice attachment added: user_id={user_id}, url={voice_url}")
-                
+
                 elif attachment.type == "audio":
-                    # Handle audio message (голосовое сообщение в MAX)
                     audio_url = attachment.payload.url if hasattr(attachment.payload, 'url') else None
-                    
+
                     attachments.append({
                         "type": "voice",
                         "url": audio_url
                     })
-                    
+
                     logger.info(f"Audio attachment added: user_id={user_id}, url={audio_url}")
-                
+
                 elif attachment.type == "file":
-                    # Handle document attachment
                     file_url = attachment.payload.url
                     file_name = attachment.payload.name if hasattr(attachment.payload, 'name') else "document"
-                    
-                    # Classify file type
+
                     from services.validation_service import classify_file_type
                     file_type = classify_file_type(file_name)
-                    
+
                     attachments.append({
                         "type": "document",
                         "url": file_url,
                         "file_name": file_name,
                         "file_type": file_type.value
                     })
-                    
+
                     logger.info(
                         f"Document attachment added: user_id={user_id}, "
                         f"file_name={file_name}, file_type={file_type.value}"
                     )
-            
+
             # Update attachments in context
             await context.update_data(attachments=attachments)
-        
-        # Check if we have description or attachments
-        # Re-read from context to get updated values
-        updated_data = await context.get_data()
-        problem_description = updated_data.get("problem_description")
-        if not problem_description and not attachments:
+
+        # Check if we received any content in this message
+        has_content = has_description or bool(attachments)
+
+        if has_content:
+            # Show confirmation with updated keyboard (now with "Далее" button)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="✅ Принято. Можете добавить ещё сообщения или нажмите «Далее» для продолжения.",
+                keyboard=get_problem_description_keyboard(has_content=True),
+                parse_mode="HTML"
+            )
+        else:
             # Still waiting for description
+            logger.info(f"No content received yet: chat_id={chat_id}")
+
+    except Exception as e:
+        logger.error(
+            f"Error processing problem description: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_support_description_next(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Далее" button click in support description step.
+
+    Transitions to key context selection after user confirms
+    they are done entering problem description and attachments.
+
+    Requirements: 3.7, 3.8
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Support description next: chat_id={chat_id}")
+
+    try:
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        problem_description = data.get("problem_description")
+        attachments = data.get("attachments") or []
+
+        if not user_id:
+            logger.error(f"No user_id in context for description next: chat_id={chat_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_GENERAL,
+                parse_mode="HTML"
+            )
+            await context.clear()
             return
-        
+
+        if not problem_description and not attachments:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Пожалуйста, введите описание или прикрепите файл перед тем как продолжить.",
+                keyboard=get_problem_description_keyboard(has_content=False),
+                parse_mode="HTML"
+            )
+            return
+
+        # Delete old message with buttons
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete support description message: {e}")
+
         # Proceed to key context selection
         await context.set_state(SupportStates.selecting_key_context)
-        
-        # Show key context selection with keyboard
+
         await show_key_context_selection(
             chat_id=chat_id,
             user_id=user_id,
@@ -804,10 +876,10 @@ async def process_problem_description(
             session=session,
             messenger_adapter=messenger_adapter
         )
-    
+
     except Exception as e:
         logger.error(
-            f"Error processing problem description: chat_id={chat_id}, error={e}",
+            f"Error handling support description next: chat_id={chat_id}, error={e}",
             exc_info=True
         )
         await messenger_adapter.send_message(
@@ -1191,10 +1263,14 @@ async def handle_key_context_callback(
             
             await context.set_state(SupportStates.entering_problem)
             
+            # Check if user already has content from a previous visit to this step
+            ctx_data = await context.get_data()
+            has_content = bool(ctx_data.get("problem_description")) or bool(ctx_data.get("attachments"))
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=SUPPORT_CREATE_TICKET,
-                keyboard=get_problem_description_keyboard(),
+                keyboard=get_problem_description_keyboard(has_content=has_content),
                 parse_mode="HTML"
             )
         
@@ -1432,7 +1508,7 @@ async def _forward_attachments_to_staff(
     messenger_adapter: MAXMessengerAdapter,
     session: AsyncSession,
     ticket_id: int,
-    staff_chat_id: int,
+    staff_id: int,
     attachments: list,
     user_name: str
 ) -> None:
@@ -1441,11 +1517,25 @@ async def _forward_attachments_to_staff(
 
     Called after send_staff_notification to deliver files that were attached
     by the client during the support flow description step.
+
+    Resolves chat_id via get_staff_chat_id (Staff_Member.max_chat_id first,
+    then MAX_Messenger_Data fallback).
     """
     import uuid
     from pathlib import Path
+    from bots.max_bot.utils.staff_chat_resolver import get_staff_chat_id
 
     if not attachments:
+        return
+
+    # Resolve chat_id with proper fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+    staff_chat_id = await get_staff_chat_id(session, staff_id)
+
+    if not staff_chat_id:
+        logger.warning(
+            f"No MAX chat_id found for staff: staff_id={staff_id}, "
+            f"skipping attachment forwarding for ticket_id={ticket_id}"
+        )
         return
 
     caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
@@ -1686,11 +1776,12 @@ async def create_support_ticket(
             f"has_support_staff={has_support_staff}"
         )
         
-        # Save attachments to DB so Celery queue task can forward them in non-working hours
-        if attachments:
+        # Save description and attachments to DB so they appear in ticket history
+        # and Celery queue task can forward attachments in non-working hours
+        if problem_description or attachments:
             logger.info(
                 f"Calling save_initial_ticket_attachments: ticket_id={ticket.id}, "
-                f"user_id={user_id}, attachments_count={len(attachments)}, attachments={attachments}"
+                f"user_id={user_id}, attachments_count={len(attachments)}, has_description={bool(problem_description)}"
             )
             try:
                 from services.ticket_service import save_initial_ticket_attachments
@@ -1699,12 +1790,13 @@ async def create_support_ticket(
                     ticket_id=ticket.id,
                     user_id=user_id,
                     attachments=attachments,
+                    description=problem_description,
                 )
                 await session.commit()
-                logger.info(f"Successfully saved and committed attachments for ticket_id={ticket.id}")
+                logger.info(f"Successfully saved and committed ticket data for ticket_id={ticket.id}")
             except Exception as e:
                 logger.error(
-                    f"Failed to save initial attachments for support ticket: "
+                    f"Failed to save initial ticket data for support ticket: "
                     f"ticket_id={ticket.id}, error={e}",
                     exc_info=True
                 )
@@ -2003,12 +2095,12 @@ async def create_support_ticket(
         
         # Forward attachments to all notified staff (if any)
         if attachments and work_mode != WorkMode.NON_WORKING:
-            from database.models import MAX_Messenger_Data, Staff_Member, StaffRole
+            from database.models import Staff_Member, StaffRole
             from sqlalchemy import select as sa_select, and_ as sa_and_
-            
+
             # Collect staff IDs that were notified
             notified_staff_ids: list[int] = []
-            
+
             if work_mode == WorkMode.REGULAR:
                 if has_support_staff:
                     stmt = sa_select(Staff_Member).where(
@@ -2025,32 +2117,16 @@ async def create_support_ticket(
             elif work_mode == WorkMode.EXTENDED:
                 if assigned_staff_id:
                     notified_staff_ids = [assigned_staff_id]
-            
+
             user_name = user.full_name or user.phone_number or "Клиент"
-            
+
             for sid in notified_staff_ids:
                 try:
-                    stmt_staff = sa_select(Staff_Member).where(Staff_Member.id == sid)
-                    res_staff = await session.execute(stmt_staff)
-                    staff_member = res_staff.scalar_one_or_none()
-                    
-                    if not staff_member or not staff_member.max_user_id:
-                        continue
-                    
-                    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
-                        MAX_Messenger_Data.max_user_id == staff_member.max_user_id
-                    )
-                    res_chat = await session.execute(stmt_chat)
-                    staff_chat_id = res_chat.scalar_one_or_none()
-                    
-                    if not staff_chat_id:
-                        continue
-                    
                     await _forward_attachments_to_staff(
                         messenger_adapter=messenger_adapter,
                         session=session,
                         ticket_id=ticket.id,
-                        staff_chat_id=staff_chat_id,
+                        staff_id=sid,
                         attachments=attachments,
                         user_name=user_name
                     )

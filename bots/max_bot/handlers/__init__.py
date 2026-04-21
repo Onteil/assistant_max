@@ -106,6 +106,9 @@ from bots.max_bot.payloads import (
     ConsultationKeyTogglePayload,
     ConsultationKeyPagePayload,
     ConsultationKeyActionPayload,
+    InvoiceDescriptionNextPayload,
+    SupportDescriptionNextPayload,
+    ConsultationDescriptionNextPayload,
 )
 from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates
 
@@ -132,6 +135,7 @@ from .tickets.invoice import (
     process_email,
     cancel_add_new_inn,
     cancel_add_new_key,
+    handle_invoice_description_next,
 )
 from .tickets.support import (
     cmd_support,
@@ -140,6 +144,7 @@ from .tickets.support import (
     process_problem_description,
     process_new_key_for_support,
     cancel_support_flow,
+    handle_support_description_next,
 )
 from .tickets.consultation import (
     cmd_consultation,
@@ -154,6 +159,7 @@ from .tickets.consultation import (
     process_consultation_description,
     cancel_consultation_add_inn,
     cancel_consultation_add_key,
+    handle_consultation_description_next,
 )
 from .user.archive import (
     handle_client_archive_button,
@@ -1407,7 +1413,13 @@ def create_tickets_router() -> Router:
     tickets_router.message_created(
         InvoiceStates.entering_description
     )(process_description)
-    
+
+    # Handler for "Далее" button in description step
+    tickets_router.message_callback(
+        InvoiceDescriptionNextPayload.filter(),
+        InvoiceStates.entering_description
+    )(handle_invoice_description_next)
+
     # Handler for entering email
     tickets_router.message_created(
         F.message.body.text,
@@ -1446,21 +1458,9 @@ def create_tickets_router() -> Router:
     tickets_router.message_callback(KeyContextActionPayload.filter())(handle_key_context_callback)
     
     # Cancel callback handler for support flow (only in support states)
-    # Import SupportStates for state filtering
-    tickets_router.message_callback(
-        F.callback.payload == '{"action": "cancel"}',
-        SupportStates.entering_problem
-    )(cancel_support_flow)
-    
-    tickets_router.message_callback(
-        F.callback.payload == '{"action": "cancel"}',
-        SupportStates.selecting_key_context
-    )(cancel_support_flow)
-    
-    tickets_router.message_callback(
-        F.callback.payload == '{"action": "cancel"}',
-        SupportStates.adding_new_key
-    )(cancel_support_flow)
+    # Cancel is handled inside handle_key_context_callback (action == "cancel")
+    # which calls cancel_support_flow. The old string-match registrations below
+    # were dead code (payload format is "key_ctx_action|cancel", not JSON).
     
     # ========== Support Flow Message Handlers ==========
     
@@ -1468,6 +1468,12 @@ def create_tickets_router() -> Router:
     tickets_router.message_created(
         SupportStates.entering_problem
     )(process_problem_description)
+
+    # Handler for "Далее" button in support description step
+    tickets_router.message_callback(
+        SupportDescriptionNextPayload.filter(),
+        SupportStates.entering_problem
+    )(handle_support_description_next)
     
     # Handler for adding new key in support flow
     tickets_router.message_created(
@@ -1504,6 +1510,12 @@ def create_tickets_router() -> Router:
     tickets_router.message_created(
         ConsultationStates.entering_description
     )(process_consultation_description)
+
+    # Handler for "Далее" button in consultation description step
+    tickets_router.message_callback(
+        ConsultationDescriptionNextPayload.filter(),
+        ConsultationStates.entering_description
+    )(handle_consultation_description_next)
 
     # Cancel handlers for consultation add-new substeps (return to previous screen, not main menu)
     tickets_router.message_callback(

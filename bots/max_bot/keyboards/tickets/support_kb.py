@@ -13,6 +13,7 @@ from bots.max_bot.payloads import (
     KeyContextTogglePayload,
     KeyContextPagePayload,
     KeyContextActionPayload,
+    SupportDescriptionNextPayload,
 )
 
 # Константы для пагинации
@@ -148,28 +149,39 @@ def get_key_context_keyboard(
     return Keyboard(buttons=buttons, inline=True)
 
 
-def get_problem_description_keyboard() -> Keyboard:
+def get_problem_description_keyboard(has_content: bool = False) -> Keyboard:
     """
     Создает клавиатуру для шага ввода описания проблемы.
-    
-    Предоставляет кнопки "Пропустить" и "Отмена".
-    
+
+    Если пользователь уже ввёл текст или прикрепил файлы (has_content=True),
+    показывает кнопку «➡️ Далее» для перехода к следующему шагу.
+    Иначе показывает только «Пропустить» и «Отмена».
+
+    Args:
+        has_content: True если пользователь уже ввёл описание или вложения
+
     Returns:
         Keyboard с навигационными кнопками
-    
+
     Requirements: 7.2, 7.3
     """
-    buttons = [
-        [KeyboardButton(
-            text="⏭️️ Пропустить",
-            payload=KeyContextActionPayload(action="skip_description").pack()
-        )],
-        [KeyboardButton(
-            text="❌ Отмена",
-            payload=KeyContextActionPayload(action="cancel").pack()
-        )]
-    ]
-    
+    buttons = []
+
+    if has_content:
+        buttons.append([KeyboardButton(
+            text="➡️ Далее",
+            payload=SupportDescriptionNextPayload().pack()
+        )])
+
+    buttons.append([KeyboardButton(
+        text="⏭️️ Пропустить",
+        payload=KeyContextActionPayload(action="skip_description").pack()
+    )])
+    buttons.append([KeyboardButton(
+        text="❌ Отмена",
+        payload=KeyContextActionPayload(action="cancel").pack()
+    )])
+
     return Keyboard(buttons=buttons, inline=True)
 
 

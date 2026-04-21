@@ -18,6 +18,7 @@ from bots.max_bot.payloads import (
     KeyActionPayload,
     DeliveryMethodPayload,
     EmailConfirmPayload,
+    InvoiceDescriptionNextPayload,
 )
 
 # Константы для пагинации
@@ -270,34 +271,45 @@ def get_invoice_confirmation_keyboard() -> Keyboard:
     return Keyboard(buttons=buttons, inline=True)
 
 
-def get_description_input_keyboard() -> Keyboard:
+def get_description_input_keyboard(has_content: bool = False) -> Keyboard:
     """
     Создает клавиатуру для шага ввода описания.
-    
-    Предоставляет кнопки "Пропустить", "Назад" и "Отмена".
-    
+
+    Если пользователь уже ввёл текст или прикрепил файлы (has_content=True),
+    показывает кнопку «➡️ Далее» для перехода к следующему шагу.
+    Иначе показывает только «Пропустить», «Назад» и «Отмена».
+
+    Args:
+        has_content: True если пользователь уже ввёл описание или вложения
+
     Returns:
         Keyboard с навигационными кнопками
-    
+
     Requirements: 7.2, 7.3
     """
-    buttons = [
-        [KeyboardButton(
-            text="⏭️️ Пропустить",
-            payload=KeyActionPayload(action="skip_description").pack()
-        )],
-        [
-            KeyboardButton(
-                text="⬅️ Назад",
-                payload=KeyActionPayload(action="back_to_keys").pack()
-            ),
-            KeyboardButton(
-                text="❌ Отмена",
-                payload=KeyActionPayload(action="cancel").pack()
-            )
-        ]
-    ]
-    
+    buttons = []
+
+    if has_content:
+        buttons.append([KeyboardButton(
+            text="➡️ Далее",
+            payload=InvoiceDescriptionNextPayload().pack()
+        )])
+
+    buttons.append([KeyboardButton(
+        text="⏭️️ Пропустить",
+        payload=KeyActionPayload(action="skip_description").pack()
+    )])
+    buttons.append([
+        KeyboardButton(
+            text="⬅️ Назад",
+            payload=KeyActionPayload(action="back_to_keys").pack()
+        ),
+        KeyboardButton(
+            text="❌ Отмена",
+            payload=KeyActionPayload(action="cancel").pack()
+        )
+    ])
+
     return Keyboard(buttons=buttons, inline=True)
 
 

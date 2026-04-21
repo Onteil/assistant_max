@@ -33,6 +33,7 @@ from bots.max_bot.payloads import (
     ConsultationOrgActionPayload,
     ConsultationOrgPagePayload,
     ConsultationOrgSelectPayload,
+    ConsultationDescriptionNextPayload,
 )
 from bots.max_bot.states import ConsultationStates
 from bots.max_bot.texts import (
@@ -619,7 +620,10 @@ async def handle_consultation_key_action(
 
     elif payload.action in ("done", "skip"):
         await context.set_state(ConsultationStates.entering_description)
-        keyboard = get_consultation_description_keyboard()
+        # Check if user already has content from a previous visit to this step
+        ctx_data = await context.get_data()
+        has_content = bool(ctx_data.get("description")) or bool(ctx_data.get("attachments"))
+        keyboard = get_consultation_description_keyboard(has_content=has_content)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=CONSULTATION_ENTER_DESCRIPTION,
@@ -794,32 +798,26 @@ async def _forward_attachments_to_staff(
     Forward FSM attachments (photo/voice/document) to a staff member's chat.
 
     Called after send_staff_notification to deliver files attached by the client
-    during the consultation description step. Mirrors invoice._forward_attachments_to_staff.
+    during the consultation description step.
+
+    Resolves chat_id via get_staff_chat_id (Staff_Member.max_chat_id first,
+    then MAX_Messenger_Data fallback).
     """
     import uuid
     from pathlib import Path
-    from database.models import Staff_Member, MAX_Messenger_Data
-    from sqlalchemy import select as sa_select
+    from bots.max_bot.utils.staff_chat_resolver import get_staff_chat_id
 
     if not attachments:
         return
 
-    stmt_staff = sa_select(Staff_Member).where(Staff_Member.id == staff_id)
-    res_staff = await session.execute(stmt_staff)
-    staff_member = res_staff.scalar_one_or_none()
-
-    if not staff_member or not staff_member.max_user_id:
-        logger.warning(f"Staff member not found or no MAX ID: staff_id={staff_id}")
-        return
-
-    stmt_chat = sa_select(MAX_Messenger_Data.max_chat_id).where(
-        MAX_Messenger_Data.max_user_id == staff_member.max_user_id
-    )
-    res_chat = await session.execute(stmt_chat)
-    staff_chat_id = res_chat.scalar_one_or_none()
+    # Resolve chat_id with proper fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+    staff_chat_id = await get_staff_chat_id(session, staff_id)
 
     if not staff_chat_id:
-        logger.warning(f"No MAX chat_id for staff: staff_id={staff_id}")
+        logger.warning(
+            f"No MAX chat_id found for staff: staff_id={staff_id}, "
+            f"skipping attachment forwarding for ticket_id={ticket_id}"
+        )
         return
 
     caption = f"📎 Вложение к заявке #{ticket_id} от {user_name}"
@@ -913,20 +911,19 @@ async def process_consultation_description(
     messenger_adapter: MAXMessengerAdapter,
 ) -> None:
     """
-    Process description input (text, photo, voice, document) and create consultation ticket.
+    Process description input (text, photo, voice, document).
 
-    Handles attachments the same way as invoice flow:
-    - Accumulates attachments in FSM context across multiple messages
-    - Saves attachments to DB via save_initial_ticket_attachments
-    - Forwards attachments to notified specialists after ticket creation
+    Accumulates description and attachments in FSM context across multiple messages.
+    Shows updated keyboard with "Далее" button after first message received.
+    User must click "Далее" to proceed to ticket creation.
     """
     chat_id = event.message.recipient.chat_id
-    max_user_id = event.message.sender.user_id
 
     try:
         # Get existing attachments from context
         data = await context.get_data()
         attachments = data.get("attachments") or []
+        has_description = bool(data.get("description"))
 
         # Handle text message
         if event.message.body and event.message.body.text:
@@ -936,13 +933,17 @@ async def process_consultation_description(
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
                     text=ERROR_TEXT_TOO_LONG.format(max_length=4000, actual_length=len(description)),
-                    keyboard=get_consultation_description_keyboard(),
+                    keyboard=get_consultation_description_keyboard(has_content=has_description or bool(attachments)),
                     parse_mode="HTML",
                 )
                 return
 
-            await context.update_data(description=description)
-            logger.info(f"Consultation description stored: chat_id={chat_id}, length={len(description)}")
+            # Append to existing description (user may send multiple messages)
+            existing_description = data.get("description") or ""
+            combined = (existing_description + "\n" + description).strip() if existing_description else description
+            await context.update_data(description=combined)
+            has_description = True
+            logger.info(f"Consultation description stored: chat_id={chat_id}, length={len(combined)}")
 
         # Handle attachments (photo, voice, document)
         if event.message.body and event.message.body.attachments:
@@ -982,19 +983,73 @@ async def process_consultation_description(
 
             await context.update_data(attachments=attachments)
 
-        # Check if we have description or attachments to proceed
-        updated_data = await context.get_data()
-        description = updated_data.get("description")
-        if not description and not attachments:
+        # Check if we received any content
+        has_content = has_description or bool(attachments)
+
+        if has_content:
+            # Show confirmation with updated keyboard (now with "Далее" button)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="✅ Принято. Можете добавить ещё сообщения или нажмите «Далее» для продолжения.",
+                keyboard=get_consultation_description_keyboard(has_content=True),
+                parse_mode="HTML",
+            )
+        else:
             # Nothing received yet — wait for more input
+            logger.info(f"No content received yet: chat_id={chat_id}")
+
+    except Exception as e:
+        logger.error(f"Error processing consultation description: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML"
+        )
+
+
+async def handle_consultation_description_next(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle "Далее" button click in consultation description step.
+
+    Creates consultation ticket after user confirms they are done
+    entering description and attachments.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Consultation description next: chat_id={chat_id}")
+
+    try:
+        data = await context.get_data()
+        attachments = data.get("attachments") or []
+        description = data.get("description")
+
+        if not description and not attachments:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Пожалуйста, введите описание или прикрепите файл перед тем как продолжить.",
+                keyboard=get_consultation_description_keyboard(has_content=False),
+                parse_mode="HTML",
+            )
             return
 
-        selected_inn = updated_data.get("selected_inn")
-        selected_keys = updated_data.get("selected_keys", [])
+        selected_inn = data.get("selected_inn")
+        selected_keys = data.get("selected_keys", [])
 
         user_id = await _get_user_id(context, max_user_id, session, chat_id, messenger_adapter)
         if not user_id:
             return
+
+        # Delete old message with buttons
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete consultation description message: {e}")
 
         # Clear FSM state before DB operations so it's not left dirty on error
         await context.clear()
@@ -1020,8 +1075,9 @@ async def process_consultation_description(
             f"work_mode={work_mode.value}"
         )
 
-        # Save attachments to DB so Celery queue task can forward them in non-working hours
-        if attachments:
+        # Save description and attachments to DB so they appear in ticket history
+        # and Celery queue task can forward attachments in non-working hours
+        if description or attachments:
             try:
                 from services.ticket_service import save_initial_ticket_attachments
                 await save_initial_ticket_attachments(
@@ -1029,12 +1085,16 @@ async def process_consultation_description(
                     ticket_id=ticket.id,
                     user_id=user_id,
                     attachments=attachments,
+                    description=description,
                 )
                 await session.commit()
-                logger.info(f"Saved {len(attachments)} attachments for consultation ticket {ticket.id}")
+                logger.info(
+                    f"Saved ticket data for consultation ticket {ticket.id}: "
+                    f"attachments={len(attachments)}, has_description={bool(description)}"
+                )
             except Exception as e:
                 logger.error(
-                    f"Failed to save attachments for consultation ticket {ticket.id}: {e}",
+                    f"Failed to save ticket data for consultation ticket {ticket.id}: {e}",
                     exc_info=True,
                 )
 
@@ -1049,7 +1109,6 @@ async def process_consultation_description(
             )
 
         # Schedule escalation monitoring (same as TECHNICAL_SUPPORT)
-        # Only in REGULAR/EXTENDED modes — NON_WORKING tickets wait without escalation
         if is_working:
             try:
                 from celery_app.escalation_tasks import schedule_technical_support_monitoring

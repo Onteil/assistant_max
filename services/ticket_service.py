@@ -3218,8 +3218,10 @@ async def save_initial_ticket_attachments(
     """
     Save FSM attachments to File_Attachment table for a newly created ticket.
 
-    Creates a system message with attachments so they appear in ticket history.
-    Also saves attachments directly to ticket for Celery queue task forwarding.
+    Creates a user message for description text (if provided) so it appears in
+    ticket history. Creates a system message with attachments so they appear in
+    ticket history. Also saves attachments directly to ticket for Celery queue
+    task forwarding.
 
     Args:
         session: Database session (caller must commit after this call)
@@ -3227,9 +3229,31 @@ async def save_initial_ticket_attachments(
         user_id: Internal user ID (uploader)
         attachments: List of attachment dicts from FSM context:
             {"type": "image"|"voice"|"document"|"file", "url": str, "file_name": str|None}
-        description: Optional ticket description (unused, kept for API symmetry)
+        description: Optional ticket description text — saved as a USER message in history
     """
     from database.models import File_Attachment, FileType, UploaderType, Message, MessageType, SenderType
+
+    logger.info(
+        f"Saving initial ticket data: ticket_id={ticket_id}, "
+        f"attachments={len(attachments)}, has_description={bool(description)}"
+    )
+
+    # Save description text as a USER message so it appears in ticket history
+    if description and description.strip():
+        desc_message = Message(
+            ticket_id=ticket_id,
+            sender_type=SenderType.USER,
+            sender_id=user_id,
+            message_text=description.strip(),
+            message_type=MessageType.TEXT,
+            sent_at=get_moscow_now_naive()
+        )
+        session.add(desc_message)
+        await session.flush()
+        logger.info(
+            f"Saved description as user message: ticket_id={ticket_id}, "
+            f"message_id={desc_message.id}, length={len(description)}"
+        )
 
     if not attachments:
         logger.debug(f"No attachments to save for ticket_id={ticket_id}")

@@ -487,6 +487,37 @@ class ConsultationKeyActionPayload(CallbackPayload, prefix='cons_key_action'):
 
 
 # ============================================================================
+# Description "Next" Button Payloads
+# ============================================================================
+
+class InvoiceDescriptionNextPayload(CallbackPayload, prefix='inv_desc_next'):
+    """Payload for "Next" button in invoice description step.
+
+    Used when user clicks "Далее" after entering description/attachments.
+    No additional fields needed - action-only callback.
+    """
+    pass
+
+
+class SupportDescriptionNextPayload(CallbackPayload, prefix='sup_desc_next'):
+    """Payload for "Next" button in support description step.
+
+    Used when user clicks "Далее" after entering problem description/attachments.
+    No additional fields needed - action-only callback.
+    """
+    pass
+
+
+class ConsultationDescriptionNextPayload(CallbackPayload, prefix='cons_desc_next'):
+    """Payload for "Next" button in consultation description step.
+
+    Used when user clicks "Далее" after entering consultation description/attachments.
+    No additional fields needed - action-only callback.
+    """
+    pass
+
+
+# ============================================================================
 # Registration Payloads
 # ============================================================================
 

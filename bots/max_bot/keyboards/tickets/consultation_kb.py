@@ -15,6 +15,7 @@ from bots.max_bot.payloads import (
     ConsultationOrgActionPayload,
     ConsultationOrgPagePayload,
     ConsultationOrgSelectPayload,
+    ConsultationDescriptionNextPayload,
 )
 
 ITEMS_PER_PAGE = 7
@@ -156,27 +157,40 @@ def get_consultation_key_selection_keyboard(
     return Keyboard(buttons=buttons, inline=True)
 
 
-def get_consultation_description_keyboard() -> Keyboard:
+def get_consultation_description_keyboard(has_content: bool = False) -> Keyboard:
     """
     Создает клавиатуру для шага ввода описания вопроса консультации.
+
+    Если пользователь уже ввёл текст или прикрепил файлы (has_content=True),
+    показывает кнопку «➡️ Далее» для перехода к следующему шагу.
+    Иначе показывает только «Пропустить», «Назад» и «Отмена».
+
+    Args:
+        has_content: True если пользователь уже ввёл описание или вложения
 
     Returns:
         Keyboard с навигационными кнопками
     """
-    buttons = [
-        [KeyboardButton(
-            text="⏭️️ Пропустить",
-            payload=ConsultationKeyActionPayload(action="skip_description").pack()
-        )],
-        [
-            KeyboardButton(
-                text="⬅️ Назад",
-                payload=ConsultationKeyActionPayload(action="back_to_keys").pack()
-            ),
-            KeyboardButton(
-                text="❌ Отмена",
-                payload=ConsultationKeyActionPayload(action="cancel").pack()
-            )
-        ]
-    ]
+    buttons = []
+
+    if has_content:
+        buttons.append([KeyboardButton(
+            text="➡️ Далее",
+            payload=ConsultationDescriptionNextPayload().pack()
+        )])
+
+    buttons.append([KeyboardButton(
+        text="⏭️️ Пропустить",
+        payload=ConsultationKeyActionPayload(action="skip_description").pack()
+    )])
+    buttons.append([
+        KeyboardButton(
+            text="⬅️ Назад",
+            payload=ConsultationKeyActionPayload(action="back_to_keys").pack()
+        ),
+        KeyboardButton(
+            text="❌ Отмена",
+            payload=ConsultationKeyActionPayload(action="cancel").pack()
+        )
+    ])
     return Keyboard(buttons=buttons, inline=True)

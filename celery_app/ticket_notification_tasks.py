@@ -377,20 +377,10 @@ async def _process_invoice_ticket(
             # Forward attachments to manager
             if ticket.file_attachments:
                 try:
-                    from database.models import MAX_Messenger_Data
-                    from sqlalchemy import select as _select
-                    from database.models import Staff_Member as _Staff
-                    stmt_s = _select(_Staff).where(_Staff.id == ticket.assigned_staff_id)
-                    res_s = await session.execute(stmt_s)
-                    staff = res_s.scalar_one_or_none()
-                    if staff and staff.max_user_id:
-                        stmt_c = _select(MAX_Messenger_Data.max_chat_id).where(
-                            MAX_Messenger_Data.max_user_id == staff.max_user_id
-                        )
-                        res_c = await session.execute(stmt_c)
-                        staff_chat_id = res_c.scalar_one_or_none()
-                        if staff_chat_id:
-                            await _forward_ticket_attachments(ticket, staff_chat_id, max_bot, session)
+                    from bots.max_bot.utils.staff_chat_resolver import get_staff_chat_id
+                    staff_chat_id = await get_staff_chat_id(session, ticket.assigned_staff_id)
+                    if staff_chat_id:
+                        await _forward_ticket_attachments(ticket, staff_chat_id, max_bot, session)
                 except Exception as e:
                     logger.error(
                         f"Failed to forward attachments for invoice ticket {ticket.id}: {e}",
