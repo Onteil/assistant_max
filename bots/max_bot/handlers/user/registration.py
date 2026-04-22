@@ -567,14 +567,23 @@ async def process_full_name(
         
         # Transition to email collection state
         await context.set_state(RegistrationStates.waiting_for_email)
+        logger.info(f"State set to waiting_for_email for user_id={user_id}, chat_id={chat_id}")
         
         # Send email request
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=REGISTRATION_ENTER_EMAIL,
-            keyboard=get_skip_keyboard(),
-            parse_mode="HTML"
-        )
+        try:
+            message_id = await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=REGISTRATION_ENTER_EMAIL,
+                keyboard=get_skip_keyboard(),
+                parse_mode="HTML"
+            )
+            logger.info(f"Email request sent successfully: user_id={user_id}, message_id={message_id}")
+        except Exception as send_error:
+            logger.error(
+                f"Failed to send email request: user_id={user_id}, chat_id={chat_id}, error={send_error}",
+                exc_info=True
+            )
+            raise
     
     except SQLAlchemyError as e:
         logger.error(

@@ -260,11 +260,12 @@ async def registration_status_webhook(
                     expiration_date_aware = expiration_date
                     expiration_date = expiration_date.replace(tzinfo=None)
                 else:
+                    from datetime import timezone as tz
                     expiration_date_aware = expiration_date.replace(tzinfo=tz.utc)
                 
                 user.subscription_end_date = expiration_date
                 
-                if expiration_date_aware < now_utc:
+                if expiration_date_aware.replace(tzinfo=None) < now_moscow:
                     user.subscription_status = SubscriptionStatus.EXPIRED
                     logger.warning(
                         f"Support expiration date {expiration_date} is in the past. "
@@ -408,7 +409,7 @@ async def registration_status_webhook(
             
             error_type = f"HTTP {http_exc.status_code}"
             error_details = http_exc.detail
-            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}, decision={payload.decision}"
+            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}, status={payload.status}"
             
             await notify_admins_webhook_error(
                 session=session,
@@ -430,7 +431,7 @@ async def registration_status_webhook(
             
             error_type = type(e).__name__
             error_details = str(e)
-            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}, decision={payload.decision}"
+            payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}, status={payload.status}"
             
             await notify_admins_webhook_error(
                 session=session,

@@ -30,6 +30,8 @@ api_router.include_router(escalation_test_router, tags=["api"])
 api_router.include_router(nps_webhooks_router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(renewal_webhooks_router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(registration_webhooks_router, prefix="/webhooks", tags=["webhooks"])
+# Alias without /webhooks prefix for backward compatibility with 1C CRM
+api_router.include_router(registration_webhooks_router, tags=["webhooks"])
 api_router.include_router(user_update_webhooks_router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(manager_assignment_webhooks_router, prefix="/webhooks", tags=["webhooks"])
 api_router.include_router(staff_update_webhooks_router, prefix="/webhooks", tags=["webhooks"])
