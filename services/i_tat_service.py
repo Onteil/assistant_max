@@ -74,7 +74,12 @@ class ITatAPIClient:
         # Предварительно: 1) подключиться к PPTP VPN (ITAT_VPN_HOST)
         #                  2) запустить туннель: ssh -D <port> -N <login>@<ssh_host>
         client_kwargs: dict[str, Any] = {
-            "timeout": 30.0,
+            # Separate connect and read timeouts:
+            # - connect: 5s (server should accept connection quickly)
+            # - read: 15s (1C/CRM can be slow but shouldn't hang forever)
+            # - write: 5s
+            # - pool: 5s
+            "timeout": httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
             "auth": (self.username, self.password),
             "headers": {"Content-Type": "application/json"},
         }
