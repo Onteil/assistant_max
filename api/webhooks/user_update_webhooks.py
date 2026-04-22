@@ -402,39 +402,37 @@ async def user_update_webhook(
         
         # Process GS_Keys updates
         if payload.gs_keys:
+            from services.user_service import KeyConflictError, KeyAlreadyOwnedByUserError, add_user_key
+
             for key_update in payload.gs_keys:
                 if key_update.action == "add":
-                    # Check if key already exists
-                    stmt_key = select(GS_Key).where(GS_Key.key_number == key_update.key_number)
-                    result_key = await session.execute(stmt_key)
-                    existing_key = result_key.scalar_one_or_none()
-                    
-                    if existing_key:
-                        # Update owner if key exists and belongs to different user
-                        if existing_key.user_id != user.id:
-                            logger.warning(
-                                f"GS_Key {key_update.key_number} already exists for user {existing_key.user_id}. "
-                                f"Reassigning to user {user.id}."
-                            )
-                            existing_key.user_id = user.id
-                            existing_key.conflict_status = KeyConflictStatus.NONE
-                            updates_applied["gs_keys_added"] += 1
-                        else:
-                            # Key already belongs to this user - skip
-                            logger.info(
-                                f"GS_Key {key_update.key_number} already belongs to user {user.id}. "
-                                f"Skipping duplicate add operation."
-                            )
-                    else:
-                        # Create new key
-                        new_key = GS_Key(
-                            key_number=key_update.key_number,
-                            user_id=user.id,
-                            conflict_status=KeyConflictStatus.NONE,
-                        )
-                        session.add(new_key)
+                    try:
+                        await add_user_key(session, user.id, key_update.key_number)
                         updates_applied["gs_keys_added"] += 1
                         logger.info(f"Added GS_Key {key_update.key_number} to user {user.id}")
+
+                    except KeyAlreadyOwnedByUserError:
+                        # Key already belongs to this user — idempotent, skip silently
+                        logger.info(
+                            f"GS_Key {key_update.key_number} already belongs to user {user.id}. "
+                            f"Skipping duplicate add operation."
+                        )
+
+                    except KeyConflictError as conflict_err:
+                        # Key belongs to another user — mark PENDING_REVIEW (done inside add_user_key)
+                        # and notify admins
+                        logger.warning(
+                            f"Key conflict detected via CRM webhook: key={key_update.key_number}, "
+                            f"new_user_id={user.id}, existing_user_id={conflict_err.existing_user_id}"
+                        )
+                        try:
+                            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
+                            await notify_admins_key_conflict(session, user.id, key_update.key_number)
+                        except Exception as notify_err:
+                            logger.error(
+                                f"Failed to send key conflict notification: {notify_err}",
+                                exc_info=True
+                            )
                 
                 elif key_update.action == "remove":
                     # Find and remove key
