@@ -682,25 +682,25 @@ async def handle_escalation_reassign_confirm(
         
         # Send notification to assigned staff with full ticket details
         try:
-            # Get chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
-            chat_id = staff.max_chat_id
+            # Get staff_chat_id: first from Staff_Member, then fallback to MAX_Messenger_Data
+            staff_chat_id = staff.max_chat_id
             
             # If not found in Staff_Member, try MAX_Messenger_Data table
-            if not chat_id and staff.max_user_id:
+            if not staff_chat_id and staff.max_user_id:
                 from database.models import MAX_Messenger_Data
                 stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
                     MAX_Messenger_Data.max_user_id == staff.max_user_id
                 )
                 result_chat = await session.execute(stmt_chat)
-                chat_id = result_chat.scalar_one_or_none()
+                staff_chat_id = result_chat.scalar_one_or_none()
                 
-                if chat_id:
+                if staff_chat_id:
                     logger.info(
                         f"Found chat_id in MAX_Messenger_Data for staff {staff.id} "
-                        f"(max_user_id={staff.max_user_id}): chat_id={chat_id}"
+                        f"(max_user_id={staff.max_user_id}): chat_id={staff_chat_id}"
                     )
             
-            if chat_id:
+            if staff_chat_id:
                 # Build notification message with ticket details
                 ticket_type_names = {
                     TicketType.INVOICE: "📄 Запрос счета",
@@ -792,7 +792,7 @@ async def handle_escalation_reassign_confirm(
                 )
                 
                 await messenger_adapter.send_message(
-                    chat_id=chat_id,
+                    chat_id=staff_chat_id,
                     text=notification_text,
                     keyboard=keyboard,
                     parse_mode="HTML"
@@ -814,35 +814,14 @@ async def handle_escalation_reassign_confirm(
                 exc_info=True
             )
         
-        # Success message
-        message_text = (
-            f"✅ <b>Эскалация разрешена</b>\n\n"
-            f"Заявка #{ticket.id} переназначена на {staff.full_name}."
-        )
-        
-        # Back button
-        keyboard = Keyboard(
-            buttons=[
-                [
-                    KeyboardButton(
-                        text="◀️ К списку эскалаций",
-                        payload=EscalationPayload(action="list").pack()
-                    )
-                ]
-            ],
-            inline=True
-        )
-        
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
-        
         logger.info(
             f"Administrator {max_user_id} reassigned escalation {escalation_id} "
             f"to staff {staff_id}"
+        )
+
+        # Return directly to escalation list
+        await handle_escalations_list(
+            event, OperationsMenuPayload(action="escalations"), context, session, messenger_adapter
         )
         
     except Exception as e:
