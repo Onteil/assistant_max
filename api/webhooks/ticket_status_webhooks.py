@@ -252,9 +252,13 @@ async def ticket_status_update_webhook(
         # Requirement 4.4: Send notification to user via messenger
         # Get user's messenger-specific ID
         user = ticket.user
-        user_messenger_id = (
-            user.tg_user_id if payload.messenger == "telegram" else user.max_user_id
-        )
+        
+        # For MAX messenger, check if chat_id exists in max_messenger_data
+        if payload.messenger == "max":
+            from api.utils.messenger_utils import get_max_chat_id
+            user_messenger_id = await get_max_chat_id(session, user.id)
+        else:
+            user_messenger_id = user.tg_user_id
         
         if user_messenger_id and new_status_enum in (TicketStatus.CLOSED, TicketStatus.CANCELLED):
             # Build notification text for closed/cancelled statuses only
@@ -303,7 +307,9 @@ async def ticket_status_update_webhook(
                 )
         elif not user_messenger_id:
             logger.warning(
-                f"User {user.id} has no {payload.messenger} user ID, cannot send notification"
+                f"User {user.id} has no MAX chat_id in max_messenger_data, cannot send notification"
+                if payload.messenger == "max"
+                else f"User {user.id} has no telegram user ID, cannot send notification"
             )
         
         # Requirement 4.5: Log status change in Action_Log

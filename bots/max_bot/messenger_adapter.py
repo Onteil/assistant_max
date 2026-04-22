@@ -231,6 +231,9 @@ class MAXMessengerAdapter(IMessengerAdapter):
         """
         self.bot = bot
 
+    # MAX API hard limit for message text
+    MAX_TEXT_LENGTH = 3900
+
     async def send_message(
         self,
         chat_id: int,
@@ -241,6 +244,14 @@ class MAXMessengerAdapter(IMessengerAdapter):
         """Send a message via MAX API."""
         max_keyboard = self._convert_keyboard(keyboard) if keyboard else None
         max_parse_mode = self._convert_parse_mode(parse_mode)
+
+        # Truncate text if it exceeds MAX API limit (4000 chars)
+        if len(text) > self.MAX_TEXT_LENGTH:
+            logger.warning(
+                f"Message text truncated: {len(text)} -> {self.MAX_TEXT_LENGTH} chars "
+                f"(chat_id={chat_id})"
+            )
+            text = text[:self.MAX_TEXT_LENGTH] + "\n\n<i>... (текст обрезан)</i>"
 
         try:
             response = await self.bot.send_message(
