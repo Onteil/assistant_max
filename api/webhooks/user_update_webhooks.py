@@ -476,12 +476,13 @@ async def user_update_webhook(
                             logger.info(f"Created organization {org_update.inn} without name (will be fetched later)")
                         except IntegrityError as integrity_err:
                             # Race condition: organization was created by another transaction
-                            # Rollback this flush and re-fetch the organization
-                            await session.rollback()
+                            # Don't rollback - just re-fetch the organization and continue
                             logger.warning(
                                 f"Organization {org_update.inn} was created by another transaction. "
                                 f"Re-fetching from database."
                             )
+                            # Expire the failed organization object from session
+                            await session.rollback()  # Rollback only the flush, not the entire transaction
                             # Re-fetch organization
                             result_org = await session.execute(stmt_org)
                             organization = result_org.scalar_one_or_none()
@@ -593,13 +594,13 @@ async def user_update_webhook(
         # Notify admins about HTTP errors (validation, not found, etc.) with fresh session
         try:
             from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            from constants import AsyncSessionLocal
             
             error_type = f"HTTP {http_exc.status_code}"
             error_details = http_exc.detail
             payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
             
-            # Use a fresh session for notification since current session is rolled back
-            async with get_session() as notification_session:
+            async with AsyncSessionLocal() as notification_session:
                 await notify_admins_webhook_error(
                     session=notification_session,
                     webhook_name="user_update",
@@ -620,13 +621,13 @@ async def user_update_webhook(
         # Unexpected error - notify admins with fresh session
         try:
             from bots.max_bot.utils.admin_notifications import notify_admins_webhook_error
+            from constants import AsyncSessionLocal
             
             error_type = type(e).__name__
             error_details = str(e)
             payload_summary = f"messenger={payload.messenger}, user_id={payload.user_id}"
             
-            # Use a fresh session for notification since current session is rolled back
-            async with get_session() as notification_session:
+            async with AsyncSessionLocal() as notification_session:
                 await notify_admins_webhook_error(
                     session=notification_session,
                     webhook_name="user_update",
