@@ -781,21 +781,21 @@ async def handle_escalation_reassign_confirm(
                     notification_text += f"\n📝 <b>Описание:</b> <i>Без описания</i>\n"
                 
                 # Build keyboard with "К заявке" button
-                from maxapi.types.attachments.buttons import CallbackButton
-                from maxapi.types.attachments.attachment import ButtonsPayload
-                
-                buttons = [[
-                    CallbackButton(
-                        text="📋 К заявке",
-                        payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
-                    )
-                ]]
+                keyboard = Keyboard(
+                    buttons=[[
+                        KeyboardButton(
+                            text="📋 К заявке",
+                            payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+                        )
+                    ]],
+                    inline=True
+                )
                 
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
                     text=notification_text,
-                    parse_mode="HTML",
-                    attachments=[ButtonsPayload(buttons=buttons).pack()]
+                    keyboard=keyboard,
+                    parse_mode="HTML"
                 )
                 
                 logger.info(
