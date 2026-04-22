@@ -819,6 +819,13 @@ async def handle_escalation_reassign_confirm(
             f"to staff {staff_id}"
         )
 
+        # Success notification before returning to list
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"✅ <b>Заявка #{ticket.id} успешно передана</b> сотруднику {staff.full_name}.",
+            parse_mode="HTML"
+        )
+
         # Return directly to escalation list
         await handle_escalations_list(
             event, OperationsMenuPayload(action="escalations"), context, session, messenger_adapter
@@ -930,33 +937,19 @@ async def handle_escalation_take_over(
         
         await session.commit()
         
-        # Success message
-        message_text = (
-            f"✅ <b>Эскалация разрешена</b>\n\n"
-            f"Заявка #{ticket.id} взята вами в работу."
-        )
-        
-        # Back button
-        keyboard = Keyboard(
-            buttons=[
-                [
-                    KeyboardButton(
-                        text="◀️ К списку эскалаций",
-                        payload=EscalationPayload(action="list").pack()
-                    )
-                ]
-            ],
-            inline=True
-        )
-        
+        logger.info(f"Administrator {max_user_id} took over escalation {escalation_id}")
+
+        # Success notification before returning to list
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=message_text,
-            keyboard=keyboard,
+            text=f"✅ <b>Заявка #{ticket.id} взята вами в работу.</b>",
             parse_mode="HTML"
         )
-        
-        logger.info(f"Administrator {max_user_id} took over escalation {escalation_id}")
+
+        # Return directly to escalation list
+        await handle_escalations_list(
+            event, OperationsMenuPayload(action="escalations"), context, session, messenger_adapter
+        )
         
     except Exception as e:
         logger.error(f"Error taking over escalation: {e}", exc_info=True)
