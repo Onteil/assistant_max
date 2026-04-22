@@ -120,6 +120,7 @@ class ActionType(enum.Enum):
     """Action log type values"""
     TICKET_CREATED = "ticket_created"
     TICKET_ASSIGNED = "ticket_assigned"
+    TICKET_TAKEN = "ticket_taken"
     TICKET_ESCALATED = "ticket_escalated"
     REMINDER_SENT = "reminder_sent"
     ESCALATED = "escalated"

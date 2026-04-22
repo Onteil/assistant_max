@@ -583,16 +583,38 @@ async def handle_employee_role_selection(
             )
             return
         
-        # Create employee record
-        new_employee = Staff_Member(
-            max_user_id=employee_max_id,
-            full_name=employee_name,
-            position=employee_position,
-            staff_role=staff_role,
-            is_active=True,
-            created_at=datetime.utcnow()
+        # Check if staff member with this max_user_id already exists
+        from sqlalchemy import select as sa_select
+        existing_stmt = sa_select(Staff_Member).where(
+            Staff_Member.max_user_id == employee_max_id
         )
-        session.add(new_employee)
+        existing_result = await session.execute(existing_stmt)
+        existing_employee = existing_result.scalar_one_or_none()
+
+        if existing_employee:
+            # Update existing record instead of creating duplicate
+            existing_employee.full_name = employee_name
+            existing_employee.position = employee_position
+            existing_employee.staff_role = staff_role
+            existing_employee.is_active = True
+            existing_employee.updated_at = datetime.utcnow()
+            new_employee = existing_employee
+            logger.info(
+                f"Reactivating existing staff member: max_user_id={employee_max_id}, "
+                f"id={existing_employee.id}"
+            )
+        else:
+            # Create new employee record
+            new_employee = Staff_Member(
+                max_user_id=employee_max_id,
+                full_name=employee_name,
+                position=employee_position,
+                staff_role=staff_role,
+                is_active=True,
+                created_at=datetime.utcnow()
+            )
+            session.add(new_employee)
+
         await session.flush()
         
         # Call i-TAT API to create staff
@@ -728,10 +750,11 @@ async def handle_list_employees(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
-        # Get all active employees
-        stmt = select(Staff_Member).where(
-            Staff_Member.is_active == True
-        ).order_by(Staff_Member.full_name)
+        # Get all employees (active and inactive), active first
+        stmt = select(Staff_Member).order_by(
+            Staff_Member.is_active.desc(),
+            Staff_Member.full_name
+        )
         result = await session.execute(stmt)
         all_employees = result.scalars().all()
         
@@ -750,7 +773,7 @@ async def handle_list_employees(
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="📋 <b>Список сотрудников</b>\n\n<i>Нет активных сотрудников.</i>",
+                text="📋 <b>Список сотрудников</b>\n\n<i>Нет сотрудников.</i>",
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
@@ -765,9 +788,13 @@ async def handle_list_employees(
         end_idx = start_idx + page_size
         page_employees = all_employees[start_idx:end_idx]
         
+        active_count = sum(1 for e in all_employees if e.is_active)
+        inactive_count = len(all_employees) - active_count
+        
         # Build employee list text
         lines = [
             f"📋 <b>Список сотрудников</b> (стр. {page + 1}/{total_pages})\n"
+            f"✅ Активных: {active_count} | ❌ Деактивированных: {inactive_count}\n"
         ]
         
         # Role display names
@@ -785,9 +812,10 @@ async def handle_list_employees(
             }.get(emp.staff_role, "👤")
             
             role_display = role_names.get(emp.staff_role, emp.staff_role.value)
+            status = "✅" if emp.is_active else "❌"
             
             lines.append(
-                f"{role_emoji} <b>{emp.full_name}</b>\n"
+                f"{status} {role_emoji} <b>{emp.full_name}</b>\n"
                 f"   ID: <code>{emp.max_user_id or 'N/A'}</code> | {role_display}"
             )
         
@@ -796,10 +824,11 @@ async def handle_list_employees(
         # Build keyboard with employee buttons and pagination
         buttons = []
         
-        # Employee buttons - mark current user with emoji
+        # Employee buttons
         for emp in page_employees:
             is_current_user = emp.max_user_id == max_user_id
-            button_text = f"👤 {emp.full_name}"
+            status_prefix = "✅" if emp.is_active else "❌"
+            button_text = f"{status_prefix} {emp.full_name}"
             if is_current_user:
                 button_text = f"⭐ {emp.full_name} (Это вы)"
             

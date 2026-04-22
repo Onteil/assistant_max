@@ -585,10 +585,14 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     from utils.timezone_helpers import get_moscow_now_naive
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
-    
+
+    # Get escalation timeout from settings for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+
     notification_text = (
         f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу основным менеджером в течение 10 минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу основным менеджером в течение {timeout_minutes} минут\n\n"
         f"Вы назначены резервным менеджером (Резерв 1).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -613,7 +617,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     
     notification_text += (
         f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
-        f"⚠️ <b>Если не возьмете в работу в течение 10 минут, заявка будет передана следующему резервному менеджеру.</b>"
+        f"⚠️ <b>Если не возьмете в работу в течение {timeout_minutes} минут, заявка будет передана следующему резервному менеджеру.</b>"
     )
     
     # Build keyboard with "Take Over" button
@@ -839,10 +843,15 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     from utils.timezone_helpers import get_moscow_now_naive
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
-    
+
+    # Get escalation timeout from settings for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+    timeout_minutes_2x = int(timeout_minutes) * 2
+
     notification_text = (
         f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу основным и первым резервным менеджером в течение 20 минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу основным и первым резервным менеджером в течение {timeout_minutes_2x} минут\n\n"
         f"Вы назначены вторым резервным менеджером (Резерв 2).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -867,7 +876,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     
     notification_text += (
         f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
-        f"🚨 <b>КРИТИЧНО: Если не возьмете в работу в течение 10 минут, заявка будет эскалирована администраторам!</b>"
+        f"🚨 <b>КРИТИЧНО: Если не возьмете в работу в течение {timeout_minutes} минут, заявка будет эскалирована администраторам!</b>"
     )
     
     # Build keyboard with "Take Over" button
@@ -1658,10 +1667,14 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     from utils.timezone_helpers import get_moscow_now_naive
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
-    
+
+    # Get escalation timeout from settings for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+
     notification_text = (
         f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки в течение 10 минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки в течение {timeout_minutes} минут\n\n"
         f"Вы назначены резервным менеджером (Резерв 1) для одного или нескольких сотрудников техподдержки.\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -1686,7 +1699,7 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     
     notification_text += (
         f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
-        f"⚠️ <b>Если не возьмете в работу в течение 10 минут, заявка будет передана следующему резервному менеджеру.</b>"
+        f"⚠️ <b>Если не возьмете в работу в течение {timeout_minutes} минут, заявка будет передана следующему резервному менеджеру.</b>"
     )
     
     # Build keyboard with "Take Over" button
@@ -1918,10 +1931,15 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     from utils.timezone_helpers import get_moscow_now_naive
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
-    
+
+    # Get escalation timeout from settings for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+    timeout_minutes_2x = int(timeout_minutes) * 2
+
     notification_text = (
         f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки и первыми резервными менеджерами в течение 20 минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу сотрудниками техподдержки и первыми резервными менеджерами в течение {timeout_minutes_2x} минут\n\n"
         f"Вы назначены вторым резервным менеджером (Резерв 2) для одного или нескольких сотрудников техподдержки.\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -1946,7 +1964,7 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     
     notification_text += (
         f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
-        f"🚨 <b>КРИТИЧНО: Если не возьмете в работу в течение 10 минут, заявка будет эскалирована администраторам!</b>"
+        f"🚨 <b>КРИТИЧНО: Если не возьмете в работу в течение {timeout_minutes} минут, заявка будет эскалирована администраторам!</b>"
     )
     
     # Build keyboard with "Take Over" button
