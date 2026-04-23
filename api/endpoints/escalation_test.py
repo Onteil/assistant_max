@@ -377,8 +377,8 @@ async def test_ticket_escalation(
                         logger.error(f"Failed to send test escalation to Telegram manager channel {manager_channel}: {e}", exc_info=True)
                 else:
                     logger.warning(f"Cannot send to manager channel {manager_channel}: bot not available")
-        elif ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
-            # For technical support/consultation tickets, send to duty escalation channels
+        elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
+            # For technical support tickets, send to duty escalation channels
             duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
             for duty_channel in duty_channels:
                 is_max = is_max_chat_id(duty_channel)
@@ -398,6 +398,28 @@ async def test_ticket_escalation(
                         logger.error(f"Failed to send test escalation to Telegram duty channel {duty_channel}: {e}", exc_info=True)
                 else:
                     logger.warning(f"Cannot send to duty channel {duty_channel}: bot not available")
+        
+        elif ticket.ticket_type == TicketType.CONSULTATION:
+            # For consultation tickets, send to consultant escalation channels
+            consultant_channels = await get_escalation_channels(session, "escalation_consultant_channel")
+            for consultant_channel in consultant_channels:
+                is_max = is_max_chat_id(consultant_channel)
+                if is_max and max_bot_instance:
+                    try:
+                        await max_bot_instance.send_message(chat_id=int(consultant_channel), text=notification_text)
+                        channels_notified.append(f"escalation_consultant_channel:{consultant_channel} (MAX)")
+                        logger.info(f"Test escalation notification sent to MAX consultant channel: {consultant_channel}")
+                    except Exception as e:
+                        logger.error(f"Failed to send test escalation to MAX consultant channel {consultant_channel}: {e}", exc_info=True)
+                elif not is_max and tg_bot:
+                    try:
+                        await tg_bot.send_message(chat_id=consultant_channel, text=notification_text, parse_mode="HTML")
+                        channels_notified.append(f"escalation_consultant_channel:{consultant_channel} (Telegram)")
+                        logger.info(f"Test escalation notification sent to Telegram consultant channel: {consultant_channel}")
+                    except Exception as e:
+                        logger.error(f"Failed to send test escalation to Telegram consultant channel {consultant_channel}: {e}", exc_info=True)
+                else:
+                    logger.warning(f"Cannot send to consultant channel {consultant_channel}: bot not available")
         
         # Close bot sessions
         if tg_bot:

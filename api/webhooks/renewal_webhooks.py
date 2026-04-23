@@ -163,7 +163,27 @@ async def test_renewal_reminder_webhook(
             }
         
         # Import bot and send message directly
-        from datetime import datetime
+        from datetime import datetime, timezone
+        
+        # Check if subscription has already expired
+        now = datetime.now(timezone.utc)
+        if user.subscription_end_date <= now:
+            logger.warning(
+                f"User {user.id} subscription already expired: "
+                f"end_date={user.subscription_end_date}, now={now}"
+            )
+            return {
+                "status": "error",
+                "message": "Subscription has already expired",
+                "details": {
+                    "user_id": user_id,
+                    "internal_user_id": user.id,
+                    "messenger": messenger,
+                    "subscription_end_date": user.subscription_end_date.strftime("%d.%m.%Y %H:%M:%S"),
+                    "current_date": now.strftime("%d.%m.%Y %H:%M:%S"),
+                }
+            }
+        
         from aiogram import Bot
         from aiogram.client.default import DefaultBotProperties
         from aiogram.enums import ParseMode
