@@ -25,6 +25,7 @@ from database.models import (
     Ticket,
     TicketStatus,
     TicketType,
+    User,
     WorkMode,
 )
 from services.calendar_service import get_current_work_mode
