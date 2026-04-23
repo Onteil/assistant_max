@@ -195,14 +195,16 @@ async def ticket_status_update_webhook(
         old_status = ticket.ticket_status
         
         # Idempotency: skip update if status already matches (CRM trigger race condition)
-        if old_status == new_status_enum:
+        from api.webhooks.webhook_utils import has_field_changed
+        
+        if not has_field_changed(old_status, new_status_enum, "ticket_status"):
             logger.info(
                 f"Ticket {payload.ticket_id} already has status={new_status_enum.value}, "
-                f"skipping update (likely CRM trigger echo)"
+                f"skipping update (likely duplicate webhook from 1C CRM)"
             )
             return TicketStatusWebhookResponse(
                 status="success",
-                message="Ticket status already up to date",
+                message="Ticket status already up to date (no changes detected)",
                 ticket_id=payload.ticket_id,
                 new_status=payload.status
             )

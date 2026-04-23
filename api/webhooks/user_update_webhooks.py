@@ -339,18 +339,21 @@ async def user_update_webhook(
             "organizations_removed": 0,
         }
         
-        # Update user profile fields
-        if payload.email is not None:
+        # Check which fields have actually changed (deduplication for 1C CRM multiple triggers)
+        from api.webhooks.webhook_utils import has_field_changed
+        
+        # Update user profile fields only if changed
+        if payload.email is not None and has_field_changed(user.email, payload.email, "email"):
             user.email = payload.email
             updates_applied["profile"].append("email")
             logger.info(f"Updated email for user {user.id}")
         
-        if payload.full_name is not None:
+        if payload.full_name is not None and has_field_changed(user.full_name, payload.full_name, "full_name"):
             user.full_name = payload.full_name
             updates_applied["profile"].append("full_name")
             logger.info(f"Updated full_name for user {user.id}")
         
-        # Update subscription data
+        # Update subscription data only if changed
         if payload.subscription_end_date is not None:
             # Convert timezone-aware datetime to naive datetime for PostgreSQL TIMESTAMP WITHOUT TIME ZONE
             from datetime import timezone
@@ -361,24 +364,28 @@ async def user_update_webhook(
                 end_date = end_date.replace(tzinfo=timezone.utc)
             
             # Store as naive datetime (remove timezone info)
-            user.subscription_end_date = end_date.replace(tzinfo=None)
-            updates_applied["subscription"].append("end_date")
+            new_end_date = end_date.replace(tzinfo=None)
             
-            # Auto-check if subscription is expired
-            now = datetime.now(timezone.utc)
-            
-            if end_date < now:
-                # Override status to EXPIRED if date is in the past
-                user.subscription_status = SubscriptionStatus.EXPIRED
-                updates_applied["subscription"].append("status_auto_expired")
-                logger.warning(
-                    f"Subscription end date {payload.subscription_end_date} is in the past. "
-                    f"Auto-setting subscription_status to EXPIRED for user {user.id}"
-                )
-            else:
-                logger.info(
-                    f"Updated subscription_end_date for user {user.id} to {payload.subscription_end_date}"
-                )
+            # Check if end_date has actually changed
+            if has_field_changed(user.subscription_end_date, new_end_date, "subscription_end_date"):
+                user.subscription_end_date = new_end_date
+                updates_applied["subscription"].append("end_date")
+                
+                # Auto-check if subscription is expired
+                now = datetime.now(timezone.utc)
+                
+                if end_date < now:
+                    # Override status to EXPIRED if date is in the past
+                    user.subscription_status = SubscriptionStatus.EXPIRED
+                    updates_applied["subscription"].append("status_auto_expired")
+                    logger.warning(
+                        f"Subscription end date {payload.subscription_end_date} is in the past. "
+                        f"Auto-setting subscription_status to EXPIRED for user {user.id}"
+                    )
+                else:
+                    logger.info(
+                        f"Updated subscription_end_date for user {user.id} to {payload.subscription_end_date}"
+                    )
         
         if payload.subscription_status is not None:
             # Map string to enum
@@ -389,16 +396,18 @@ async def user_update_webhook(
             }
             new_status = status_map[payload.subscription_status]
             
-            # Only apply if not already set to EXPIRED by date check above
-            if "status_auto_expired" not in updates_applied["subscription"]:
-                user.subscription_status = new_status
-                updates_applied["subscription"].append("status")
-                logger.info(f"Updated subscription_status for user {user.id} to {payload.subscription_status}")
-            else:
-                logger.info(
-                    f"Skipping manual subscription_status update for user {user.id} "
-                    f"because it was auto-set to EXPIRED due to past end_date"
-                )
+            # Check if status has actually changed
+            if has_field_changed(user.subscription_status, new_status, "subscription_status"):
+                # Only apply if not already set to EXPIRED by date check above
+                if "status_auto_expired" not in updates_applied["subscription"]:
+                    user.subscription_status = new_status
+                    updates_applied["subscription"].append("status")
+                    logger.info(f"Updated subscription_status for user {user.id} to {payload.subscription_status}")
+                else:
+                    logger.info(
+                        f"Skipping manual subscription_status update for user {user.id} "
+                        f"because it was auto-set to EXPIRED due to past end_date"
+                    )
         
         # Process GS_Keys updates
         if payload.gs_keys:
@@ -530,6 +539,30 @@ async def user_update_webhook(
         
         # Commit all changes
         await session.commit()
+        
+        # Check if there are any actual updates to notify about
+        has_updates = (
+            updates_applied["profile"] or
+            updates_applied["subscription"] or
+            updates_applied["gs_keys_added"] > 0 or
+            updates_applied["gs_keys_removed"] > 0 or
+            updates_applied["organizations_added"] > 0 or
+            updates_applied["organizations_removed"] > 0
+        )
+        
+        # If nothing changed, skip notification and action log
+        if not has_updates:
+            logger.info(
+                f"No actual changes detected for user {user.id}. "
+                f"Skipping notification and action log (likely duplicate webhook from 1C CRM)."
+            )
+            return UserUpdateWebhookResponse(
+                status="success",
+                message="User data already up to date (no changes detected)",
+                messenger=payload.messenger,
+                user_id=payload.user_id,
+                updates_applied=updates_applied
+            )
         
         # Log action in Action_Log
         action_log = Action_Log(

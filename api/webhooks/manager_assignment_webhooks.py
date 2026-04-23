@@ -185,6 +185,27 @@ async def manager_assignment_webhook(
         # Store previous manager for logging
         previous_manager_id = user.default_manager_id
         
+        # Check if manager has actually changed (deduplication for 1C CRM multiple triggers)
+        from api.webhooks.webhook_utils import has_field_changed
+        
+        manager_changed = has_field_changed(previous_manager_id, manager.id, "default_manager_id")
+        
+        # If manager hasn't changed, skip update and notification
+        if not manager_changed:
+            logger.info(
+                f"Manager unchanged for user {user.id}: manager_id={manager.id}. "
+                f"Skipping update (likely duplicate webhook from 1C CRM)."
+            )
+            return ManagerAssignmentWebhookResponse(
+                status="success",
+                message="Manager assignment already up to date (no changes detected)",
+                messenger=payload.messenger,
+                user_id=payload.user_id,
+                manager_id=manager.id,
+                manager_name=manager.full_name,
+                notification_sent=False
+            )
+        
         # Assign manager to user
         user.default_manager_id = manager.id
         await session.commit()

@@ -221,9 +221,25 @@ async def cmd_start(
                     parse_mode="HTML"
                 )
             
+            elif user.registration_status == RegistrationStatus.REJECTED:
+                # Allow re-registration for rejected users
+                logger.info(
+                    f"Allowing re-registration for rejected user: user_id={user.id}, "
+                    f"max_user_id={max_user_id}"
+                )
+                # Reset user status to PENDING
+                user.registration_status = RegistrationStatus.PENDING
+                await session.commit()
+                
+                # Start new registration flow
+                await start_registration(event, context, messenger_adapter, session)
+            
             else:
-                # Rejected or other status - start new registration
-                logger.info(f"User with status {user.registration_status.value} starting registration: user_id={user.id}")
+                # Other status (shouldn't happen) - start new registration
+                logger.warning(
+                    f"User with unexpected status {user.registration_status.value} starting registration: "
+                    f"user_id={user.id}"
+                )
                 await start_registration(event, context, messenger_adapter, session)
         
         else:
@@ -372,47 +388,94 @@ async def process_phone_contact(
     normalized_phone = result
     
     try:
-        # Check for orphaned max_messenger_data record
-        # This can happen if User was deleted but max_messenger_data remained
-        from sqlalchemy import select
-        from database.models import MAX_Messenger_Data
+        # Check if user already exists (for re-registration of rejected users)
+        existing_user = await get_user_by_max_id(session, max_user_id)
         
-        result_check = await session.execute(
-            select(MAX_Messenger_Data).where(
-                MAX_Messenger_Data.max_user_id == max_user_id
+        if existing_user:
+            # User exists - this is re-registration
+            logger.info(
+                f"Re-registration for existing user: user_id={existing_user.id}, "
+                f"status={existing_user.registration_status.value}"
             )
-        )
-        orphaned_max_data = result_check.scalar_one_or_none()
-        
-        if orphaned_max_data:
-            # Check if corresponding user exists
-            orphaned_user = await get_user_by_id(session, orphaned_max_data.user_id)
             
-            if not orphaned_user:
-                # Orphaned record found - delete it
-                logger.warning(
-                    f"Found orphaned max_messenger_data: id={orphaned_max_data.id}, "
-                    f"max_user_id={max_user_id}, user_id={orphaned_max_data.user_id}. Deleting..."
+            # Update phone number if changed
+            if existing_user.phone_number != normalized_phone:
+                logger.info(
+                    f"Updating phone number for user {existing_user.id}: "
+                    f"{existing_user.phone_number} -> {normalized_phone}"
                 )
-                await session.delete(orphaned_max_data)
-                await session.flush()
-                logger.info(f"Orphaned max_messenger_data deleted: id={orphaned_max_data.id}")
-        
-        # Create User record immediately
-        user_data = {
-            "max_user_id": max_user_id,
-            "max_chat_id": chat_id,  # Add MAX chat ID for message sending
-            "phone_number": normalized_phone,
-            "full_name": "",  # Will be filled in next step
-            "username": getattr(event.message.sender, 'username', None),
-            "first_name": getattr(event.message.sender, 'first_name', None),
-            "last_name": getattr(event.message.sender, 'last_name', None),
-        }
-        
-        user = await create_user(session, user_data)
-        await session.commit()
-        
-        logger.info(f"User record created: user_id={user.id}, phone={normalized_phone}, chat_id={chat_id}")
+                existing_user.phone_number = normalized_phone
+            
+            # Update MAX chat ID
+            from services.user_service import upsert_max_messenger_data
+            await upsert_max_messenger_data(
+                session=session,
+                user_id=existing_user.id,
+                max_user_id=max_user_id,
+                max_chat_id=chat_id
+            )
+            
+            # Clear old organizations and keys (will be re-added during registration)
+            from database.models import user_organizations, GS_Key
+            from sqlalchemy import delete
+            
+            # Delete old organizations
+            stmt_delete_orgs = delete(user_organizations).where(
+                user_organizations.c.user_id == existing_user.id
+            )
+            await session.execute(stmt_delete_orgs)
+            logger.info(f"Cleared old organizations for user {existing_user.id}")
+            
+            # Delete old keys
+            stmt_delete_keys = delete(GS_Key).where(GS_Key.user_id == existing_user.id)
+            await session.execute(stmt_delete_keys)
+            logger.info(f"Cleared old keys for user {existing_user.id}")
+            
+            await session.commit()
+            
+            user = existing_user
+        else:
+            # Check for orphaned max_messenger_data record
+            # This can happen if User was deleted but max_messenger_data remained
+            from sqlalchemy import select
+            from database.models import MAX_Messenger_Data
+            
+            result_check = await session.execute(
+                select(MAX_Messenger_Data).where(
+                    MAX_Messenger_Data.max_user_id == max_user_id
+                )
+            )
+            orphaned_max_data = result_check.scalar_one_or_none()
+            
+            if orphaned_max_data:
+                # Check if corresponding user exists
+                orphaned_user = await get_user_by_id(session, orphaned_max_data.user_id)
+                
+                if not orphaned_user:
+                    # Orphaned record found - delete it
+                    logger.warning(
+                        f"Found orphaned max_messenger_data: id={orphaned_max_data.id}, "
+                        f"max_user_id={max_user_id}, user_id={orphaned_max_data.user_id}. Deleting..."
+                    )
+                    await session.delete(orphaned_max_data)
+                    await session.flush()
+                    logger.info(f"Orphaned max_messenger_data deleted: id={orphaned_max_data.id}")
+            
+            # Create new User record
+            user_data = {
+                "max_user_id": max_user_id,
+                "max_chat_id": chat_id,  # Add MAX chat ID for message sending
+                "phone_number": normalized_phone,
+                "full_name": "",  # Will be filled in next step
+                "username": getattr(event.message.sender, 'username', None),
+                "first_name": getattr(event.message.sender, 'first_name', None),
+                "last_name": getattr(event.message.sender, 'last_name', None),
+            }
+            
+            user = await create_user(session, user_data)
+            await session.commit()
+            
+            logger.info(f"User record created: user_id={user.id}, phone={normalized_phone}, chat_id={chat_id}")
         
         # Store user_id in FSM context
         await context.update_data(

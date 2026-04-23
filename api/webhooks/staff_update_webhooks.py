@@ -179,25 +179,30 @@ async def staff_update_webhook(
         updates_applied = []
         tickets_reassigned = 0
         
+        # Check which fields have actually changed (deduplication for 1C CRM multiple triggers)
+        from api.webhooks.webhook_utils import has_field_changed
+        
         # Step 2: Apply updates from payload
         
-        # Update full_name if provided
-        if payload.updates.full_name is not None:
+        # Update full_name if provided and changed
+        if payload.updates.full_name is not None and has_field_changed(staff.full_name, payload.updates.full_name, "full_name"):
             staff.full_name = payload.updates.full_name
             updates_applied.append("full_name")
             logger.info(f"Updated full_name for staff {staff.id}")
         
-        # Update position if provided
-        if payload.updates.position is not None:
+        # Update position if provided and changed
+        if payload.updates.position is not None and has_field_changed(staff.position, payload.updates.position, "position"):
             staff.position = payload.updates.position
             updates_applied.append("position")
             logger.info(f"Updated position for staff {staff.id}")
         
-        # Update staff_role if provided
+        # Update staff_role if provided and changed
         if payload.updates.staff_role is not None:
-            staff.staff_role = StaffRole(payload.updates.staff_role)
-            updates_applied.append("staff_role")
-            logger.info(f"Updated staff_role to {payload.updates.staff_role} for staff {staff.id}")
+            new_role = StaffRole(payload.updates.staff_role)
+            if has_field_changed(staff.staff_role, new_role, "staff_role"):
+                staff.staff_role = new_role
+                updates_applied.append("staff_role")
+                logger.info(f"Updated staff_role to {payload.updates.staff_role} for staff {staff.id}")
         
         # Requirement 3.7: Update backup managers if provided
         if payload.updates.backup_managers is not None:
@@ -252,19 +257,22 @@ async def staff_update_webhook(
         # Requirement 3.3: Handle deactivation with ticket reassignment
         if payload.updates.is_active is not None:
             old_active_status = staff.is_active
-            staff.is_active = payload.updates.is_active
-            updates_applied.append("is_active")
             
-            # If deactivating staff member
-            if payload.updates.is_active is False and old_active_status is True:
-                logger.info(f"Deactivating staff member {staff.id}, reassigning tickets")
+            # Check if is_active has actually changed
+            if has_field_changed(old_active_status, payload.updates.is_active, "is_active"):
+                staff.is_active = payload.updates.is_active
+                updates_applied.append("is_active")
                 
-                # Requirement 3.11: Validate backup managers provided
-                if not payload.updates.backup_managers or len(payload.updates.backup_managers) == 0:
-                    logger.error(
-                        f"Cannot deactivate staff {staff.id} without backup managers"
-                    )
-                    raise HTTPException(
+                # If deactivating staff member
+                if payload.updates.is_active is False and old_active_status is True:
+                    logger.info(f"Deactivating staff member {staff.id}, reassigning tickets")
+                    
+                    # Requirement 3.11: Validate backup managers provided
+                    if not payload.updates.backup_managers or len(payload.updates.backup_managers) == 0:
+                        logger.error(
+                            f"Cannot deactivate staff {staff.id} without backup managers"
+                        )
+                        raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="backup_managers list is required when deactivating staff member",
                     )
@@ -345,6 +353,19 @@ async def staff_update_webhook(
         
         # Commit database changes
         await session.commit()
+        
+        # If nothing changed, skip action log and CRM sync
+        if not updates_applied:
+            logger.info(
+                f"No actual changes detected for staff {staff.id}. "
+                f"Skipping action log and CRM sync (likely duplicate webhook from 1C CRM)."
+            )
+            return StaffUpdateWebhookResponse(
+                status="success",
+                message="Staff member data already up to date (no changes detected)",
+                staff_id=payload.staff_id,
+                updates_applied=updates_applied,
+            )
         
         # Requirement 3.8: Log staff update action
         action_log = Action_Log(

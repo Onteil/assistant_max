@@ -200,6 +200,36 @@ async def registration_status_webhook(
                 f"expected {user.phone_number}, got {payload.phone}"
             )
         
+        # Check if registration status has already been processed (deduplication)
+        from api.webhooks.webhook_utils import has_field_changed
+        
+        if payload.status == "approved":
+            # Check if user is already approved
+            if user.registration_status == RegistrationStatus.ACTIVE:
+                logger.info(
+                    f"User {user.id} registration already approved. "
+                    f"Skipping update (likely duplicate webhook from 1C CRM)."
+                )
+                return RegistrationWebhookResponse(
+                    status="success",
+                    message="Registration already approved (no changes detected)",
+                    messenger=payload.messenger,
+                    user_id=payload.user_id
+                )
+        elif payload.status == "rejected":
+            # Check if user is already rejected
+            if user.registration_status == RegistrationStatus.REJECTED:
+                logger.info(
+                    f"User {user.id} registration already rejected. "
+                    f"Skipping update (likely duplicate webhook from 1C CRM)."
+                )
+                return RegistrationWebhookResponse(
+                    status="success",
+                    message="Registration already rejected (no changes detected)",
+                    messenger=payload.messenger,
+                    user_id=payload.user_id
+                )
+        
         # Update registration status based on payload
         if payload.status == "approved":
             user.registration_status = RegistrationStatus.ACTIVE

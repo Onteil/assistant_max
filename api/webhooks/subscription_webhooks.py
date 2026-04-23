@@ -191,19 +191,50 @@ async def subscription_status_change_webhook(
         
         # Track old status for notification logic
         old_status = user.subscription_status
+        old_end_date = user.subscription_end_date
         
-        # Step 2: Update user subscription fields
-        # Requirement 5.1: Update subscription_status
-        user.subscription_status = SubscriptionStatus[payload.subscription_status.upper()]
+        # Check if data has actually changed (deduplication for 1C CRM multiple triggers)
+        from api.webhooks.webhook_utils import has_field_changed
         
-        # Requirement 5.2: Update subscription_end_date if provided
+        new_status = SubscriptionStatus[payload.subscription_status.upper()]
+        status_changed = has_field_changed(old_status, new_status, "subscription_status")
+        
+        # Prepare end_date for comparison
+        end_date_changed = False
+        new_end_date = None
         if payload.subscription_end_date is not None:
             # Convert to naive datetime for PostgreSQL TIMESTAMP WITHOUT TIME ZONE
             end_date = payload.subscription_end_date
             if end_date.tzinfo is not None:
                 # Convert to UTC and remove timezone info
                 end_date = end_date.astimezone(timezone.utc).replace(tzinfo=None)
-            user.subscription_end_date = end_date
+            new_end_date = end_date
+            end_date_changed = has_field_changed(old_end_date, new_end_date, "subscription_end_date")
+        
+        # If nothing changed, skip update and notification
+        if not status_changed and not end_date_changed:
+            logger.info(
+                f"Subscription data unchanged for user {user.id}: "
+                f"status={payload.subscription_status}, end_date={payload.subscription_end_date}. "
+                f"Skipping update (likely duplicate webhook from 1C CRM)."
+            )
+            return SubscriptionWebhookResponse(
+                status="success",
+                message="Subscription data already up to date (no changes detected)",
+                user_id=payload.user_id,
+                subscription_status=payload.subscription_status
+            )
+        
+        # Step 2: Update user subscription fields
+        # Requirement 5.1: Update subscription_status
+        if status_changed:
+            user.subscription_status = new_status
+            logger.info(f"Updated subscription_status for user {user.id}: {old_status} -> {new_status}")
+        
+        # Requirement 5.2: Update subscription_end_date if provided
+        if end_date_changed and new_end_date is not None:
+            user.subscription_end_date = new_end_date
+            logger.info(f"Updated subscription_end_date for user {user.id}: {old_end_date} -> {new_end_date}")
         
         await session.commit()
         
