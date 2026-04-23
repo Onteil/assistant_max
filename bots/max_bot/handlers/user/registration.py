@@ -12,6 +12,7 @@ Requirements: 1.1-1.16, 8.10
 """
 
 import logging
+import os
 import re
 from typing import Optional
 
@@ -47,7 +48,6 @@ from bots.max_bot.texts import (
     REGISTRATION_ENTER_INN,
     REGISTRATION_ENTER_KEY,
     REGISTRATION_KEY_CONFLICT,
-    REGISTRATION_KEY_HELP,
     REGISTRATION_PENDING,
     REGISTRATION_PHONE_SHARED,
     REGISTRATION_START,
@@ -72,6 +72,7 @@ from services.validation_service import (
     validate_inn,
     validate_phone_number,
 )
+from constants import BASE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -1122,20 +1123,29 @@ async def show_key_help(
         # Answer callback
         await event.answer()
         
-        # Send help text
+        # Send help text with explanation
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text=REGISTRATION_KEY_HELP,
+            text=(
+                "📸 Отправляем вам изображения с информацией о том, "
+                "где можно узнать номер ключа ГРАНД-Сметы:"
+            ),
             parse_mode="HTML"
         )
         
-        # TODO: Send image showing where to find key number
-        # Image should be added to project and sent here
-        # await messenger_adapter.send_photo(
-        #     chat_id=chat_id,
-        #     photo_path="path/to/key_location_image.jpg",
-        #     caption="Пример расположения номера ключа в программе"
-        # )
+        # Send first instruction image
+        instruction_1_path = os.path.join(BASE_DIR, "instruction_1.jpg")
+        await messenger_adapter.send_photo(
+            chat_id=chat_id,
+            photo_path=instruction_1_path,
+        )
+        
+        # Send second instruction image
+        instruction_2_path = os.path.join(BASE_DIR, "instruction_2.jpg")
+        await messenger_adapter.send_photo(
+            chat_id=chat_id,
+            photo_path=instruction_2_path,
+        )
         
         # Send prompt again with keyboard
         await messenger_adapter.send_message(

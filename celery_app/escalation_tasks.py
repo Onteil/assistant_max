@@ -467,14 +467,27 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
             f"Processing escalation: ticket_id={ticket_id}, "
             f"current_level={current_level}"
         )
-        
+
+        # Read timeout once from DB to avoid repeated sync calls with new event loops
+        from services.settings_service import get_setting
+        timeout_minutes = await get_setting(session, "manager_response_timeout")
+        if timeout_minutes is None:
+            logger.warning("manager_response_timeout not found, using default 10 minutes")
+            timeout_seconds = 600
+        else:
+            timeout_seconds = int(timeout_minutes) * 60
+        logger.info(
+            f"Escalation timeout: {timeout_minutes} min ({timeout_seconds}s) "
+            f"for ticket_id={ticket_id}, level={current_level}"
+        )
+
         # Level 0: Escalate to backup_manager_1
         if current_level == 0:
-            return await _escalate_to_backup_manager_1(ticket, session)
+            return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
         
         # Level 1: Escalate to backup_manager_2
         elif current_level == 1:
-            return await _escalate_to_backup_manager_2(ticket, session)
+            return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         
         # Level 2: Create escalation and notify admins
         elif current_level == 2:
@@ -489,16 +502,17 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
             }
 
 
-async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
+async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, timeout_seconds: int) -> dict[str, Any]:
     """
     Escalate ticket to backup_manager_1 (Level 0 → Level 1).
     
     Reassigns ticket to backup_manager_1, sends notification with "take over" button,
-    and schedules next escalation check in 10 minutes.
+    and schedules next escalation check in configured timeout.
     
     Args:
         ticket: Ticket object with loaded relationships
         session: Database session
+        timeout_seconds: Escalation timeout in seconds (from system settings)
     
     Returns:
         Dict with execution result
@@ -689,7 +703,6 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     session.add(action_log)
     
     # Schedule next escalation check in configured timeout
-    timeout_seconds = get_escalation_timeout_sync()
     reminder_task = check_ticket_reminder.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -709,16 +722,17 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession) -
     }
 
 
-async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
+async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, timeout_seconds: int) -> dict[str, Any]:
     """
     Escalate ticket to backup_manager_2 (Level 1 → Level 2).
     
     Reassigns ticket to backup_manager_2, sends notification with "take over" button,
-    and schedules final escalation check in 10 minutes.
+    and schedules final escalation check in configured timeout.
     
     Args:
         ticket: Ticket object with loaded relationships
         session: Database session
+        timeout_seconds: Escalation timeout in seconds (from system settings)
     
     Returns:
         Dict with execution result
@@ -750,7 +764,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
         
         reminder_task = check_ticket_reminder.apply_async(
             args=[ticket.id],
-            countdown=get_escalation_timeout_sync()
+            countdown=timeout_seconds
         )
         ticket.escalation_task_reminder_id = reminder_task.id
         await session.commit()
@@ -948,7 +962,6 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession) -
     session.add(action_log)
     
     # Schedule final escalation check in configured timeout
-    timeout_seconds = get_escalation_timeout_sync()
     reminder_task = check_ticket_reminder.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds

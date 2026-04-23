@@ -83,7 +83,7 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
         Dict with keys: processed, succeeded, failed, exhausted
     """
     from constants import AsyncSessionLocal
-    from services.i_tat_service import get_itat_client
+    from services.i_tat_service import ITatAPIClient
     from services.retry_service import (
         MAX_RETRY_ATTEMPTS,
         RetryStatus,
@@ -103,7 +103,7 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
 
         logger.info(f"Processing {len(pending)} pending retry records")
 
-        api_client = get_itat_client()
+        api_client = ITatAPIClient()
 
         try:
             for retry_record in pending:
