@@ -2133,6 +2133,11 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
     
+    # Get escalation timeout from settings for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+    timeout_minutes_3x = int(timeout_minutes) * 3  # Level 0 + Level 1 + Level 2 = 3x timeout
+    
     # Build notification message
     ticket_type_names = {
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
@@ -2145,10 +2150,10 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
     
     if ticket.ticket_type == TicketType.CONSULTATION:
         header = f"🚨 <b>КРИТИЧЕСКАЯ ЭСКАЛАЦИЯ: Заявка на консультацию #{ticket.id}</b>\n\n"
-        reason = "Заявка не была взята в работу сметными тех. специалистами и резервными менеджерами в течение 30 минут"
+        reason = f"Заявка не была взята в работу сметными тех. специалистами и резервными менеджерами в течение {timeout_minutes_3x} минут"
     else:
         header = f"🚨 <b>КРИТИЧЕСКАЯ ЭСКАЛАЦИЯ: Заявка техподдержки #{ticket.id}</b>\n\n"
-        reason = "Заявка не была взята в работу сотрудниками техподдержки и резервными менеджерами в течение 30 минут"
+        reason = f"Заявка не была взята в работу сотрудниками техподдержки и резервными менеджерами в течение {timeout_minutes_3x} минут"
     
     notification_text = (
         f"{header}"

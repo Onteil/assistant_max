@@ -136,8 +136,10 @@ async def ticket_status_update_webhook(
     """
     logger.info(
         f"Ticket status update webhook received: ticket_id={payload.ticket_id}, "
-        f"status={payload.status}, messenger={payload.messenger}"
+        f"status={payload.status}, messenger={payload.messenger}, "
+        f"closed_by_staff_id={payload.closed_by_staff_id}"
     )
+    logger.debug(f"Full webhook payload: {payload.model_dump()}")
     
     try:
         # Step 1: Query ticket by ticket_id with eager loading of user relationship
