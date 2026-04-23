@@ -167,10 +167,17 @@ async def test_renewal_reminder_webhook(
         
         # Check if subscription has already expired
         now = datetime.now(timezone.utc)
-        if user.subscription_end_date <= now:
+        
+        # Handle both timezone-aware and timezone-naive datetimes
+        subscription_end = user.subscription_end_date
+        if subscription_end.tzinfo is None:
+            # If subscription_end_date is naive, assume it's in UTC
+            subscription_end = subscription_end.replace(tzinfo=timezone.utc)
+        
+        if subscription_end <= now:
             logger.warning(
                 f"User {user.id} subscription already expired: "
-                f"end_date={user.subscription_end_date}, now={now}"
+                f"end_date={subscription_end}, now={now}"
             )
             return {
                 "status": "error",
@@ -179,7 +186,7 @@ async def test_renewal_reminder_webhook(
                     "user_id": user_id,
                     "internal_user_id": user.id,
                     "messenger": messenger,
-                    "subscription_end_date": user.subscription_end_date.strftime("%d.%m.%Y %H:%M:%S"),
+                    "subscription_end_date": subscription_end.strftime("%d.%m.%Y %H:%M:%S"),
                     "current_date": now.strftime("%d.%m.%Y %H:%M:%S"),
                 }
             }
