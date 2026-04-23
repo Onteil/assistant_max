@@ -25,7 +25,7 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from celery import shared_task
 from celery.utils.log import get_task_logger
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
