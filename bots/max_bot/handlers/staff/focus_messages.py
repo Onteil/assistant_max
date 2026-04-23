@@ -185,9 +185,26 @@ async def handle_focus_text_message(
         )
         
         # Confirm to employee
+        from bots.max_bot.payloads import ManagerToggleFocusPayload
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        
+        exit_focus_keyboard = Keyboard(
+            buttons=[[
+                KeyboardButton(
+                    text="❌ Выйти из режима фокуса",
+                    payload=ManagerToggleFocusPayload(
+                        ticket_id=focused_ticket_id,
+                        enable=False
+                    ).pack()
+                )
+            ]],
+            inline=True
+        )
+        
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="✅ Сообщение отправлено клиенту.",
+            keyboard=exit_focus_keyboard,
             parse_mode="HTML"
         )
         
@@ -310,9 +327,26 @@ async def handle_focus_file_message(
             )
             
             # Confirm to employee
+            from bots.max_bot.payloads import ManagerToggleFocusPayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            
+            exit_focus_keyboard = Keyboard(
+                buttons=[[
+                    KeyboardButton(
+                        text="❌ Выйти из режима фокуса",
+                        payload=ManagerToggleFocusPayload(
+                            ticket_id=focused_ticket_id,
+                            enable=False
+                        ).pack()
+                    )
+                ]],
+                inline=True
+            )
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="✅ Файл успешно отправлен клиенту.",
+                keyboard=exit_focus_keyboard,
                 parse_mode="HTML"
             )
             

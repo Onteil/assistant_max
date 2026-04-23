@@ -350,9 +350,9 @@ async def handle_close_active_tickets(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Close active tickets list and return to main menu.
+    Close active tickets list and return to active tickets list.
     
-    Follows maxapi pattern: delete old message, show main menu.
+    Follows maxapi pattern: delete old message, show active tickets list.
     
     maxapi Pattern Notes:
     - Uses event.callback.user.user_id for user identification in callbacks
@@ -368,7 +368,7 @@ async def handle_close_active_tickets(
     max_user_id = event.callback.user.user_id
     message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
     
-    logger.info(f"Client closing active tickets: max_user_id={max_user_id}")
+    logger.info(f"Client exiting reply mode: max_user_id={max_user_id}")
     
     try:
         # Clear active ticket from context
@@ -381,24 +381,59 @@ async def handle_close_active_tickets(
             except Exception as e:
                 logger.warning(f"Failed to delete old message: {e}")
         
-        # Show main menu
-        from services.ticket_service import get_user_active_tickets_count
-        from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+        # Show active tickets list
+        from services.user_service import get_user_by_max_id
+        from services.ticket_service import get_user_active_tickets
+        from bots.max_bot.keyboards.user.active_tickets_kb import get_active_tickets_keyboard
+        from bots.max_bot.payloads import ActiveTicketsClosePayload
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
         
         user = await get_user_by_max_id(session, max_user_id)
-        if user:
+        if not user:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден",
+                parse_mode="HTML"
+            )
+            return
+        
+        # Get active tickets
+        active_tickets = await get_user_active_tickets(session, user.id)
+        
+        if not active_tickets:
+            # No active tickets - show main menu
+            from services.ticket_service import get_user_active_tickets_count
+            from bots.max_bot.keyboards.user.main_menu_kb import get_main_menu_inline_keyboard
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
+            
             active_tickets_count = await get_user_active_tickets_count(session, user.id)
             keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
             
-            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=MAIN_MENU_WELCOME_TEXT,
                 keyboard=keyboard,
                 parse_mode="HTML"
             )
+        else:
+            # Show active tickets list
+            keyboard = await get_active_tickets_keyboard(
+                tickets=active_tickets,
+                page=0,
+                active_filter="all"
+            )
+            
+            total_count = len(active_tickets)
+            header = f"📋 <b>Активные обращения</b>\n\nФильтр: Все заявки | Всего: {total_count}\n\nВыберите обращение для продолжения общения:"
+            
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=header,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
         
-        logger.info(f"Client closed active tickets and returned to main menu: max_user_id={max_user_id}")
+        logger.info(f"Client exited reply mode and returned to active tickets: max_user_id={max_user_id}")
         
     except Exception as e:
         logger.error(f"Error closing active tickets: max_user_id={max_user_id}, error={e}", exc_info=True)

@@ -224,13 +224,28 @@ async def route_client_message_to_ticket(
             )
 
             from bots.max_bot.texts import get_off_hours_reply_message
+            from bots.max_bot.payloads import ActiveTicketsClosePayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            
             off_hours_text = get_off_hours_reply_message(
                 ticket_type_value=ticket.ticket_type.value,
                 work_mode_value=work_mode.value,
             )
+            
+            exit_keyboard = Keyboard(
+                buttons=[[
+                    KeyboardButton(
+                        text="🔙 Выйти из режима ответа",
+                        payload=ActiveTicketsClosePayload().pack()
+                    )
+                ]],
+                inline=True
+            )
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=off_hours_text,
+                keyboard=exit_keyboard,
                 parse_mode="HTML",
             )
 
@@ -250,6 +265,20 @@ async def route_client_message_to_ticket(
                 messenger_adapter=messenger_adapter,
                 save_only=True,
             )
+            
+            from bots.max_bot.payloads import ActiveTicketsClosePayload
+            from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+            
+            exit_keyboard = Keyboard(
+                buttons=[[
+                    KeyboardButton(
+                        text="🔙 Выйти из режима ответа",
+                        payload=ActiveTicketsClosePayload().pack()
+                    )
+                ]],
+                inline=True
+            )
+            
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=(
@@ -257,6 +286,7 @@ async def route_client_message_to_ticket(
                     "⏳ По данной заявке специалист ещё не назначен — "
                     "ожидайте, вам ответят как только сотрудник возьмёт заявку в работу."
                 ),
+                keyboard=exit_keyboard,
                 parse_mode="HTML",
             )
             logger.info(
@@ -274,12 +304,26 @@ async def route_client_message_to_ticket(
             messenger_adapter=messenger_adapter
         )
         
-        # Acknowledge receipt to client
+        # Acknowledge receipt to client with "Exit reply mode" button
         message_type_name = get_message_type_name(event)
+        
+        from bots.max_bot.payloads import ActiveTicketsClosePayload
+        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        
+        exit_keyboard = Keyboard(
+            buttons=[[
+                KeyboardButton(
+                    text="🔙 Выйти из режима ответа",
+                    payload=ActiveTicketsClosePayload().pack()
+                )
+            ]],
+            inline=True
+        )
         
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=f"✅ Ваше сообщение ({message_type_name}) отправлено менеджеру (Заявка #{ticket.id})",
+            keyboard=exit_keyboard,
             parse_mode="HTML"
         )
         
