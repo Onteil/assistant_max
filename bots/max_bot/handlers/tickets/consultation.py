@@ -41,6 +41,7 @@ from bots.max_bot.texts import (
     CONSULTATION_ADD_NEW_KEY,
     CONSULTATION_ENTER_DESCRIPTION,
     CONSULTATION_INN_ADDED,
+    CONSULTATION_INN_DUPLICATE,
     CONSULTATION_KEY_ADDED,
     CONSULTATION_KEY_CONFLICT,
     CONSULTATION_NO_SUBSCRIPTION,
@@ -479,6 +480,22 @@ async def process_consultation_new_inn(
         context, event.message.sender.user_id, session, chat_id, messenger_adapter
     )
     if not user_id:
+        return
+
+    # Check for duplicate INN before adding
+    existing_organizations = await get_user_organizations(session, user_id)
+    existing_inns = [org.inn for org in existing_organizations]
+    if inn in existing_inns:
+        logger.info(f"Duplicate INN detected locally: user_id={user_id}, inn={inn}")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=CONSULTATION_INN_DUPLICATE,
+            parse_mode="HTML",
+        )
+        # Treat as if INN was just added — proceed to key selection
+        await context.update_data(selected_inn=inn)
+        await context.set_state(ConsultationStates.selecting_keys)
+        await _show_key_selection(chat_id, user_id, set(), 0, session, messenger_adapter)
         return
 
     try:

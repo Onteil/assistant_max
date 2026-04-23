@@ -58,6 +58,7 @@ from bots.max_bot.texts import (
     INVOICE_ENTER_DESCRIPTION,
     INVOICE_ENTER_EMAIL,
     INVOICE_INN_ADDED,
+    INVOICE_INN_DUPLICATE,
     INVOICE_KEY_ADDED,
     INVOICE_KEY_CONFLICT,
     get_invoice_non_working_hours_message,
@@ -618,6 +619,37 @@ async def process_new_inn(
         )
         return
     
+    # Check for duplicate INN before calling i-TAT API
+    max_user_id = event.message.sender.user_id
+    user_id_for_check = await get_user_id_with_fallback_from_message(
+        context=context,
+        event=event,
+        session=session,
+        messenger_adapter=messenger_adapter
+    )
+    if user_id_for_check:
+        existing_organizations = await get_user_organizations(session, user_id_for_check)
+        existing_inns = [org.inn for org in existing_organizations]
+        if inn in existing_inns:
+            logger.info(f"Duplicate INN detected locally: user_id={user_id_for_check}, inn={inn}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_INN_DUPLICATE,
+                parse_mode="HTML"
+            )
+            # Treat as if INN was just added — proceed to key selection
+            await context.update_data(selected_inn=inn)
+            await context.set_state(InvoiceStates.selecting_keys)
+            await show_key_selection(
+                chat_id=chat_id,
+                user_id=user_id_for_check,
+                selected_keys=set(),
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+            return
+
     # Check INN with i-TAT API
     from services.i_tat_service import get_itat_client
     try:

@@ -1229,6 +1229,20 @@ async def process_add_inn(
             await context.clear()
             return
     
+        # Check for duplicate INN before calling i-TAT API
+        existing_organizations = await get_user_organizations(session, user.id)
+        existing_inns = [org.inn for org in existing_organizations]
+        if inn in existing_inns:
+            logger.info(f"Duplicate INN detected locally: user_id={user.id}, inn={inn}")
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=PROFILE_INN_DUPLICATE,
+                parse_mode="HTML"
+            )
+            await show_organizations_list(chat_id, user.id, session, messenger_adapter)
+            return
+
         # Check INN with i-TAT API
         from services.i_tat_service import get_itat_client
         try:

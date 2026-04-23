@@ -59,6 +59,7 @@ from bots.tg_bot.texts import (
     INVOICE_SELECT_ORGANIZATION,
     INVOICE_ADD_NEW_INN,
     INVOICE_INN_ADDED,
+    INVOICE_INN_DUPLICATE,
     INVOICE_SELECT_KEYS,
     INVOICE_ADD_NEW_KEY,
     INVOICE_KEY_ADDED,
@@ -425,6 +426,10 @@ CONSULTATION_INN_ADDED = """
 ✅ <b>Организация добавлена!</b>
 
 Теперь выберите её из списка для продолжения.
+"""
+
+CONSULTATION_INN_DUPLICATE = """
+⚠️ Эта организация уже добавлена в ваш профиль.
 """
 
 CONSULTATION_SELECT_KEYS = """
