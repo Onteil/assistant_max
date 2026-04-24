@@ -40,13 +40,21 @@ def get_consultation_organization_keyboard(organizations: list, page: int = 0) -
 
     for org in orgs_on_page:
         if org.organization_name:
-            org_text = f"{org.organization_name} | {org.inn}"
+            buttons.append([
+                KeyboardButton(
+                    text=org.organization_name,
+                    payload=ConsultationOrgSelectPayload(inn=org.inn).pack()
+                ),
+                KeyboardButton(
+                    text=org.inn,
+                    payload=ConsultationOrgSelectPayload(inn=org.inn).pack()
+                )
+            ])
         else:
-            org_text = f"ИНН: {org.inn}"
-        buttons.append([KeyboardButton(
-            text=org_text,
-            payload=ConsultationOrgSelectPayload(inn=org.inn).pack()
-        )])
+            buttons.append([KeyboardButton(
+                text=f"ИНН: {org.inn}",
+                payload=ConsultationOrgSelectPayload(inn=org.inn).pack()
+            )])
 
     if total_pages > 1:
         pagination_row = []

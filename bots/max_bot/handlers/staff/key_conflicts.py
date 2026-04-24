@@ -1125,7 +1125,7 @@ async def handle_key_conflict_contact(
             # Organizations (INN and name if available)
             if user.organizations:
                 orgs = ", ".join([
-                    f"{org.inn} ({org.organization_name})" if org.organization_name else org.inn
+                    f"{org.organization_name} ({org.inn})" if org.organization_name else org.inn
                     for org in user.organizations
                 ])
                 info += f"🏢 Организации: {orgs}\n"

@@ -115,20 +115,33 @@ def get_organizations_list_keyboard(organizations: list, page: int = 0, items_pe
     # Organization buttons
     for org in page_orgs:
         if org.organization_name:
-            org_text = f"{org.organization_name} | {org.inn}"
+            # Three buttons: [Name] [INN number] [🗑]
+            buttons.append([
+                KeyboardButton(
+                    text=org.organization_name,
+                    payload=ProfileActionPayload(action="noop").pack()
+                ),
+                KeyboardButton(
+                    text=org.inn,
+                    payload=ProfileActionPayload(action="noop").pack()
+                ),
+                KeyboardButton(
+                    text="🗑",
+                    payload=ProfileDeleteOrgPayload(inn=org.inn).pack()
+                )
+            ])
         else:
-            org_text = f"ИНН: {org.inn}"
-        
-        buttons.append([
-            KeyboardButton(
-                text=org_text,
-                payload=ProfileActionPayload(action="noop").pack()  # Inactive button
-            ),
-            KeyboardButton(
-                text="🗑",
-                payload=ProfileDeleteOrgPayload(inn=org.inn).pack()
-            )
-        ])
+            # Two buttons: [INN: number] [🗑]
+            buttons.append([
+                KeyboardButton(
+                    text=f"ИНН: {org.inn}",
+                    payload=ProfileActionPayload(action="noop").pack()
+                ),
+                KeyboardButton(
+                    text="🗑",
+                    payload=ProfileDeleteOrgPayload(inn=org.inn).pack()
+                )
+            ])
     
     # Add organization button
     buttons.append([

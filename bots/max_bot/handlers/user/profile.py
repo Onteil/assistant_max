@@ -849,7 +849,10 @@ def _format_profile_text(user, organizations: list, gs_keys: list) -> str:
     if organizations:
         display_orgs = organizations[:10]
         for org in display_orgs:
-            text += f"  • {org.inn}\n"
+            if org.organization_name:
+                text += f"  • {org.organization_name} ({org.inn})\n"
+            else:
+                text += f"  • {org.inn}\n"
         
         if len(organizations) > 10:
             text += f"  <i>... и еще {len(organizations) - 10}</i>\n"

@@ -365,7 +365,7 @@ async def handle_escalation_view(
         if ticket.organization:
             org = ticket.organization
             if org.organization_name:
-                org_text = f"{org.inn} ({org.organization_name})"
+                org_text = f"{org.organization_name} ({org.inn})"
             else:
                 org_text = org.inn
         
