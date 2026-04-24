@@ -235,7 +235,7 @@ async def handle_nps_rating_callback(
             review_builder.row(
                 LinkButton(
                     text="⭐ Оставить отзыв на 2ГИС",
-                    url="https://2gis.ru/nabchelny/branches/4081924033218712/firm/70000001047304265/52.449828%2C55.738183/tab/reviews?m=52.448955%2C55.72034%2F12.71"
+                    url="https://2gis.ru/nabchelny/geo/70000001074441434"
                 )
             )
             review_builder.row(

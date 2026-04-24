@@ -227,11 +227,10 @@ async def cmd_start(
                     f"Allowing re-registration for rejected user: user_id={user.id}, "
                     f"max_user_id={max_user_id}"
                 )
-                # Reset user status to PENDING
-                user.registration_status = RegistrationStatus.PENDING
-                await session.commit()
+                # Mark as re-registration in FSM so submit_registration handles 409 correctly
+                await context.update_data(is_reregistration=True, existing_user_id=user.id)
                 
-                # Start new registration flow
+                # Start new registration flow (status will be reset in process_phone_contact)
                 await start_registration(event, context, messenger_adapter, session)
             
             else:
@@ -435,7 +434,7 @@ async def process_phone_contact(
             
             user = existing_user
         else:
-            # Check for orphaned max_messenger_data record
+            # New user - check for orphaned max_messenger_data record
             # This can happen if User was deleted but max_messenger_data remained
             from sqlalchemy import select
             from database.models import MAX_Messenger_Data
@@ -1332,6 +1331,53 @@ async def process_key_conflict_choice(
         )
 
 
+async def _finalize_registration(
+    session: AsyncSession,
+    context: MemoryContext,
+    messenger_adapter: MAXMessengerAdapter,
+    chat_id: int,
+    user: "User",
+    inn: str,
+    key_number: str | None,
+) -> None:
+    """
+    Finalize registration: set PENDING status, log, notify admins, show waiting message.
+    
+    Extracted to avoid code duplication between normal registration and
+    re-registration (409 case where user already exists in i-TAT).
+    """
+    # Set user status to PENDING
+    await update_user_status(session, user.id, RegistrationStatus.PENDING)
+    await session.commit()
+    
+    # Log registration completion to audit
+    from bots.max_bot.utils.audit_logger import log_user_registration_completed
+    await log_user_registration_completed(user.id, user.max_user_id)
+
+    # Notify administrators about new registration
+    try:
+        from bots.max_bot.utils.admin_notifications import notify_admins_new_registration
+        await notify_admins_new_registration(session, user.id, inn=inn, key_number=key_number)
+        logger.info(f"New registration notification sent for user_id={user.id}")
+    except Exception as notify_error:
+        logger.error(
+            f"Failed to send new registration notification for user_id={user.id}: {notify_error}",
+            exc_info=True
+        )
+    
+    logger.info(f"Registration finalized successfully: user_id={user.id}")
+    
+    # Clear FSM state
+    await context.clear()
+    
+    # Display waiting message
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=REGISTRATION_SUBMITTED,
+        parse_mode="HTML"
+    )
+
+
 async def submit_registration(
     context: MemoryContext,
     session: AsyncSession,
@@ -1379,6 +1425,7 @@ async def submit_registration(
         data = await context.get_data()
         key_number = data.get("key_number")
         inn = data.get("inn", "")
+        is_reregistration = data.get("is_reregistration", False)
         
         # Submit to i-TAT API
         response = await call_itat_with_retry(
@@ -1405,53 +1452,50 @@ async def submit_registration(
                 f"proceeding with PENDING status"
             )
 
-        # Set user status to PENDING regardless — retry will sync with i-TAT later
-        await update_user_status(session, user_id, RegistrationStatus.PENDING)
-        await session.commit()
-        
-        # Log registration completion to audit
-        from bots.max_bot.utils.audit_logger import log_user_registration_completed
-        await log_user_registration_completed(user_id, user.max_user_id)
-
-        # Notify administrators about new registration
-        try:
-            from bots.max_bot.utils.admin_notifications import notify_admins_new_registration
-            await notify_admins_new_registration(session, user_id, inn=inn, key_number=key_number)
-            logger.info(f"New registration notification sent for user_id={user_id}")
-        except Exception as notify_error:
-            logger.error(
-                f"Failed to send new registration notification for user_id={user_id}: {notify_error}",
-                exc_info=True
-            )
-        
-        logger.info(f"Registration submitted successfully: user_id={user_id}")
-        
-        # Clear FSM state
-        await context.clear()
-        
-        # Display waiting message
-        await messenger_adapter.send_message(
+        await _finalize_registration(
+            session=session,
+            context=context,
+            messenger_adapter=messenger_adapter,
             chat_id=chat_id,
-            text=REGISTRATION_SUBMITTED,
-            parse_mode="HTML"
+            user=user,
+            inn=inn,
+            key_number=key_number,
         )
     
     except NonRetryableAPIError as e:
         if e.status_code == 409:
-            logger.warning(
-                f"Registration conflict (409): user already registered in i-TAT: user_id={user_id}"
-            )
-            await context.clear()
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=(
-                    "⚠️ <b>Вы уже зарегистрированы в системе.</b>\n\n"
-                    "Ваша учётная запись уже существует в i-TAT. "
-                    "Если вы не можете войти или возникли проблемы — "
-                    "пожалуйста, обратитесь в поддержку."
-                ),
-                parse_mode="HTML"
-            )
+            # 409 = user already exists in i-TAT
+            # For re-registration (REJECTED users) this is expected — treat as success
+            if is_reregistration:
+                logger.info(
+                    f"Re-registration 409 (user already in i-TAT): user_id={user_id}. "
+                    f"Treating as success — setting PENDING and notifying admins."
+                )
+                await _finalize_registration(
+                    session=session,
+                    context=context,
+                    messenger_adapter=messenger_adapter,
+                    chat_id=chat_id,
+                    user=user,
+                    inn=inn,
+                    key_number=key_number,
+                )
+            else:
+                # Genuine duplicate — user registered from another device/messenger
+                logger.warning(
+                    f"Registration conflict (409): user already registered in i-TAT: user_id={user_id}"
+                )
+                await context.clear()
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⚠️ Вы уже зарегистрированы в системе.\n\n"
+                        "Ваша учётная запись уже существует в i-TAT. "
+                        "Если вы не можете войти или возникли проблемы — "
+                        "пожалуйста, обратитесь в поддержку."
+                    ),
+                    parse_mode="HTML"
+                )
         else:
             logger.error(
                 f"Non-retryable API error submitting registration: user_id={user_id}, "
