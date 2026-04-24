@@ -114,9 +114,10 @@ def get_organizations_list_keyboard(organizations: list, page: int = 0, items_pe
     
     # Organization buttons
     for org in page_orgs:
-        org_text = f"ИНН: {org.inn}"
         if org.organization_name:
-            org_text += f" - {org.organization_name[:20]}"
+            org_text = f"{org.organization_name} | {org.inn}"
+        else:
+            org_text = f"ИНН: {org.inn}"
         
         buttons.append([
             KeyboardButton(

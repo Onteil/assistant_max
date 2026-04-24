@@ -39,7 +39,10 @@ def get_consultation_organization_keyboard(organizations: list, page: int = 0) -
     orgs_on_page = organizations[start_index:start_index + ITEMS_PER_PAGE]
 
     for org in orgs_on_page:
-        org_text = f"{org.organization_name or 'Организация'} (ИНН: {org.inn})"
+        if org.organization_name:
+            org_text = f"{org.organization_name} | {org.inn}"
+        else:
+            org_text = f"ИНН: {org.inn}"
         buttons.append([KeyboardButton(
             text=org_text,
             payload=ConsultationOrgSelectPayload(inn=org.inn).pack()

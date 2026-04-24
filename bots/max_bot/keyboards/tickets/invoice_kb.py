@@ -51,8 +51,11 @@ def get_organization_keyboard(organizations: list, page: int = 0) -> Keyboard:
     
     # Кнопки организаций
     for org in orgs_on_page:
-        # Отображаем название организации и ИНН
-        org_text = f"{org.organization_name or 'Организация'} (ИНН: {org.inn})"
+        # Если есть название — показываем его, иначе только ИНН
+        if org.organization_name:
+            org_text = f"{org.organization_name} | {org.inn}"
+        else:
+            org_text = f"ИНН: {org.inn}"
         buttons.append([KeyboardButton(
             text=org_text,
             payload=OrganizationSelectPayload(inn=org.inn).pack()
