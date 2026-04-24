@@ -103,7 +103,44 @@ async def _check_work_mode_transition_async() -> dict[str, Any]:
                     "queue_task_id": task_result.id,
                     "transition_time": current_time.isoformat()
                 }
-            elif transition_detected:
+            
+            # Even without a transition, check for unprocessed tickets in REGULAR mode
+            # This handles tickets created after the NON_WORKING → REGULAR transition
+            if current_work_mode in [WorkMode.REGULAR, WorkMode.EXTENDED]:
+                from sqlalchemy import select, and_
+                from database.models import Ticket, TicketStatus, TicketType
+                from datetime import timedelta
+                cutoff = (current_time - timedelta(hours=72)).replace(tzinfo=None)
+                stmt = select(Ticket.id).where(
+                    and_(
+                        Ticket.ticket_status == TicketStatus.NEW,
+                        Ticket.created_at >= cutoff,
+                        Ticket.ticket_type.in_([
+                            TicketType.INVOICE, TicketType.RENEWAL,
+                            TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION
+                        ]),
+                        Ticket.queue_notification_sent_at.is_(None),
+                    )
+                ).limit(1)
+                result = await session.execute(stmt)
+                has_pending = result.scalar_one_or_none() is not None
+
+                if has_pending:
+                    logger.info(
+                        "Unprocessed queued tickets found in REGULAR mode — triggering queue processing"
+                    )
+                    from celery_app.ticket_notification_tasks import process_pending_tickets_task
+                    task_result = process_pending_tickets_task.apply_async(queue="ticket_notifications")
+                    logger.info(f"Queue processing task scheduled: task_id={task_result.id}")
+                    return {
+                        "status": "pending_tickets_found",
+                        "current_mode": current_work_mode.value,
+                        "queue_processing_triggered": True,
+                        "queue_task_id": task_result.id,
+                        "check_time": current_time.isoformat()
+                    }
+
+            if transition_detected:
                 return {
                     "status": "transition_detected",
                     "previous_mode": last_work_mode.value,

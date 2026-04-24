@@ -801,35 +801,6 @@ async def _process_support_ticket(
                 exc_info=True
             )
 
-    # Notify duty channels
-    try:
-        from services.settings_service import get_escalation_channels
-        duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
-        for duty_channel in duty_channels:
-            if max_bot:
-                try:
-                    await max_bot.send_message(
-                        chat_id=int(duty_channel),
-                        text=notification_text,
-                        attachments=[ButtonsPayload(buttons=buttons).pack()]
-                    )
-                    stats["notifications_sent"] += 1
-                    notified_chat_ids.append(int(duty_channel))
-                    logger.info(
-                        f"Duty channel notified for support ticket {ticket.id}, "
-                        f"channel={duty_channel}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to notify duty channel for support ticket {ticket.id}: {e}",
-                        exc_info=True
-                    )
-    except Exception as e:
-        logger.error(
-            f"Error getting duty channel settings for support ticket {ticket.id}: {e}",
-            exc_info=True
-        )
-
     # Forward attachments to all notified recipients
     if ticket.file_attachments and notified_chat_ids:
         for chat_id in notified_chat_ids:
@@ -989,64 +960,6 @@ async def _process_consultation_ticket(
                 f"Failed to notify recipient {recipient.id} for consultation ticket {ticket.id}: {e}",
                 exc_info=True
             )
-
-    # Notify duty channels
-    try:
-        from services.settings_service import get_escalation_channels
-        duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
-        for duty_channel in duty_channels:
-            if max_bot:
-                try:
-                    await max_bot.send_message(
-                        chat_id=int(duty_channel),
-                        text=notification_text,
-                        attachments=[ButtonsPayload(buttons=buttons).pack()]
-                    )
-                    stats["notifications_sent"] += 1
-                    notified_chat_ids.append(int(duty_channel))
-                    logger.info(
-                        f"Duty channel notified for queued consultation ticket {ticket.id}, "
-                        f"channel={duty_channel}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to notify duty channel for consultation ticket {ticket.id}: {e}",
-                        exc_info=True
-                    )
-    except Exception as e:
-        logger.error(
-            f"Error getting duty channel settings for consultation ticket {ticket.id}: {e}",
-            exc_info=True
-        )
-
-    # Notify consultant channels
-    try:
-        from services.settings_service import get_escalation_channels
-        consultant_channels = await get_escalation_channels(session, "escalation_consultant_channel")
-        for consultant_channel in consultant_channels:
-            if max_bot:
-                try:
-                    await max_bot.send_message(
-                        chat_id=int(consultant_channel),
-                        text=notification_text,
-                        attachments=[ButtonsPayload(buttons=buttons).pack()]
-                    )
-                    stats["notifications_sent"] += 1
-                    notified_chat_ids.append(int(consultant_channel))
-                    logger.info(
-                        f"Consultant channel notified for queued consultation ticket {ticket.id}, "
-                        f"channel={consultant_channel}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to notify consultant channel for consultation ticket {ticket.id}: {e}",
-                        exc_info=True
-                    )
-    except Exception as e:
-        logger.error(
-            f"Error getting consultant channel settings for consultation ticket {ticket.id}: {e}",
-            exc_info=True
-        )
 
     # Forward attachments to all notified recipients
     if ticket.file_attachments and notified_chat_ids:
