@@ -1842,7 +1842,7 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     session.add(action_log)
     
     # Schedule next escalation check
-    timeout_seconds = get_escalation_timeout_sync()
+    timeout_seconds = await get_escalation_timeout()
     reminder_task = check_technical_support_ticket.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -2105,7 +2105,7 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     session.add(action_log)
     
     # Schedule final escalation check
-    timeout_seconds = get_escalation_timeout_sync()
+    timeout_seconds = await get_escalation_timeout()
     reminder_task = check_technical_support_ticket.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
