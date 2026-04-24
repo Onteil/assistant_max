@@ -426,7 +426,7 @@ async def route_ticket(
                     f"work_mode={work_mode.value}"
                 )
         
-        # Route CONSULTATION tickets to estimate tech specialists (is_estimate_tech_specialist=True)
+        # Route CONSULTATION tickets based on work mode
         elif ticket.ticket_type == TicketType.CONSULTATION:
             if work_mode == WorkMode.REGULAR:
                 routing_info["target_type"] = "estimate_specialist"
@@ -439,13 +439,15 @@ async def route_ticket(
                 )
             
             elif work_mode == WorkMode.EXTENDED:
-                routing_info["target_type"] = "estimate_specialist"
-                routing_info["target_id"] = None
-                routing_info["expected_response_time"] = "в течение рабочего дня"
+                # Route to duty estimate specialist in extended hours
+                duty_specialist = await _get_duty_estimate_specialist(session)
+                routing_info["target_type"] = "duty_estimate_specialist"
+                routing_info["target_id"] = duty_specialist.id if duty_specialist else None
+                routing_info["expected_response_time"] = "в продленное рабочее время"
                 
                 logger.debug(
-                    f"Consultation ticket routed to estimate specialists: ticket_id={ticket.id}, "
-                    f"work_mode={work_mode.value}"
+                    f"Consultation ticket routed to duty estimate specialist: ticket_id={ticket.id}, "
+                    f"work_mode={work_mode.value}, specialist_id={routing_info['target_id']}"
                 )
             
             else:  # NON_WORKING
@@ -1787,6 +1789,81 @@ async def _get_duty_engineer(session: AsyncSession) -> Staff_Member | None:
     except SQLAlchemyError as e:
         logger.error(
             f"Database error getting duty engineer: error={e}",
+            exc_info=True
+        )
+        raise
+
+
+async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member | None:
+    """
+    Get duty estimate specialist for extended hours consultation support.
+
+    Retrieves the designated duty estimate specialist account from system settings.
+    Falls back to finding any active staff member with is_estimate_tech_specialist=True
+    if no specific account is configured.
+
+    Args:
+        session: Database session
+
+    Returns:
+        Staff_Member object or None if no duty estimate specialist found
+
+    Raises:
+        SQLAlchemyError: If database operation fails
+    """
+    try:
+        from services.settings_service import get_setting
+
+        duty_account_id = await get_setting(session, "duty_estimate_specialist_account")
+
+        if duty_account_id:
+            result = await session.execute(
+                select(Staff_Member).where(
+                    and_(
+                        Staff_Member.id == int(duty_account_id),
+                        Staff_Member.is_active == True,
+                        Staff_Member.is_estimate_tech_specialist == True,
+                    )
+                )
+            )
+            duty_specialist = result.scalar_one_or_none()
+
+            if duty_specialist:
+                logger.info(
+                    f"Duty estimate specialist found from settings: staff_id={duty_specialist.id}"
+                )
+                return duty_specialist
+            else:
+                logger.warning(
+                    f"Configured duty estimate specialist not found, inactive, or missing flag: "
+                    f"staff_id={duty_account_id}"
+                )
+
+        # Fallback: find any active staff member with is_estimate_tech_specialist=True
+        result = await session.execute(
+            select(Staff_Member).where(
+                and_(
+                    Staff_Member.is_estimate_tech_specialist == True,
+                    Staff_Member.is_active == True,
+                )
+            ).limit(1)
+        )
+        duty_specialist = result.scalar_one_or_none()
+
+        if not duty_specialist:
+            logger.warning(
+                "No active duty estimate specialist found (neither configured nor by flag)"
+            )
+        else:
+            logger.info(
+                f"Duty estimate specialist found by flag fallback: staff_id={duty_specialist.id}"
+            )
+
+        return duty_specialist
+
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error getting duty estimate specialist: error={e}",
             exc_info=True
         )
         raise

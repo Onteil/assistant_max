@@ -11,9 +11,11 @@ File Forwarding:
 - Falls back to URL links if file forwarding fails
 
 Off-Hours Logic (ТЗ sections 3, 6.1, 7.1):
-- INVOICE / RENEWAL / CONSULTATION: only REGULAR hours → forward to staff.
+- INVOICE / RENEWAL: only REGULAR hours → forward to staff.
   In EXTENDED or NON_WORKING → save message, notify client.
 - TECHNICAL_SUPPORT: REGULAR + EXTENDED → forward to staff (duty engineer in EXTENDED).
+  Only NON_WORKING → save message, notify client.
+- CONSULTATION: REGULAR + EXTENDED → forward to staff (duty estimate specialist in EXTENDED).
   Only NON_WORKING → save message, notify client.
 
 Requirements: 6.1, 6.3, 6.7, 13.4
@@ -114,9 +116,10 @@ def _is_off_hours_for_ticket(ticket_type: TicketType, work_mode: WorkMode) -> bo
     """
     Determine whether the current work_mode means off-hours for the given ticket type.
 
-    Per ТЗ sections 3.1, 6.1, 7.1:
+    Per ТЗ sections 3.1, 6.1, 7.1 (updated for duty estimate specialist):
     - TECHNICAL_SUPPORT: duty engineer covers EXTENDED → only NON_WORKING is off-hours.
-    - All other types (INVOICE, RENEWAL, CONSULTATION): only REGULAR is on-hours.
+    - CONSULTATION: duty estimate specialist covers EXTENDED → only NON_WORKING is off-hours.
+    - INVOICE, RENEWAL: only REGULAR is on-hours.
       EXTENDED and NON_WORKING are both off-hours (no manager available).
 
     Args:
@@ -131,7 +134,8 @@ def _is_off_hours_for_ticket(ticket_type: TicketType, work_mode: WorkMode) -> bo
 
     if work_mode == WorkMode.EXTENDED:
         # Duty engineer handles TP in extended hours → not off-hours for TP
-        return ticket_type != TicketType.TECHNICAL_SUPPORT
+        # Duty estimate specialist handles CONSULTATION in extended hours → not off-hours for CONSULTATION
+        return ticket_type not in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION)
 
     # NON_WORKING — off-hours for everyone
     return True

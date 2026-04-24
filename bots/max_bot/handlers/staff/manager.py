@@ -77,6 +77,18 @@ def format_ticket_card_detailed(ticket: Ticket) -> str:
     lines.append(f"{emoji} <b>Статус:</b> {status}")
     lines.append("")
     
+    # Assigned staff
+    if ticket.assigned_staff:
+        staff_name = ticket.assigned_staff.full_name or "Неизвестно"
+        staff_position = ticket.assigned_staff.position or ""
+        staff_info = staff_name
+        if staff_position:
+            staff_info += f", {staff_position}"
+        lines.append(f"<b>👨‍💼 Сотрудник:</b> {staff_info}")
+    else:
+        lines.append("<b>👨‍💼 Сотрудник:</b> Не назначен")
+    lines.append("")
+    
     # Client information (detailed)
     lines.append("<b>👤 Информация о клиенте:</b>")
     
@@ -1081,7 +1093,8 @@ async def handle_ticket_select(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -1179,7 +1192,8 @@ async def handle_view_ticket_from_notification(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -1839,7 +1853,8 @@ async def handle_archive_ticket_select(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -2208,7 +2223,8 @@ async def handle_ticket_action(
             stmt = select(Ticket).where(Ticket.id == ticket_id).options(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
-                selectinload(Ticket.gs_keys)
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff)
             )
             result = await session.execute(stmt)
             ticket = result.scalar_one_or_none()
@@ -2286,7 +2302,8 @@ async def handle_ticket_action(
             stmt = select(Ticket).where(Ticket.id == ticket_id).options(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
-                selectinload(Ticket.gs_keys)
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff)
             )
             result = await session.execute(stmt)
             ticket = result.scalar_one_or_none()
@@ -2376,7 +2393,8 @@ async def handle_ticket_action(
             stmt = select(Ticket).where(Ticket.id == ticket_id).options(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
-                selectinload(Ticket.gs_keys)
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff)
             )
             result = await session.execute(stmt)
             ticket = result.scalar_one_or_none()
@@ -2433,7 +2451,8 @@ async def handle_ticket_action(
             stmt = select(Ticket).where(Ticket.id == ticket_id).options(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
-                selectinload(Ticket.gs_keys)
+                selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff)
             )
             result = await session.execute(stmt)
             ticket = result.scalar_one_or_none()
@@ -2717,7 +2736,8 @@ async def handle_toggle_focus(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -2847,7 +2867,8 @@ async def handle_employee_selection(
                 stmt = select(Ticket).where(Ticket.id == ticket_id).options(
                     selectinload(Ticket.user),
                     selectinload(Ticket.organization),
-                    selectinload(Ticket.gs_keys)
+                    selectinload(Ticket.gs_keys),
+                    selectinload(Ticket.assigned_staff)
                 )
                 result = await session.execute(stmt)
                 ticket = result.scalar_one_or_none()
@@ -3037,7 +3058,8 @@ async def handle_manager_ticket_history(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -3300,7 +3322,8 @@ async def handle_manager_ticket_history_back(
         stmt = select(Ticket).where(Ticket.id == ticket_id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
@@ -3414,6 +3437,7 @@ async def handle_take_from_message_notification(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
                 selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff),
             )
         )
         result = await session.execute(stmt)
@@ -3522,6 +3546,7 @@ async def handle_focus_from_message_notification(
                 selectinload(Ticket.user),
                 selectinload(Ticket.organization),
                 selectinload(Ticket.gs_keys),
+                selectinload(Ticket.assigned_staff),
             )
         )
         result = await session.execute(stmt)

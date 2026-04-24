@@ -93,6 +93,16 @@ DEFAULT_SETTINGS = {
         "min_value": None,
         "max_value": None,
     },
+    "duty_estimate_specialist_account": {
+        "value": None,
+        "category": SettingCategory.DUTY_SUPPORT,
+        "data_type": SettingDataType.USER_ID,
+        "display_name": "Аккаунт дежурного сметного специалиста",
+        "description": "ID сотрудника (из staff_members) для дежурного сметного специалиста — получает заявки на консультацию в продленное время",
+        "requires_test": False,
+        "min_value": None,
+        "max_value": None,
+    },
     # NPS configuration
     "nps_frequency_days": {
         "value": "30",

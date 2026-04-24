@@ -2427,7 +2427,8 @@ async def notify_manager_about_duplicate_renewal(
         stmt = select(Ticket).where(Ticket.id == existing_ticket.id).options(
             selectinload(Ticket.user),
             selectinload(Ticket.organization),
-            selectinload(Ticket.gs_keys)
+            selectinload(Ticket.gs_keys),
+            selectinload(Ticket.assigned_staff)
         )
         result = await session.execute(stmt)
         ticket_with_relations = result.scalar_one_or_none()

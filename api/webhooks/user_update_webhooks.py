@@ -464,6 +464,8 @@ async def user_update_webhook(
         
         # Process Organizations updates
         if payload.organizations:
+            # Cache user.id before any potential rollback that would expire the user object
+            user_id_cached = user.id
             for org_update in payload.organizations:
                 if org_update.action == "add":
                     # Check if organization exists
@@ -500,7 +502,7 @@ async def user_update_webhook(
                     
                     # Check if user-organization link exists
                     stmt_link = select(user_organizations).where(
-                        user_organizations.c.user_id == user.id,
+                        user_organizations.c.user_id == user_id_cached,
                         user_organizations.c.organization_inn == org_update.inn
                     )
                     result_link = await session.execute(stmt_link)
@@ -509,31 +511,31 @@ async def user_update_webhook(
                     if not existing_link:
                         # Create user-organization link
                         stmt_insert = user_organizations.insert().values(
-                            user_id=user.id,
+                            user_id=user_id_cached,
                             organization_inn=org_update.inn
                         )
                         await session.execute(stmt_insert)
                         updates_applied["organizations_added"] += 1
-                        logger.info(f"Linked organization {org_update.inn} to user {user.id}")
+                        logger.info(f"Linked organization {org_update.inn} to user {user_id_cached}")
                     else:
                         logger.info(
-                            f"Organization {org_update.inn} already linked to user {user.id}"
+                            f"Organization {org_update.inn} already linked to user {user_id_cached}"
                         )
                 
                 elif org_update.action == "remove":
                     # Remove user-organization link
                     stmt_delete = user_organizations.delete().where(
-                        user_organizations.c.user_id == user.id,
+                        user_organizations.c.user_id == user_id_cached,
                         user_organizations.c.organization_inn == org_update.inn
                     )
                     result_delete = await session.execute(stmt_delete)
                     
                     if result_delete.rowcount > 0:
                         updates_applied["organizations_removed"] += 1
-                        logger.info(f"Unlinked organization {org_update.inn} from user {user.id}")
+                        logger.info(f"Unlinked organization {org_update.inn} from user {user_id_cached}")
                     else:
                         logger.warning(
-                            f"Organization {org_update.inn} not linked to user {user.id}. "
+                            f"Organization {org_update.inn} not linked to user {user_id_cached}. "
                             f"Remove operation skipped."
                         )
         

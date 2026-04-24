@@ -504,9 +504,11 @@ async def process_consultation_new_inn(
 
     is_valid, error_msg = validate_inn(inn)
     if not is_valid:
+        from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_VALIDATION_INN.format(error_details=error_msg),
+            keyboard=get_cancel_keyboard(),
             parse_mode="HTML",
         )
         return
@@ -872,24 +874,27 @@ async def handle_consultation_key_action(
             await messenger_adapter.send_message(chat_id=chat_id, text=confirmation_text, parse_mode="HTML")
             if is_working:
                 from services.employee_service import get_estimate_tech_specialists
-                from services.ticket_service import send_staff_notification, route_ticket
+                from services.ticket_service import send_staff_notification, route_ticket, _get_duty_estimate_specialist
                 from loaders import max_bot
                 routing_info = await route_ticket(session, ticket, work_mode)
-                specialists = await get_estimate_tech_specialists(session)
-                if specialists:
-                    for specialist in specialists:
-                        try:
-                            await send_staff_notification(bot=max_bot, staff_id=specialist.id, ticket=ticket, routing_info=routing_info, session=session)
-                        except Exception as e:
-                            logger.error(f"Failed to notify specialist {specialist.id}: {e}", exc_info=True)
+                if work_mode == WorkMode.EXTENDED:
+                    duty_specialist = await _get_duty_estimate_specialist(session)
+                    recipients = [duty_specialist] if duty_specialist else []
+                    if not recipients:
+                        from services.escalation_service import get_active_admins
+                        recipients = await get_active_admins(session)
                 else:
-                    from services.escalation_service import get_active_admins
-                    admins = await get_active_admins(session)
-                    for admin in admins:
-                        try:
-                            await send_staff_notification(bot=max_bot, staff_id=admin.id, ticket=ticket, routing_info=routing_info, session=session)
-                        except Exception as e:
-                            logger.error(f"Failed to notify admin {admin.id}: {e}", exc_info=True)
+                    specialists = await get_estimate_tech_specialists(session)
+                    if specialists:
+                        recipients = specialists
+                    else:
+                        from services.escalation_service import get_active_admins
+                        recipients = await get_active_admins(session)
+                for recipient in recipients:
+                    try:
+                        await send_staff_notification(bot=max_bot, staff_id=recipient.id, ticket=ticket, routing_info=routing_info, session=session)
+                    except Exception as e:
+                        logger.error(f"Failed to notify recipient {recipient.id}: {e}", exc_info=True)
             await _show_main_menu(chat_id, max_user_id, session, messenger_adapter)
         except Exception as e:
             logger.error(f"Error creating consultation ticket (skip_description): {e}", exc_info=True)
@@ -1347,97 +1352,92 @@ async def handle_consultation_description_next(
         # Send notifications to estimate tech specialists (only in working hours)
         if is_working:
             from services.employee_service import get_estimate_tech_specialists
-            from services.ticket_service import send_staff_notification
+            from services.ticket_service import send_staff_notification, _get_duty_estimate_specialist
             from loaders import max_bot
 
             routing_info = await route_ticket(session, ticket, work_mode)
-            specialists = await get_estimate_tech_specialists(session)
 
-            if specialists:
-                for specialist in specialists:
-                    try:
-                        notification_sent = await send_staff_notification(
-                            bot=max_bot,
-                            staff_id=specialist.id,
-                            ticket=ticket,
-                            routing_info=routing_info,
-                            session=session,
-                        )
-                        if notification_sent:
-                            logger.info(
-                                f"Specialist notification sent: ticket_id={ticket.id}, "
-                                f"staff_id={specialist.id}"
-                            )
-                            # Forward attachments to specialist
-                            if attachments:
-                                try:
-                                    await _forward_attachments_to_staff(
-                                        messenger_adapter=messenger_adapter,
-                                        session=session,
-                                        ticket_id=ticket.id,
-                                        staff_id=specialist.id,
-                                        attachments=attachments,
-                                        user_name=user.full_name if user else "Клиент",
-                                    )
-                                except Exception as e:
-                                    logger.error(
-                                        f"Failed to forward attachments to specialist {specialist.id}: {e}",
-                                        exc_info=True,
-                                    )
-                        else:
-                            logger.warning(
-                                f"Failed to send specialist notification: "
-                                f"ticket_id={ticket.id}, staff_id={specialist.id}"
-                            )
-                    except Exception as notify_err:
-                        logger.error(
-                            f"Error notifying specialist {specialist.id}: {notify_err}",
-                            exc_info=True,
-                        )
+            if work_mode == WorkMode.EXTENDED:
+                # In extended hours — notify only the duty estimate specialist
+                duty_specialist = await _get_duty_estimate_specialist(session)
+                if duty_specialist:
+                    recipients = [duty_specialist]
+                    no_specialist_suffix = None
+                else:
+                    # No duty specialist configured — fall back to admins
+                    logger.warning(
+                        f"No duty estimate specialist configured for consultation ticket "
+                        f"{ticket.id} in EXTENDED mode, falling back to admins"
+                    )
+                    from services.escalation_service import get_active_admins
+                    recipients = await get_active_admins(session)
+                    no_specialist_suffix = (
+                        "⚠️ <b>Причина уведомления администратора:</b> "
+                        "В системе не настроен дежурный сметный специалист. "
+                        "Заявка требует ручного назначения."
+                    )
             else:
-                # No specialists configured — fall back to admins with reason
-                logger.warning(
-                    f"No estimate tech specialists found for consultation ticket {ticket.id}, "
-                    f"falling back to admins"
-                )
-                from services.escalation_service import get_active_admins
-                from loaders import max_bot  # noqa: F811
+                # In regular hours — notify all estimate tech specialists
+                specialists = await get_estimate_tech_specialists(session)
+                if specialists:
+                    recipients = specialists
+                    no_specialist_suffix = None
+                else:
+                    logger.warning(
+                        f"No estimate tech specialists found for consultation ticket {ticket.id}, "
+                        f"falling back to admins"
+                    )
+                    from services.escalation_service import get_active_admins
+                    recipients = await get_active_admins(session)
+                    no_specialist_suffix = (
+                        "⚠️ <b>Причина уведомления администратора:</b> "
+                        "В системе не настроен ни один сметный тех. специалист. "
+                        "Заявка требует ручного назначения."
+                    )
 
-                admins = await get_active_admins(session)
-                for admin in admins:
-                    try:
-                        admin_routing_info = dict(routing_info) if routing_info else {}
-                        admin_routing_info["no_specialist_reason"] = (
-                            "⚠️ <b>Причина уведомления администратора:</b> "
-                            "В системе не настроен ни один сметный тех. специалист. "
-                            "Заявка требует ручного назначения."
+            for recipient in recipients:
+                try:
+                    recipient_routing_info = dict(routing_info) if routing_info else {}
+                    if no_specialist_suffix:
+                        recipient_routing_info["no_specialist_reason"] = no_specialist_suffix
+                    notification_sent = await send_staff_notification(
+                        bot=max_bot,
+                        staff_id=recipient.id,
+                        ticket=ticket,
+                        routing_info=recipient_routing_info,
+                        session=session,
+                    )
+                    if notification_sent:
+                        logger.info(
+                            f"Consultation notification sent: ticket_id={ticket.id}, "
+                            f"staff_id={recipient.id}, work_mode={work_mode.value}"
                         )
-                        notification_sent = await send_staff_notification(
-                            bot=max_bot,
-                            staff_id=admin.id,
-                            ticket=ticket,
-                            routing_info=admin_routing_info,
-                            session=session,
-                        )
-                        if notification_sent and attachments:
+                        # Forward attachments to recipient
+                        if attachments:
                             try:
                                 await _forward_attachments_to_staff(
                                     messenger_adapter=messenger_adapter,
                                     session=session,
                                     ticket_id=ticket.id,
-                                    staff_id=admin.id,
+                                    staff_id=recipient.id,
                                     attachments=attachments,
                                     user_name=user.full_name if user else "Клиент",
                                 )
                             except Exception as e:
                                 logger.error(
-                                    f"Failed to forward attachments to admin {admin.id}: {e}",
+                                    f"Failed to forward attachments to recipient {recipient.id}: {e}",
                                     exc_info=True,
                                 )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to notify admin {admin.id}: {e}", exc_info=True
+                    else:
+                        logger.warning(
+                            f"Failed to send consultation notification: "
+                            f"ticket_id={ticket.id}, staff_id={recipient.id}"
                         )
+                except Exception as notify_err:
+                    logger.error(
+                        f"Error notifying recipient {recipient.id}: {notify_err}",
+                        exc_info=True,
+                    )
         else:
             logger.info(
                 f"Consultation ticket {ticket.id} queued — notifications deferred to working hours."

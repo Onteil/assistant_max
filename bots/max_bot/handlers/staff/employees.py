@@ -37,7 +37,7 @@ from bots.max_bot.payloads import (
 )
 from database.models import Staff_Member, StaffRole, Action_Log, ActionType
 from services.itat_retry_helper import call_itat_with_retry
-from services.i_tat_service import get_itat_client
+from services.i_tat_service import get_itat_client, NonRetryableAPIError
 
 logger = logging.getLogger(__name__)
 
@@ -699,7 +699,26 @@ async def handle_employee_role_selection(
             f"Administrator {max_user_id} added employee: "
             f"id={new_employee.id}, max_id={employee_max_id}, name={employee_name}, role={staff_role.value}"
         )
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось добавить сотрудника. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError adding employee (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Добавление сотрудника невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
     except Exception as e:
         logger.error(f"Error handling employee role selection: {e}", exc_info=True)
         await session.rollback()
@@ -1044,6 +1063,22 @@ async def handle_employee_action(
                 session=session,
                 messenger_adapter=messenger_adapter
             )
+        elif payload.action == "set_duty_estimate_specialist":
+            await handle_set_duty_estimate_specialist(
+                event=event,
+                payload=payload,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+        elif payload.action == "unset_duty_estimate_specialist":
+            await handle_unset_duty_estimate_specialist(
+                event=event,
+                payload=payload,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
         elif payload.action == "backup_config":
             # Route to backup manager config
             backup_payload = BackupManagerPayload(action="config", employee_id=payload.employee_id)
@@ -1121,6 +1156,14 @@ async def show_employee_details(
         duty_setting = duty_result.scalar_one_or_none()
         is_duty_support = duty_setting and duty_setting.value and int(duty_setting.value) == staff_id
 
+        # Check if this employee is duty estimate specialist
+        duty_est_stmt = select(System_Settings).where(System_Settings.key == "duty_estimate_specialist_account")
+        duty_est_result = await session.execute(duty_est_stmt)
+        duty_est_setting = duty_est_result.scalar_one_or_none()
+        is_duty_estimate_specialist = (
+            duty_est_setting and duty_est_setting.value and int(duty_est_setting.value) == staff_id
+        )
+
         # Format employee details
         role_names = {
             StaffRole.TECHNICAL_SUPPORT: "Техническая поддержка",
@@ -1147,6 +1190,8 @@ async def show_employee_details(
         # Add duty support status
         details_text += f"\n⚙️ <b>Дежурный аккаунт ТП:</b> {'✅ Да' if is_duty_support else '❌ Нет'}\n"
         details_text += f"📐 <b>Сметный тех. специалист:</b> {'✅ Да' if employee.is_estimate_tech_specialist else '❌ Нет'}\n"
+        if employee.is_estimate_tech_specialist:
+            details_text += f"🌙 <b>Дежурный сметный специалист:</b> {'✅ Да' if is_duty_estimate_specialist else '❌ Нет'}\n"
 
         # Add backup managers info
         if employee.backup_manager_1_id or employee.backup_manager_2_id:
@@ -1222,6 +1267,21 @@ async def show_employee_details(
                         payload=EmployeeActionPayload(action="unset_estimate_specialist", employee_id=staff_id).pack()
                     )
                 ])
+                # Duty estimate specialist button (only visible when is_estimate_tech_specialist=True)
+                if is_duty_estimate_specialist:
+                    buttons.append([
+                        KeyboardButton(
+                            text="🌙 Снять с дежурства (сметный)",
+                            payload=EmployeeActionPayload(action="unset_duty_estimate_specialist", employee_id=staff_id).pack()
+                        )
+                    ])
+                else:
+                    buttons.append([
+                        KeyboardButton(
+                            text="🌙 Назначить дежурным сметным",
+                            payload=EmployeeActionPayload(action="set_duty_estimate_specialist", employee_id=staff_id).pack()
+                        )
+                    ])
             else:
                 buttons.append([
                     KeyboardButton(
@@ -1547,9 +1607,38 @@ async def handle_employee_name_edit_input(
         )
         
         logger.info(f"Administrator {max_user_id} updated name for employee {employee_id}: '{old_name}' -> '{new_name}'")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось обновить имя сотрудника. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError updating employee name {employee_id} (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Обновление имени невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+        await context.clear()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error handling name edit: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при обновлении имени.",
@@ -1810,9 +1899,37 @@ async def handle_employee_role_change(
         )
         
         logger.info(f"Administrator {max_user_id} changed role for employee {payload.employee_id}: {old_role.value} -> {new_role.value}")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось изменить роль сотрудника. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError updating employee role {payload.employee_id} (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Изменение роли невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error changing employee role: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при изменении роли.",
@@ -2076,9 +2193,45 @@ async def handle_confirm_deactivate(
         )
         
         logger.info(f"Administrator {max_user_id} deactivated employee {payload.employee_id}: reassigned {reassigned_count} tickets")
-        
+
+    except NonRetryableAPIError as e:
+        # Rollback any uncommitted DB changes (tickets reassignment, is_active=False)
+        await session.rollback()
+
+        # Extract human-readable message from i-TAT response body
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                response_data = e.original_error.response.json()
+                itat_message = response_data.get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось деактивировать сотрудника. Попробуйте позже."
+        logger.warning(
+            f"NonRetryableAPIError deactivating employee {payload.employee_id} "
+            f"(status={e.status_code}): {error_text}"
+        )
+
+        # Show error message and then re-display the employee card
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Деактивация невозможна</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
+        # Re-display employee card so admin can continue working
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error deactivating employee: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при деактивации.",
@@ -2202,9 +2355,41 @@ async def handle_activate_employee(
         )
         
         logger.info(f"Administrator {max_user_id} activated employee {payload.employee_id}")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                response_data = e.original_error.response.json()
+                itat_message = response_data.get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось активировать сотрудника. Попробуйте позже."
+        logger.warning(
+            f"NonRetryableAPIError activating employee {payload.employee_id} "
+            f"(status={e.status_code}): {error_text}"
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Активация невозможна</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error activating employee: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при активации.",
@@ -2429,9 +2614,38 @@ async def handle_employee_signature_edit_input(
         )
         
         logger.info(f"Administrator {max_user_id} updated signature for employee {employee_id}: '{old_signature}' -> '{new_signature}'")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось обновить подпись сотрудника. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError updating employee signature {employee_id} (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Обновление подписи невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+        await context.clear()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error handling signature edit: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при обновлении подписи.",
@@ -2797,6 +3011,21 @@ async def handle_unset_estimate_specialist(
         employee.is_estimate_tech_specialist = False
         await session.commit()
 
+        # If this employee was the duty estimate specialist, clear that setting too
+        from database.models import System_Settings
+        duty_est_stmt = select(System_Settings).where(
+            System_Settings.key == "duty_estimate_specialist_account"
+        )
+        duty_est_result = await session.execute(duty_est_stmt)
+        duty_est_setting = duty_est_result.scalar_one_or_none()
+        if duty_est_setting and duty_est_setting.value and int(duty_est_setting.value) == payload.employee_id:
+            duty_est_setting.value = ""
+            await session.commit()
+            logger.info(
+                f"Cleared duty_estimate_specialist_account because employee "
+                f"{payload.employee_id} lost is_estimate_tech_specialist flag"
+            )
+
         action_log = Action_Log(
             action_type=ActionType.STAFF_UPDATED,
             staff_id=admin.id,
@@ -2832,6 +3061,231 @@ async def handle_unset_estimate_specialist(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при снятии флага.",
+            parse_mode="HTML"
+        )
+
+
+# ========== Duty Estimate Specialist Account ==========
+
+
+async def handle_set_duty_estimate_specialist(
+    event: MessageCallback,
+    payload: EmployeeActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Set as Duty Estimate Specialist" button press.
+
+    Designates the selected employee as the duty estimate specialist account
+    for extended hours consultation tickets. Employee must have
+    is_estimate_tech_specialist=True.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к управлению сотрудниками.",
+                parse_mode="HTML"
+            )
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        stmt = select(Staff_Member).where(Staff_Member.id == payload.employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Сотрудник не найден.",
+                parse_mode="HTML"
+            )
+            return
+
+        if not employee.is_active:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Нельзя назначить дежурным деактивированного сотрудника.",
+                parse_mode="HTML"
+            )
+            return
+
+        if not employee.is_estimate_tech_specialist:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="⚠️ Назначить дежурным сметным специалистом можно только сотрудника с флагом «Сметный тех. специалист».",
+                parse_mode="HTML"
+            )
+            return
+
+        # Update duty estimate specialist setting
+        from database.models import System_Settings
+
+        setting_stmt = select(System_Settings).where(
+            System_Settings.key == "duty_estimate_specialist_account"
+        )
+        setting_result = await session.execute(setting_stmt)
+        setting = setting_result.scalar_one_or_none()
+
+        if setting:
+            setting.value = str(payload.employee_id)
+        else:
+            setting = System_Settings(
+                key="duty_estimate_specialist_account",
+                value=str(payload.employee_id)
+            )
+            session.add(setting)
+
+        await session.commit()
+
+        action_log = Action_Log(
+            action_type=ActionType.STAFF_UPDATED,
+            staff_id=admin.id,
+            action_details={
+                "action": "set_duty_estimate_specialist",
+                "employee_id": payload.employee_id,
+                "employee_name": employee.full_name
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ Сотрудник <b>{employee.full_name}</b> назначен дежурным сметным специалистом.\n\n"
+                f"Заявки на консультацию в продленное время будут направляться ему."
+            ),
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"Administrator {max_user_id} set employee {payload.employee_id} "
+            f"as duty estimate specialist"
+        )
+
+    except Exception as e:
+        logger.error(f"Error setting duty estimate specialist: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при назначении.",
+            parse_mode="HTML"
+        )
+
+
+async def handle_unset_duty_estimate_specialist(
+    event: MessageCallback,
+    payload: EmployeeActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle "Unset Duty Estimate Specialist" button press.
+
+    Removes the duty estimate specialist designation from the selected employee.
+    Uses replace_message pattern.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    try:
+        admin = await is_admin(session, max_user_id)
+        if not admin:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к управлению сотрудниками.",
+                parse_mode="HTML"
+            )
+            return
+
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        stmt = select(Staff_Member).where(Staff_Member.id == payload.employee_id)
+        result = await session.execute(stmt)
+        employee = result.scalar_one_or_none()
+
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id, text="❌ Сотрудник не найден.", parse_mode="HTML"
+            )
+            return
+
+        # Clear duty estimate specialist setting
+        from database.models import System_Settings
+
+        setting_stmt = select(System_Settings).where(
+            System_Settings.key == "duty_estimate_specialist_account"
+        )
+        setting_result = await session.execute(setting_stmt)
+        setting = setting_result.scalar_one_or_none()
+
+        if setting:
+            setting.value = ""
+            await session.commit()
+
+        action_log = Action_Log(
+            action_type=ActionType.STAFF_UPDATED,
+            staff_id=admin.id,
+            action_details={
+                "action": "unset_duty_estimate_specialist",
+                "employee_id": payload.employee_id,
+                "employee_name": employee.full_name
+            }
+        )
+        session.add(action_log)
+        await session.commit()
+
+        await show_employee_details(
+            chat_id=chat_id,
+            staff_id=payload.employee_id,
+            max_user_id=max_user_id,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"✅ Сотрудник <b>{employee.full_name}</b> снят с дежурства (сметный специалист).",
+            parse_mode="HTML"
+        )
+
+        logger.info(
+            f"Administrator {max_user_id} unset duty estimate specialist "
+            f"from employee {payload.employee_id}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error unsetting duty estimate specialist: {e}", exc_info=True)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при снятии дежурства.",
             parse_mode="HTML"
         )
 
@@ -3294,9 +3748,37 @@ async def handle_backup_manager_assignment(
         )
         
         logger.info(f"Administrator {max_user_id} assigned backup manager {payload.backup_id} to employee {payload.employee_id}, slot {payload.slot}")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось назначить резервного менеджера. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError assigning backup manager for employee {payload.employee_id} (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Назначение невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
+        await handle_backup_manager_config(
+            event=event,
+            payload=BackupManagerPayload(action="config", employee_id=payload.employee_id),
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error assigning backup manager: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при назначении.",
@@ -3434,9 +3916,37 @@ async def handle_backup_manager_removal(
             )
         
         logger.info(f"Administrator {max_user_id} removed backup manager from employee {payload.employee_id}, slot {payload.slot}")
-        
+
+    except NonRetryableAPIError as e:
+        await session.rollback()
+
+        itat_message: str | None = None
+        if e.original_error is not None:
+            try:
+                itat_message = e.original_error.response.json().get("message")
+            except Exception:
+                pass
+
+        error_text = itat_message or "Не удалось удалить резервного менеджера. Попробуйте позже."
+        logger.warning(f"NonRetryableAPIError removing backup manager for employee {payload.employee_id} (status={e.status_code}): {error_text}")
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ <b>Удаление невозможно</b>\n\n{error_text}",
+            parse_mode="HTML"
+        )
+
+        await handle_backup_manager_config(
+            event=event,
+            payload=BackupManagerPayload(action="config", employee_id=payload.employee_id),
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+
     except Exception as e:
         logger.error(f"Error removing backup manager: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при удалении.",
@@ -4026,7 +4536,7 @@ async def handle_transfer_clients_execute(
         # Log action
         initiator_id = admin.id if admin else (staff.id if staff else None)
         action_log = Action_Log(
-            action_type=ActionType.TICKET_TRANSFERRED,
+            action_type=ActionType.CLIENTS_TRANSFERRED,
             staff_id=initiator_id,
             action_details={
                 "action": "transfer_clients",
@@ -4073,6 +4583,7 @@ async def handle_transfer_clients_execute(
         
     except Exception as e:
         logger.error(f"Error executing client transfer: {e}", exc_info=True)
+        await session.rollback()
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при передаче клиентов.",

@@ -612,9 +612,11 @@ async def process_new_inn(
     
     if not is_valid:
         logger.warning(f"Invalid INN format: inn={inn}, error={error_msg}")
+        from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=ERROR_VALIDATION_INN.format(error_details=error_msg),
+            keyboard=get_cancel_keyboard(),
             parse_mode="HTML"
         )
         return
@@ -672,7 +674,6 @@ async def process_new_inn(
             logger.info(f"INN not found in 1C, requesting org name: inn={inn}")
             from bots.max_bot.texts import ENTER_ORG_NAME
             from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
-            from bots.max_bot.states import InvoiceStates
             await context.update_data(pending_inn=inn)
             await context.set_state(InvoiceStates.adding_org_name)
             await messenger_adapter.send_message(
@@ -687,9 +688,11 @@ async def process_new_inn(
         if exists is None and not api_response.get("is_valid", True):
             error_details = api_response.get("error_message", "INN не найден в базе данных")
             logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+            from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введенного ИНН и попробуйте снова.",
+                keyboard=get_cancel_keyboard(),
                 parse_mode="HTML"
             )
             return
