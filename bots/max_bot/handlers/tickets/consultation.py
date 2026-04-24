@@ -45,6 +45,8 @@ from bots.max_bot.texts import (
     CONSULTATION_KEY_ADDED,
     CONSULTATION_KEY_CONFLICT,
     CONSULTATION_NO_SUBSCRIPTION,
+    CONSULTATION_RENEWAL_ALREADY_EXISTS_EXPIRED,
+    CONSULTATION_RENEWAL_ALREADY_EXISTS_NO_SUBSCRIPTION,
     CONSULTATION_SELECT_KEYS,
     CONSULTATION_SELECT_ORGANIZATION,
     CONSULTATION_SUBSCRIPTION_EXPIRED,
@@ -260,7 +262,11 @@ async def _create_renewal_ticket_for_consultation(
                 and_(
                     Ticket.user_id == user.id,
                     Ticket.ticket_type == TicketType.RENEWAL,
-                    Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS]),
+                    Ticket.ticket_status.in_([
+                        TicketStatus.NEW,
+                        TicketStatus.IN_PROGRESS,
+                        TicketStatus.WAITING_CLIENT,
+                    ]),
                 )
             )
         )
@@ -310,12 +316,31 @@ async def _create_renewal_ticket_for_consultation(
                 f"user_id={user.id}, ticket_id={existing_ticket.id}"
             )
 
-        # Show blocking message to user
-        text = (
-            CONSULTATION_SUBSCRIPTION_EXPIRED
-            if subscription_status == SubscriptionStatus.EXPIRED
-            else CONSULTATION_NO_SUBSCRIPTION
-        )
+            # Notify manager that user is trying to get consultation again
+            # while renewal ticket is already open
+            try:
+                from bots.max_bot.handlers.tickets.support import notify_manager_about_duplicate_renewal
+                await notify_manager_about_duplicate_renewal(session, existing_ticket, user.id)
+            except Exception as e:
+                logger.error(
+                    f"Failed to notify manager about duplicate renewal attempt from consultation: "
+                    f"ticket_id={existing_ticket.id}, error={e}",
+                    exc_info=True,
+                )
+
+        # Show blocking message to user — different text if ticket already existed
+        if existing_ticket:
+            text = (
+                CONSULTATION_RENEWAL_ALREADY_EXISTS_EXPIRED.format(ticket_id=existing_ticket.id)
+                if subscription_status == SubscriptionStatus.EXPIRED
+                else CONSULTATION_RENEWAL_ALREADY_EXISTS_NO_SUBSCRIPTION.format(ticket_id=existing_ticket.id)
+            )
+        else:
+            text = (
+                CONSULTATION_SUBSCRIPTION_EXPIRED
+                if subscription_status == SubscriptionStatus.EXPIRED
+                else CONSULTATION_NO_SUBSCRIPTION
+            )
         await messenger_adapter.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
 
         # Show main menu
@@ -326,13 +351,23 @@ async def _create_renewal_ticket_for_consultation(
         if user.registration_status == RegistrationStatus.ACTIVE:
             active_tickets_count = await get_user_active_tickets_count(session, user.id)
             keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
-            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=MAIN_MENU_WELCOME_TEXT,
-                keyboard=keyboard,
-                parse_mode="HTML",
-            )
+            if existing_ticket:
+                # Duplicate case: compact menu prompt (same as handle_renewal_callback)
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="Выберите нужное действие:",
+                    keyboard=keyboard,
+                    parse_mode="HTML",
+                )
+            else:
+                # New ticket case: full welcome text with menu
+                from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=MAIN_MENU_WELCOME_TEXT,
+                    keyboard=keyboard,
+                    parse_mode="HTML",
+                )
 
     except Exception as e:
         logger.error(
