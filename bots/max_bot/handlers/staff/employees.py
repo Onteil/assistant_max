@@ -628,6 +628,7 @@ async def handle_employee_role_selection(
                 role=staff_role.value,
                 position=employee_position,
                 is_active=True,
+                full_name=employee_name,
             ),
             user_id=None,  # Staff member, no FK to users table
         )
@@ -1482,6 +1483,7 @@ async def handle_employee_name_edit_input(
                 role=employee.staff_role.value if employee.staff_role else None,
                 position=employee.position,
                 is_active=employee.is_active,
+                full_name=new_name,
             ),
             user_id=None,
         )

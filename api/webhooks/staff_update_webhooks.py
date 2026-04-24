@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,6 +84,7 @@ async def verify_webhook_api_key(
 
 @router.post("/staff_update", response_model=StaffUpdateWebhookResponse)
 async def staff_update_webhook(
+    request: Request,
     payload: StaffUpdateWebhookPayload,
     session: Annotated[AsyncSession, Depends(get_session)],
     api_key: Annotated[str, Depends(verify_webhook_api_key)],
@@ -148,6 +149,27 @@ async def staff_update_webhook(
         f"Staff update webhook received: messenger={payload.messenger}, "
         f"staff_id={payload.staff_id}"
     )
+    
+    # Log request headers and raw body for encoding diagnostics
+    content_type = request.headers.get("content-type", "not set")
+    raw_body = await request.body()
+    logger.info(f"Staff update webhook Content-Type: {content_type}")
+    logger.info(f"Staff update webhook raw body (bytes): {raw_body!r}")
+    try:
+        logger.info(f"Staff update webhook raw body (utf-8): {raw_body.decode('utf-8')}")
+    except UnicodeDecodeError:
+        logger.warning(
+            f"Staff update webhook body is NOT valid UTF-8. "
+            f"Detected encoding attempt: {raw_body!r}"
+        )
+        # Try common 1C encodings
+        for enc in ("windows-1251", "cp1251", "latin-1"):
+            try:
+                decoded = raw_body.decode(enc)
+                logger.info(f"Staff update webhook body decoded as {enc}: {decoded}")
+                break
+            except UnicodeDecodeError:
+                pass
     
     try:
         # Step 1: Query staff member by messenger-specific ID (Requirement 3.1)

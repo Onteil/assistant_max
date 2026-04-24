@@ -997,7 +997,8 @@ class ITatAPIClient:
         role: str | None = None,
         position: str | None = None,
         is_active: bool | None = None,
-        reserves: list[int] | None = None
+        reserves: list[int] | None = None,
+        full_name: str | None = None,
     ) -> dict[str, Any]:
         """
         Update staff member information.
@@ -1010,6 +1011,7 @@ class ITatAPIClient:
             position: Staff position (optional)
             is_active: Active status (optional)
             reserves: List of reserve staff IDs (optional)
+            full_name: Staff member full name (optional)
 
         Returns:
             {
@@ -1023,7 +1025,7 @@ class ITatAPIClient:
             httpx.ConnectError: Connection error
         """
         if self.use_mock:
-            return await self._mock_update_staff(messenger, user_id, action, role=role, position=position, is_active=is_active, reserves=reserves)
+            return await self._mock_update_staff(messenger, user_id, action, role=role, position=position, is_active=is_active, reserves=reserves, full_name=full_name)
             
         endpoint = f"{self.base_url}/system/staff/update"
         payload = {
@@ -1040,6 +1042,8 @@ class ITatAPIClient:
             payload["is_active"] = is_active
         if reserves is not None:
             payload["reserves"] = reserves
+        if full_name is not None:
+            payload["full_name"] = full_name
 
         logger.info(f"Updating staff: user={user_id}, action={action}, messenger={messenger}")
         return await self._make_request("POST", endpoint, json=payload)
