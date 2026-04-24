@@ -1245,6 +1245,7 @@ async def process_add_inn(
 
         # Check INN with i-TAT API
         from services.i_tat_service import get_itat_client
+        organization_name: str | None = None
         try:
             itat_client = get_itat_client()
             api_response = await itat_client.check_inn(
@@ -1254,8 +1255,26 @@ async def process_add_inn(
             )
             logger.info(f"i-TAT API INN check successful: {api_response}")
             
-            # Check if INN is valid according to i-TAT
-            if not api_response.get("is_valid", True):
+            # New contract: {"status": "ok", "inn": "...", "exists": bool, "name": str|null}
+            exists = api_response.get("exists")
+            organization_name = api_response.get("name")
+
+            if exists is False:
+                logger.info(f"INN not found in 1C, requesting org name: inn={inn}")
+                from bots.max_bot.texts import ENTER_ORG_NAME
+                from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+                await context.update_data(pending_inn=inn)
+                await context.set_state(ProfileStates.adding_org_name)
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=ENTER_ORG_NAME.format(inn=inn),
+                    keyboard=get_skip_keyboard(),
+                    parse_mode="HTML"
+                )
+                return
+
+            # Legacy fallback: old API returned is_valid field
+            if exists is None and not api_response.get("is_valid", True):
                 error_details = api_response.get("error_message", "INN не найден в базе данных")
                 logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
                 from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
@@ -1288,7 +1307,7 @@ async def process_add_inn(
             logger.info(f"Continuing with local INN validation due to API error")
         
         # Add organization to user profile locally
-        await add_user_organization(session, user.id, inn)
+        await add_user_organization(session, user.id, inn, organization_name=organization_name)
         await session.commit()
 
         # Update user assets via i-TAT API
@@ -1352,6 +1371,135 @@ async def process_add_inn(
             text=ERROR_GENERAL,
             parse_mode="HTML"
         )
+
+
+async def process_add_inn_org_name(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process optional org name input after INN not found in 1C (profile flow).
+
+    Saves INN + user-provided name, calls update_user_assets, shows success.
+    """
+    from bots.max_bot.texts import ENTER_ORG_NAME
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    org_name = event.message.body.text.strip()
+
+    if len(org_name) > 100:
+        from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Название слишком длинное. Максимум 100 символов. Попробуйте ещё раз или нажмите «Пропустить»:",
+            keyboard=get_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    if not inn:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_add_inn(chat_id, max_user_id, inn, org_name, context, session, messenger_adapter)
+
+
+async def skip_add_inn_org_name(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle skip button during org name step in profile flow.
+    Saves INN without a name and proceeds.
+    """
+    from bots.max_bot.payloads import RegistrationSkipPayload
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    if not inn:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_add_inn(chat_id, max_user_id, inn, None, context, session, messenger_adapter)
+
+
+async def _finalize_add_inn(
+    chat_id: int,
+    max_user_id: int,
+    inn: str,
+    organization_name: str | None,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """Save INN (with optional name), call update_user_assets, show success."""
+    try:
+        user = await get_user_by_max_id(session, max_user_id)
+        if not user:
+            await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+            await context.clear()
+            return
+
+        await add_user_organization(session, user.id, inn, organization_name=organization_name)
+        await session.commit()
+
+        assets_response = await call_itat_with_retry(
+            session=session,
+            operation="update_user_assets",
+            payload=dict(
+                messenger="max",
+                user_id=user.max_user_id,
+                asset_type="inn",
+                action="add",
+                value=inn,
+            ),
+            user_id=user.id,
+        )
+        if assets_response is not None:
+            logger.info(f"Assets update result: {assets_response}")
+        else:
+            logger.warning(f"update_user_assets queued for retry: user_id={user.id}, inn={inn}")
+
+        logger.info(f"Organization added to profile: user_id={user.id}, inn={inn}, name={organization_name}")
+        await context.clear()
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=PROFILE_INN_ADDED.format(inn=inn),
+            parse_mode="HTML"
+        )
+        await show_organizations_list(chat_id, user.id, session, messenger_adapter)
+
+    except IntegrityError:
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(chat_id=chat_id, text=PROFILE_INN_DUPLICATE, parse_mode="HTML")
+        user = await get_user_by_max_id(session, max_user_id)
+        if user:
+            await show_organizations_list(chat_id, user.id, session, messenger_adapter)
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in _finalize_add_inn: inn={inn}, error={e}", exc_info=True)
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
 
 
 async def process_add_key(

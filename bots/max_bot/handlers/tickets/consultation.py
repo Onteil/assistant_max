@@ -533,8 +533,55 @@ async def process_consultation_new_inn(
         await _show_key_selection(chat_id, user_id, set(), 0, session, messenger_adapter)
         return
 
+    # Check INN with i-TAT API and get organization name
+    from services.i_tat_service import get_itat_client
+    from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
+    organization_name: str | None = None
     try:
-        await add_user_organization(session, user_id, inn)
+        user = await get_user_by_max_id(session, event.message.sender.user_id)
+        itat_client = get_itat_client()
+        api_response = await itat_client.check_inn(
+            messenger="max",
+            user_id=user.max_user_id if user else None,
+            inn=inn,
+        )
+        logger.info(f"i-TAT API INN check successful: {api_response}")
+
+        exists = api_response.get("exists")
+        organization_name = api_response.get("name")
+
+        if exists is False:
+            logger.info(f"INN not found in 1C, requesting org name: inn={inn}")
+            from bots.max_bot.texts import ENTER_ORG_NAME
+            from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+            await context.update_data(pending_inn=inn)
+            await context.set_state(ConsultationStates.adding_org_name)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ENTER_ORG_NAME.format(inn=inn),
+                keyboard=get_skip_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
+        # Legacy fallback
+        if exists is None and not api_response.get("is_valid", True):
+            error_details = api_response.get("error_message", "ИНН не найден в базе данных")
+            logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"❌ <b>Ошибка проверки ИНН</b>\n\n{error_details}\n\nПроверьте правильность введённого ИНН и попробуйте снова.",
+                keyboard=get_cancel_keyboard(),
+                parse_mode="HTML",
+            )
+            return
+
+    except Exception as api_error:
+        logger.error(f"i-TAT API INN check error: {api_error}", exc_info=True)
+        # Continue with local validation if API fails
+
+    try:
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
         await context.update_data(selected_inn=inn)
         await context.set_state(ConsultationStates.selecting_keys)
 
@@ -547,6 +594,102 @@ async def process_consultation_new_inn(
 
     except Exception as e:
         logger.error(f"Error adding INN in consultation: {e}", exc_info=True)
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+async def process_consultation_org_name(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Process optional org name input after INN not found in 1C (consultation flow).
+    Saves INN + name, then proceeds to key selection.
+    """
+    chat_id = event.message.recipient.chat_id
+    org_name = event.message.body.text.strip()
+
+    if len(org_name) > 100:
+        from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Название слишком длинное. Максимум 100 символов. Попробуйте ещё раз или нажмите «Пропустить»:",
+            keyboard=get_skip_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    user_id = await _get_user_id(
+        context, event.message.sender.user_id, session, chat_id, messenger_adapter
+    )
+    if not inn or not user_id:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_consultation_inn(chat_id, user_id, inn, org_name, context, session, messenger_adapter)
+
+
+async def skip_consultation_org_name(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle skip button during org name step in consultation flow.
+    Saves INN without a name and proceeds to key selection.
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    user_id = await _get_user_id(
+        context, max_user_id, session, chat_id, messenger_adapter
+    )
+    if not inn or not user_id:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_consultation_inn(chat_id, user_id, inn, None, context, session, messenger_adapter)
+
+
+async def _finalize_consultation_inn(
+    chat_id: int,
+    user_id: int,
+    inn: str,
+    organization_name: str | None,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Save INN (with optional name) and proceed to key selection."""
+    try:
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
+        await context.update_data(selected_inn=inn)
+        await context.set_state(ConsultationStates.selecting_keys)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=CONSULTATION_INN_ADDED,
+            parse_mode="HTML",
+        )
+        await _show_key_selection(chat_id, user_id, set(), 0, session, messenger_adapter)
+
+    except Exception as e:
+        logger.error(f"Error in _finalize_consultation_inn: inn={inn}, error={e}", exc_info=True)
         await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
 
 

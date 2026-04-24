@@ -897,6 +897,7 @@ async def process_inn(
     
     # Check INN with i-TAT API
     from services.i_tat_service import get_itat_client
+    organization_name: str | None = None
     try:
         itat_client = get_itat_client()
         api_response = await itat_client.check_inn(
@@ -905,9 +906,20 @@ async def process_inn(
         )
         logger.info(f"i-TAT API INN check successful: {api_response}")
         
-        # Check if INN is valid according to i-TAT
-        if not api_response.get("is_valid", True):
-            error_details = api_response.get("error_message", "INN не найден в базе данных")
+        # New contract: {"status": "ok", "inn": "...", "exists": bool, "name": str|null}
+        exists = api_response.get("exists")
+        organization_name = api_response.get("name")  # Save name from 1C
+        
+        if exists is False:
+            # INN not found in 1C during registration — save INN without name, proceed to key
+            # (org name is only requested in invoice/consultation/profile flows, not registration)
+            logger.info(f"INN not found in 1C during registration, proceeding without name: inn={inn}")
+            organization_name = None
+            # Fall through to save INN below
+        
+        # Legacy fallback: old API returned is_valid field
+        if exists is None and not api_response.get("is_valid", True):
+            error_details = api_response.get("error_message", "ИНН не найден в базе данных")
             logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
             await messenger_adapter.send_message(
                 chat_id=chat_id,
@@ -938,10 +950,10 @@ async def process_inn(
             return
         
         # Add organization to user profile
-        await add_user_organization(session, user_id, inn)
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
         await session.commit()
         
-        logger.info(f"Organization added: user_id={user_id}, inn={inn}")
+        logger.info(f"Organization added: user_id={user_id}, inn={inn}, name={organization_name}")
         
         # Store INN in context
         await context.update_data(inn=inn)

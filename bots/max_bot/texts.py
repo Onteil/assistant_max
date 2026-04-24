@@ -163,6 +163,28 @@ from bots.tg_bot.texts import (
 
 # These messages are specific to MAX messenger and differ from Telegram
 
+# Registration: Organization name request when INN not found in 1C
+REGISTRATION_ENTER_ORG_NAME = """
+ℹ️ <b>ИНН не найден в базе 1С</b>
+
+ИНН <code>{inn}</code> не найден в нашей базе данных.
+
+Вы можете ввести <b>короткое название организации</b> (для удобства отображения в боте) или пропустить этот шаг.
+
+<i>Название будет использоваться только в интерфейсе бота.</i>
+"""
+
+# Generic org name request (used in invoice, consultation, profile flows)
+ENTER_ORG_NAME = """
+ℹ️ <b>ИНН не найден в базе 1С</b>
+
+ИНН <code>{inn}</code> не найден в нашей базе данных.
+
+Вы можете ввести <b>короткое название организации</b> (для удобства отображения в боте) или пропустить этот шаг.
+
+<i>Название будет использоваться только в интерфейсе бота.</i>
+"""
+
 MAX_WELCOME = """
 👋 Привет! Рады видеть вас в MAX боте АЙТАТ!
 

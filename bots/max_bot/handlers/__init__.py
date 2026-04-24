@@ -130,6 +130,8 @@ from .tickets.invoice import (
     handle_organization_page_callback,
     handle_organization_action_callback,
     process_new_inn,
+    process_invoice_org_name,
+    skip_invoice_org_name,
     process_new_key,
     process_description,
     process_email,
@@ -152,6 +154,8 @@ from .tickets.consultation import (
     handle_consultation_org_page,
     handle_consultation_org_action,
     process_consultation_new_inn,
+    process_consultation_org_name,
+    skip_consultation_org_name,
     handle_consultation_key_toggle,
     handle_consultation_key_page,
     handle_consultation_key_action,
@@ -332,6 +336,8 @@ from .user.profile import (
     cmd_profile,
     handle_profile_callback,
     process_add_inn,
+    process_add_inn_org_name,
+    skip_add_inn_org_name,
     process_add_key,
     process_change_email,
     cancel_profile_action,
@@ -1025,6 +1031,24 @@ def create_user_router() -> Router:
         F.message.body.text,
         ProfileStates.adding_inn
     )(process_add_inn)
+
+    # Handler for org name input when INN not found in 1C (profile flow)
+    user_router.message_created(
+        F.message.body.text,
+        ProfileStates.adding_org_name
+    )(process_add_inn_org_name)
+
+    # Skip org name callback (profile flow)
+    user_router.message_callback(
+        RegistrationSkipPayload.filter(),
+        ProfileStates.adding_org_name
+    )(skip_add_inn_org_name)
+
+    # Cancel handler for org name step (profile flow)
+    user_router.message_created(
+        F.message.body.text == "❌ Отмена",
+        ProfileStates.adding_org_name
+    )(cancel_profile_action)
     
     user_router.message_created(
         F.message.body.text,
@@ -1079,8 +1103,11 @@ def create_user_router() -> Router:
         RegistrationStates.waiting_for_email
     )(process_email_registration)
     
-    # Skip email callback - when user clicks "Пропустить"
-    user_router.message_callback(RegistrationSkipPayload.filter())(skip_email)
+    # Skip email callback - when user clicks "Пропустить" during email step
+    user_router.message_callback(
+        RegistrationSkipPayload.filter(),
+        RegistrationStates.waiting_for_email
+    )(skip_email)
     
     # INN handler
     user_router.message_created(
@@ -1402,6 +1429,24 @@ def create_tickets_router() -> Router:
         F.message.body.text,
         InvoiceStates.adding_new_inn
     )(process_new_inn)
+
+    # Handler for org name input when INN not found in 1C (invoice flow)
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.adding_org_name
+    )(process_invoice_org_name)
+
+    # Skip org name callback (invoice flow)
+    tickets_router.message_callback(
+        RegistrationSkipPayload.filter(),
+        InvoiceStates.adding_org_name
+    )(skip_invoice_org_name)
+
+    # Cancel handler for org name step (invoice flow)
+    tickets_router.message_callback(
+        RegistrationCancelPayload.filter(),
+        InvoiceStates.adding_org_name
+    )(cancel_add_new_inn)
     
     # Handler for adding new key
     tickets_router.message_created(
@@ -1501,6 +1546,24 @@ def create_tickets_router() -> Router:
         F.message.body.text,
         ConsultationStates.adding_new_inn
     )(process_consultation_new_inn)
+
+    # Handler for org name input when INN not found in 1C (consultation flow)
+    tickets_router.message_created(
+        F.message.body.text,
+        ConsultationStates.adding_org_name
+    )(process_consultation_org_name)
+
+    # Skip org name callback (consultation flow)
+    tickets_router.message_callback(
+        RegistrationSkipPayload.filter(),
+        ConsultationStates.adding_org_name
+    )(skip_consultation_org_name)
+
+    # Cancel handler for org name step (consultation flow)
+    tickets_router.message_callback(
+        RegistrationCancelPayload.filter(),
+        ConsultationStates.adding_org_name
+    )(cancel_consultation_add_inn)
 
     tickets_router.message_created(
         F.message.body.text,

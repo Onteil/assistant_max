@@ -29,6 +29,7 @@ class InvoiceStates(StatesGroup):
 
     selecting_organization = State()
     adding_new_inn = State()
+    adding_org_name = State()  # Optional: ask user for short org name when INN not found in 1C
     selecting_keys = State()
     adding_new_key = State()
     entering_description = State()
@@ -50,6 +51,7 @@ class ConsultationStates(StatesGroup):
 
     selecting_organization = State()
     adding_new_inn = State()
+    adding_org_name = State()  # Optional: ask user for short org name when INN not found in 1C
     selecting_keys = State()
     adding_new_key = State()
     entering_description = State()
@@ -59,6 +61,7 @@ class ProfileStates(StatesGroup):
     """States for profile management."""
 
     adding_inn = State()
+    adding_org_name = State()  # Optional: ask user for short org name when INN not found in 1C
     adding_key = State()
     changing_phone = State()
     changing_email = State()

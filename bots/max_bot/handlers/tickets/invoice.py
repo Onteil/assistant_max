@@ -664,8 +664,27 @@ async def process_new_inn(
         )
         logger.info(f"i-TAT API INN check successful: {api_response}")
         
-        # Check if INN is valid according to i-TAT
-        if not api_response.get("is_valid", True):
+        # New contract: {"status": "ok", "inn": "...", "exists": bool, "name": str|null}
+        exists = api_response.get("exists")
+        organization_name = api_response.get("name")
+
+        if exists is False:
+            logger.info(f"INN not found in 1C, requesting org name: inn={inn}")
+            from bots.max_bot.texts import ENTER_ORG_NAME
+            from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+            from bots.max_bot.states import InvoiceStates
+            await context.update_data(pending_inn=inn)
+            await context.set_state(InvoiceStates.adding_org_name)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ENTER_ORG_NAME.format(inn=inn),
+                keyboard=get_skip_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        # Legacy fallback: old API returned is_valid field
+        if exists is None and not api_response.get("is_valid", True):
             error_details = api_response.get("error_message", "INN не найден в базе данных")
             logger.warning(f"INN rejected by i-TAT API: inn={inn}, reason={error_details}")
             await messenger_adapter.send_message(
@@ -677,6 +696,7 @@ async def process_new_inn(
             
     except Exception as api_error:
         logger.error(f"i-TAT API INN check error: {api_error}", exc_info=True)
+        organization_name = None
         # Show error to testers for debugging
         error_type = type(api_error).__name__
         error_msg = str(api_error)
@@ -716,7 +736,7 @@ async def process_new_inn(
             return
         
         # Add organization to user profile
-        await add_user_organization(session, user_id, inn)
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
         
         # Update user assets via i-TAT API
         assets_response = await call_itat_with_retry(
@@ -798,6 +818,152 @@ async def process_new_inn(
             text=ERROR_GENERAL,
             parse_mode="HTML"
         )
+
+
+async def process_invoice_org_name(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process optional org name input after INN not found in 1C (invoice flow).
+    Saves INN + name, then proceeds to key selection.
+    """
+    chat_id = event.message.recipient.chat_id
+    org_name = event.message.body.text.strip()
+
+    if len(org_name) > 100:
+        from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Название слишком длинное. Максимум 100 символов. Попробуйте ещё раз или нажмите «Пропустить»:",
+            keyboard=get_skip_keyboard(),
+            parse_mode="HTML"
+        )
+        return
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    if not inn:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_invoice_inn(chat_id, inn, org_name, context, session, messenger_adapter, event)
+
+
+async def skip_invoice_org_name(
+    event: MessageCallback,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle skip button during org name step in invoice flow.
+    Saves INN without a name and proceeds to key selection.
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    data = await context.get_data()
+    inn = data.get("pending_inn")
+    if not inn:
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        await context.clear()
+        return
+
+    await _finalize_invoice_inn(chat_id, inn, None, context, session, messenger_adapter, event)
+
+
+async def _finalize_invoice_inn(
+    chat_id: int,
+    inn: str,
+    organization_name: str | None,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+    event,
+) -> None:
+    """Save INN (with optional name), call update_user_assets, proceed to key selection."""
+    try:
+        user_id = await get_user_id_with_fallback_from_message(
+            context=context,
+            event=event,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+        if not user_id:
+            return
+
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+            return
+
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
+
+        assets_response = await call_itat_with_retry(
+            session=session,
+            operation="update_user_assets",
+            payload=dict(
+                messenger="max",
+                user_id=user.max_user_id,
+                asset_type="inn",
+                action="add",
+                value=inn,
+            ),
+            user_id=user.id,
+        )
+        if assets_response is not None:
+            logger.info(f"Assets update result: {assets_response}")
+        else:
+            logger.warning(f"update_user_assets queued for retry: user_id={user.id}, inn={inn}")
+
+        await session.commit()
+        logger.info(f"Organization added (invoice): user_id={user_id}, inn={inn}, name={organization_name}")
+
+        await context.update_data(selected_inn=inn)
+        await context.set_state(InvoiceStates.selecting_keys)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=INVOICE_INN_ADDED,
+            parse_mode="HTML"
+        )
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+    except IntegrityError:
+        await session.rollback()
+        await context.update_data(selected_inn=inn)
+        await context.set_state(InvoiceStates.selecting_keys)
+        await messenger_adapter.send_message(chat_id=chat_id, text=INVOICE_INN_ADDED, parse_mode="HTML")
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+    except SQLAlchemyError as e:
+        logger.error(f"Database error in _finalize_invoice_inn: inn={inn}, error={e}", exc_info=True)
+        await session.rollback()
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
 
 
 # ========== Key Selection Handlers ==========

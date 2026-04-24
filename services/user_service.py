@@ -511,18 +511,21 @@ async def get_user_organizations(
 async def add_user_organization(
     session: AsyncSession,
     user_id: int,
-    inn: str
+    inn: str,
+    organization_name: str | None = None
 ) -> Organization:
     """
     Create organization and user_organizations association.
     
     Creates Organization record if it doesn't exist, then creates association
     with user. Prevents duplicate associations.
+    If organization_name is provided, saves it to the Organization record.
     
     Args:
         session: Database session
         user_id: Internal user ID (primary key)
         inn: Organization INN (10 or 12 digits)
+        organization_name: Organization name from 1C (optional)
     
     Returns:
         Organization object
@@ -549,11 +552,11 @@ async def add_user_organization(
         organization = result.scalar_one_or_none()
         
         if not organization:
-            organization = Organization(inn=inn)
+            organization = Organization(inn=inn, organization_name=organization_name)
             session.add(organization)
             try:
                 await session.flush()
-                logger.info(f"Organization created: inn={inn}")
+                logger.info(f"Organization created: inn={inn}, name={organization_name}")
             except IntegrityError as integrity_err:
                 # Race condition: organization was created by another transaction (e.g., webhook)
                 # Rollback this flush and re-fetch the organization
@@ -571,6 +574,10 @@ async def add_user_organization(
                     # Still not found - this shouldn't happen, but handle it
                     logger.error(f"Organization {inn} still not found after race condition")
                     raise
+        elif organization_name and not organization.organization_name:
+            # Update name if we now have it but didn't before
+            organization.organization_name = organization_name
+            logger.info(f"Organization name updated: inn={inn}, name={organization_name}")
         
         # Check if association already exists
         result = await session.execute(

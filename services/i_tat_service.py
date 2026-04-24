@@ -228,7 +228,7 @@ class ITatAPIClient:
     async def _mock_check_inn(self, messenger: str, user_id: int | None, inn: str) -> dict[str, Any]:
         """Заглушка для проверки ИНН"""
         logger.info(f"[MOCK] Checking INN: inn={inn}, user={user_id}, messenger={messenger}")
-        return {"status": "ok", "message": "ИНН доступен"}
+        return {"status": "ok", "inn": inn, "exists": True, "name": "ООО Тестовая Организация"}
 
     async def _mock_update_user_assets(
         self, messenger: str, user_id: int, asset_type: str, action: str, value: str
@@ -913,7 +913,7 @@ class ITatAPIClient:
         user_id: int | None = None
     ) -> dict[str, Any]:
         """
-        Check INN availability and validation.
+        Check INN existence in 1C database.
 
         Args:
             messenger: Messenger type ("telegram" or "max")
@@ -923,7 +923,9 @@ class ITatAPIClient:
         Returns:
             {
                 "status": "ok",
-                "message": "ИНН доступен"
+                "inn": "7707083893",
+                "exists": true,
+                "name": "ПАО СБЕРБАНК"   # null if INN not found
             }
         
         Raises:
