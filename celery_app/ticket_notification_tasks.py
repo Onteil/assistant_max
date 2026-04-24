@@ -151,6 +151,11 @@ async def _process_pending_tickets_async() -> dict:
                     # Process based on ticket type
                     if ticket.ticket_type == TicketType.INVOICE:
                         stats["invoice_tickets"] += 1
+                        
+                        # Mark as notified BEFORE processing (so escalation can use this timestamp)
+                        ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+                        await session.commit()
+                        
                         sent = await _process_invoice_ticket(
                             ticket, max_bot, messenger_type, 
                             messenger_id, session, stats
@@ -158,6 +163,11 @@ async def _process_pending_tickets_async() -> dict:
                     
                     elif ticket.ticket_type == TicketType.RENEWAL:
                         stats["renewal_tickets"] += 1
+                        
+                        # Mark as notified BEFORE processing (so escalation can use this timestamp)
+                        ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+                        await session.commit()
+                        
                         sent = await _process_renewal_ticket(
                             ticket, max_bot, messenger_type,
                             messenger_id, session, stats
@@ -165,28 +175,38 @@ async def _process_pending_tickets_async() -> dict:
                     
                     elif ticket.ticket_type == TicketType.TECHNICAL_SUPPORT:
                         stats["support_tickets"] += 1
+                        
+                        # Mark as notified BEFORE processing (so escalation can use this timestamp)
+                        ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+                        await session.commit()
+                        
                         sent = await _process_support_ticket(
                             ticket, max_bot, session, stats
                         )
                     
                     elif ticket.ticket_type == TicketType.CONSULTATION:
                         stats["consultation_tickets"] += 1
+                        
+                        # Mark as notified BEFORE processing (so escalation can use this timestamp)
+                        ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+                        await session.commit()
+                        
                         sent = await _process_consultation_ticket(
                             ticket, max_bot, session, stats
                         )
                     else:
                         sent = False
                     
-                    # Mark ticket as notified ONLY if notification was sent successfully
-                    if sent:
-                        ticket.queue_notification_sent_at = datetime.now(MOSCOW_TZ).replace(tzinfo=None)
+                    # If notification failed, clear the timestamp so it will be retried
+                    if not sent:
+                        ticket.queue_notification_sent_at = None
                         await session.commit()
-                        logger.info(
-                            f"Ticket {ticket.id} marked as notified from queue"
-                        )
-                    else:
                         logger.warning(
                             f"Ticket {ticket.id} notification failed - will retry on next run"
+                        )
+                    else:
+                        logger.info(
+                            f"Ticket {ticket.id} processed from queue successfully"
                         )
                 
                 except Exception as e:
@@ -387,6 +407,19 @@ async def _process_invoice_ticket(
                         f"Failed to forward attachments for invoice ticket {ticket.id}: {e}",
                         exc_info=True
                     )
+            
+            # Schedule escalation monitoring now that working hours have started
+            try:
+                from celery_app.escalation_tasks import schedule_escalation_monitoring
+                await schedule_escalation_monitoring(ticket_id=ticket.id)
+                logger.info(
+                    f"Escalation monitoring scheduled for queued invoice ticket {ticket.id}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to schedule escalation for queued invoice ticket {ticket.id}: {e}",
+                    exc_info=True
+                )
         else:
             logger.error(
                 f"Failed to send manager notification for ticket {ticket.id}, "
@@ -618,6 +651,20 @@ async def _process_renewal_ticket(
             f"Manager notification sent for renewal ticket {ticket.id}, "
             f"staff_id={ticket.assigned_staff_id}, messenger={messenger_type}"
         )
+        
+        # Schedule escalation monitoring now that working hours have started
+        try:
+            from celery_app.escalation_tasks import schedule_escalation_monitoring
+            await schedule_escalation_monitoring(ticket_id=ticket.id)
+            logger.info(
+                f"Escalation monitoring scheduled for queued renewal ticket {ticket.id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to schedule escalation for queued renewal ticket {ticket.id}: {e}",
+                exc_info=True
+            )
+    
     return notification_sent
 
 
@@ -642,6 +689,7 @@ async def _process_support_ticket(
     from utils.timezone_helpers import get_moscow_now_naive
     from sqlalchemy import and_ as sa_and_
 
+    # Calculate time since creation (for display in notification)
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
 
@@ -663,7 +711,7 @@ async def _process_support_ticket(
         notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
 
     notification_text += (
-        f"\n⏱ <b>Ожидает:</b> {minutes} мин\n"
+        f"\n⏱ <b>Ожидала в очереди:</b> {minutes} мин\n"
         f"💬 <b>Клиенту сообщено:</b> \"Техподдержка ответит в начале рабочего дня\"\n"
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )
@@ -832,6 +880,7 @@ async def _process_consultation_ticket(
     from services.settings_service import get_setting
     from utils.timezone_helpers import get_moscow_now_naive
 
+    # Calculate time since creation (for display in notification)
     elapsed = get_moscow_now_naive() - ticket.created_at
     minutes = int(elapsed.total_seconds() // 60)
 
@@ -860,7 +909,7 @@ async def _process_consultation_ticket(
         notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
 
     notification_text += (
-        f"\n⏱ <b>Ожидает:</b> {minutes} мин\n"
+        f"\n⏱ <b>Ожидала в очереди:</b> {minutes} мин\n"
         f"💬 <b>Клиенту сообщено:</b> \"Специалист ответит в начале рабочего дня\"\n"
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )

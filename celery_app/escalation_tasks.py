@@ -89,6 +89,43 @@ async def _get_admin_max_chat_id(session: AsyncSession, admin: "Staff_Member") -
 # ========== Helper Functions ==========
 
 
+def get_ticket_elapsed_time(ticket: Ticket) -> tuple[int, datetime]:
+    """
+    Calculate elapsed time for a ticket, considering queue processing.
+    
+    For tickets created in non-working hours and processed from queue,
+    time is calculated from queue_notification_sent_at (when staff was notified).
+    For regular tickets, time is calculated from created_at.
+    
+    Args:
+        ticket: Ticket object
+    
+    Returns:
+        Tuple of (minutes_elapsed, reference_time)
+        - minutes_elapsed: Number of minutes since reference time
+        - reference_time: The timestamp used for calculation (for logging)
+    """
+    from utils.timezone_helpers import get_moscow_now_naive
+    
+    # If ticket was sent from queue, use queue notification time
+    if ticket.queue_notification_sent_at:
+        reference_time = ticket.queue_notification_sent_at
+        logger.debug(
+            f"Using queue_notification_sent_at for ticket {ticket.id}: "
+            f"{reference_time}"
+        )
+    else:
+        reference_time = ticket.created_at
+        logger.debug(
+            f"Using created_at for ticket {ticket.id}: {reference_time}"
+        )
+    
+    elapsed = get_moscow_now_naive() - reference_time
+    minutes = int(elapsed.total_seconds() // 60)
+    
+    return minutes, reference_time
+
+
 async def get_escalation_timeout() -> int:
     """
     Get escalation timeout from system settings.
@@ -595,10 +632,8 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Calculate time elapsed
-    from utils.timezone_helpers import get_moscow_now_naive
-    elapsed = get_moscow_now_naive() - ticket.created_at
-    minutes = int(elapsed.total_seconds() // 60)
+    # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
 
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
@@ -853,10 +888,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Calculate time elapsed
-    from utils.timezone_helpers import get_moscow_now_naive
-    elapsed = get_moscow_now_naive() - ticket.created_at
-    minutes = int(elapsed.total_seconds() // 60)
+    # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
 
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
@@ -1124,8 +1157,9 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                 "escalation_id": escalation.id
             }
         
-        # Calculate time elapsed
-        time_elapsed = calculate_time_elapsed(ticket.created_at)
+        # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+        time_elapsed_minutes, reference_time = get_ticket_elapsed_time(ticket)
+        time_elapsed = f"{time_elapsed_minutes} мин"
         
         # Get escalation timeout from settings
         from services.settings_service import get_setting
@@ -1677,10 +1711,8 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Calculate time elapsed
-    from utils.timezone_helpers import get_moscow_now_naive
-    elapsed = get_moscow_now_naive() - ticket.created_at
-    minutes = int(elapsed.total_seconds() // 60)
+    # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
 
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
@@ -1941,10 +1973,8 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Calculate time elapsed
-    from utils.timezone_helpers import get_moscow_now_naive
-    elapsed = get_moscow_now_naive() - ticket.created_at
-    minutes = int(elapsed.total_seconds() // 60)
+    # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
 
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
@@ -2129,10 +2159,8 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
             "ticket_id": ticket.id
         }
     
-    # Calculate time elapsed
-    from utils.timezone_helpers import get_moscow_now_naive
-    elapsed = get_moscow_now_naive() - ticket.created_at
-    minutes = int(elapsed.total_seconds() // 60)
+    # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
     
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
@@ -2334,6 +2362,9 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
     - Level 0 (10 min): Notify all backup_manager_1 from all support staff (deduplicated)
     - Level 1 (20 min): Notify all backup_manager_2 from all support staff (deduplicated)
     - Level 2 (30 min): Notify all administrators and escalation channels
+    
+    For tickets from queue (created in non-working hours), time is calculated from
+    queue_notification_sent_at instead of created_at.
     
     Args:
         ticket_id: ID of the ticket to check
