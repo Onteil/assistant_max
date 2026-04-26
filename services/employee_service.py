@@ -97,7 +97,8 @@ async def get_employee_active_tickets(
 
     Filtering logic:
     - ADMINISTRATOR role: sees ALL active tickets (with optional type filter)
-    - TECHNICAL_SUPPORT role: sees ALL TECHNICAL_SUPPORT tickets (regardless of filter)
+    - TECHNICAL_SUPPORT role: sees only TECHNICAL_SUPPORT tickets assigned to them
+    - Consultation specialists (is_estimate_tech_specialist=True): see only CONSULTATION tickets assigned to them
     - Other roles (MANAGER, DUTY_ENGINEER): see only tickets assigned to them (with optional type filter)
 
     Args:
@@ -145,10 +146,16 @@ async def get_employee_active_tickets(
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # TECHNICAL_SUPPORT sees TECHNICAL_SUPPORT and CONSULTATION tickets
+        # TECHNICAL_SUPPORT sees only TECHNICAL_SUPPORT tickets assigned to them
         elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
-            logger.info(f"Technical support {employee_id} viewing TECHNICAL_SUPPORT+CONSULTATION tickets (filter={ticket_type_filter})")
-            conditions.append(Ticket.ticket_type.in_([TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION]))
+            logger.info(f"Technical support {employee_id} viewing assigned TECHNICAL_SUPPORT tickets (filter={ticket_type_filter})")
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
+            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+        # Consultation specialists see only CONSULTATION tickets assigned to them
+        elif staff_member.is_estimate_tech_specialist:
+            logger.info(f"Consultation specialist {employee_id} viewing assigned CONSULTATION tickets (filter={ticket_type_filter})")
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
+            conditions.append(Ticket.ticket_type == TicketType.CONSULTATION)
         # Other roles see only assigned tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
@@ -1774,7 +1781,8 @@ async def get_employee_new_tickets_count(
 
     Filtering logic (same as get_employee_active_tickets):
     - ADMINISTRATOR role: counts ALL NEW tickets (with optional type filter)
-    - TECHNICAL_SUPPORT role: counts ALL NEW TECHNICAL_SUPPORT tickets (regardless of filter)
+    - TECHNICAL_SUPPORT role: counts only NEW TECHNICAL_SUPPORT tickets assigned to them
+    - Consultation specialists (is_estimate_tech_specialist=True): count only NEW CONSULTATION tickets assigned to them
     - Other roles (MANAGER, DUTY_ENGINEER): count only NEW tickets assigned to them (with optional type filter)
 
     Args:
@@ -1812,13 +1820,19 @@ async def get_employee_new_tickets_count(
                 type_map = {
                     "invoice": TicketType.INVOICE,
                     "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "consultation": TicketType.CONSULTATION,
                     "renewal": TicketType.RENEWAL
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # TECHNICAL_SUPPORT sees all NEW TECHNICAL_SUPPORT tickets
+        # TECHNICAL_SUPPORT sees only NEW TECHNICAL_SUPPORT tickets assigned to them
         elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
             conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
+        # Consultation specialists see only NEW CONSULTATION tickets assigned to them
+        elif staff_member.is_estimate_tech_specialist:
+            conditions.append(Ticket.assigned_staff_id == staff_member.id)
+            conditions.append(Ticket.ticket_type == TicketType.CONSULTATION)
         # Other roles see only assigned NEW tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
@@ -1827,6 +1841,7 @@ async def get_employee_new_tickets_count(
                 type_map = {
                     "invoice": TicketType.INVOICE,
                     "technical_support": TicketType.TECHNICAL_SUPPORT,
+                    "consultation": TicketType.CONSULTATION,
                     "renewal": TicketType.RENEWAL
                 }
                 if ticket_type_filter in type_map:
