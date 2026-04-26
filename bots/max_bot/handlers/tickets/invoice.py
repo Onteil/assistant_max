@@ -2607,6 +2607,11 @@ async def create_invoice_ticket(
         
         ticket = await create_ticket(session, ticket_data)
         
+        # Determine work mode for queue notification flag and notifications
+        from services.calendar_service import get_current_work_mode
+        from database.models import WorkMode
+        work_mode = await get_current_work_mode(session)
+        
         # Set queue_notification_sent_at immediately for working hours tickets
         # to prevent queue processing task from picking them up
         if work_mode != WorkMode.NON_WORKING:
@@ -2678,11 +2683,8 @@ async def create_invoice_ticket(
                 manager_position = staff_member.position or "Менеджер"
         
         # Determine response time message based on working hours
-        from services.calendar_service import get_current_work_mode
-        from database.models import WorkMode
         from datetime import datetime
         
-        work_mode = await get_current_work_mode(session)
         is_working = work_mode != WorkMode.NON_WORKING
         
         # Send success message to user
