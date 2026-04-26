@@ -395,6 +395,16 @@ async def create_renewal_ticket(
         }
         
         ticket = await create_ticket(session, ticket_data)
+        
+        # Set queue_notification_sent_at immediately for working hours tickets
+        # to prevent queue processing task from picking them up
+        if is_working:
+            from utils.timezone_utils import get_moscow_now_naive
+            ticket.queue_notification_sent_at = get_moscow_now_naive()
+            logger.info(
+                f"Set queue_notification_sent_at immediately for working hours renewal ticket: ticket_id={ticket.id}"
+            )
+        
         await session.commit()
         
         logger.info(
@@ -446,6 +456,16 @@ async def create_renewal_ticket(
                 "description": "Запрос техподдержки (создан вместе с заявкой на продление подписки)"
             }
             support_ticket = await create_ticket(session, support_ticket_data)
+            
+            # Set queue_notification_sent_at immediately for working hours tickets
+            # to prevent queue processing task from picking them up
+            if work_mode != WorkMode.NON_WORKING:
+                from utils.timezone_utils import get_moscow_now_naive
+                support_ticket.queue_notification_sent_at = get_moscow_now_naive()
+                logger.info(
+                    f"Set queue_notification_sent_at immediately for working hours support ticket: ticket_id={support_ticket.id}"
+                )
+            
             await session.commit()
             
             logger.info(
@@ -558,15 +578,6 @@ async def create_renewal_ticket(
                 logger.info(
                     f"Staff notification sent: ticket_id={ticket.id}, "
                     f"staff_id={assigned_staff_id}"
-                )
-                
-                # Set queue_notification_sent_at to prevent queue processing
-                from utils.timezone_utils import get_moscow_now_naive
-                ticket.queue_notification_sent_at = get_moscow_now_naive()
-                await session.commit()
-                
-                logger.info(
-                    f"Set queue_notification_sent_at for renewal ticket: ticket_id={ticket.id}"
                 )
             else:
                 logger.warning(
@@ -1772,6 +1783,15 @@ async def create_support_ticket(
         
         ticket = await create_ticket(session, ticket_data)
         
+        # Set queue_notification_sent_at immediately for working hours tickets
+        # to prevent queue processing task from picking them up
+        if work_mode != WorkMode.NON_WORKING:
+            from utils.timezone_utils import get_moscow_now_naive
+            ticket.queue_notification_sent_at = get_moscow_now_naive()
+            logger.info(
+                f"Set queue_notification_sent_at immediately for working hours support ticket: ticket_id={ticket.id}"
+            )
+        
         # Store attachments in ticket (if needed, extend ticket model)
         # For now, attachments are included in description
         
@@ -1959,15 +1979,6 @@ async def create_support_ticket(
                                     f"Admin notification sent (no support staff): ticket_id={ticket.id}, "
                                     f"admin_id={admin.id}"
                                 )
-                                
-                                # Set queue_notification_sent_at to prevent queue processing
-                                from utils.timezone_utils import get_moscow_now_naive
-                                ticket.queue_notification_sent_at = get_moscow_now_naive()
-                                await session.commit()
-                                
-                                logger.info(
-                                    f"Set queue_notification_sent_at for support ticket (admin): ticket_id={ticket.id}"
-                                )
 
                                 # Notify admin about missing support staff
                                 await _notify_admin_about_no_support_staff(
@@ -2060,15 +2071,6 @@ async def create_support_ticket(
                                 logger.info(
                                     f"Admin notification sent (no duty engineer): ticket_id={ticket.id}, "
                                     f"admin_id={admin.id}"
-                                )
-                                
-                                # Set queue_notification_sent_at to prevent queue processing
-                                from utils.timezone_utils import get_moscow_now_naive
-                                ticket.queue_notification_sent_at = get_moscow_now_naive()
-                                await session.commit()
-                                
-                                logger.info(
-                                    f"Set queue_notification_sent_at for support ticket (admin, no duty): ticket_id={ticket.id}"
                                 )
                                 
                                 # Notify admin about missing duty engineer

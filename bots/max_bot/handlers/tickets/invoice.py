@@ -2606,6 +2606,16 @@ async def create_invoice_ticket(
         }
         
         ticket = await create_ticket(session, ticket_data)
+        
+        # Set queue_notification_sent_at immediately for working hours tickets
+        # to prevent queue processing task from picking them up
+        if work_mode != WorkMode.NON_WORKING:
+            from utils.timezone_utils import get_moscow_now_naive
+            ticket.queue_notification_sent_at = get_moscow_now_naive()
+            logger.info(
+                f"Set queue_notification_sent_at immediately for working hours invoice ticket: ticket_id={ticket.id}"
+            )
+        
         await session.commit()
         
         logger.info(
@@ -2756,15 +2766,6 @@ async def create_invoice_ticket(
                         logger.info(
                             f"Manager notification sent immediately: ticket_id={ticket.id}, "
                             f"staff_id={assigned_staff_id}, work_mode={work_mode.value}"
-                        )
-                        
-                        # Set queue_notification_sent_at to prevent queue processing
-                        from utils.timezone_utils import get_moscow_now_naive
-                        ticket.queue_notification_sent_at = get_moscow_now_naive()
-                        await session.commit()
-                        
-                        logger.info(
-                            f"Set queue_notification_sent_at for invoice ticket: ticket_id={ticket.id}"
                         )
                         
                         # Forward attachments to manager if any

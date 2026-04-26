@@ -280,6 +280,16 @@ async def _create_renewal_ticket_for_consultation(
                 "description": "Запрос на продление подписки (автоматически при попытке получить консультацию)",
             }
             ticket = await create_ticket(session, ticket_data)
+            
+            # Set queue_notification_sent_at immediately for working hours tickets
+            # to prevent queue processing task from picking them up
+            if is_working:
+                from utils.timezone_utils import get_moscow_now_naive
+                ticket.queue_notification_sent_at = get_moscow_now_naive()
+                logger.info(
+                    f"Set queue_notification_sent_at immediately for working hours auto-renewal ticket: ticket_id={ticket.id}"
+                )
+            
             await session.commit()
 
             logger.info(
@@ -306,14 +316,8 @@ async def _create_renewal_ticket_for_consultation(
                     )
                     
                     if notification_sent:
-                        # Set queue_notification_sent_at to prevent queue processing
-                        from utils.timezone_utils import get_moscow_now_naive
-                        ticket.queue_notification_sent_at = get_moscow_now_naive()
-                        await session.commit()
-                        
-                        logger.info(
-                            f"Set queue_notification_sent_at for auto-renewal ticket: ticket_id={ticket.id}"
-                        )
+                        # No need to set queue_notification_sent_at here - already set at ticket creation
+                        pass
                 except Exception as e:
                     logger.error(
                         f"Failed to notify manager about auto-renewal ticket: "
@@ -868,6 +872,16 @@ async def handle_consultation_key_action(
                 "selected_key_ids": selected_keys_list,
             }
             ticket = await create_ticket(session, ticket_data)
+            
+            # Set queue_notification_sent_at immediately for working hours tickets
+            # to prevent queue processing task from picking them up
+            if is_working:
+                from utils.timezone_utils import get_moscow_now_naive
+                ticket.queue_notification_sent_at = get_moscow_now_naive()
+                logger.info(
+                    f"Set queue_notification_sent_at immediately for working hours consultation ticket: ticket_id={ticket.id}"
+                )
+            
             await session.commit()
             try:
                 from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
@@ -1295,6 +1309,16 @@ async def handle_consultation_description_next(
         }
 
         ticket = await create_ticket(session, ticket_data)
+        
+        # Set queue_notification_sent_at immediately for working hours tickets
+        # to prevent queue processing task from picking them up
+        if is_working:
+            from utils.timezone_utils import get_moscow_now_naive
+            ticket.queue_notification_sent_at = get_moscow_now_naive()
+            logger.info(
+                f"Set queue_notification_sent_at immediately for working hours consultation ticket: ticket_id={ticket.id}"
+            )
+        
         await session.commit()
 
         logger.info(
