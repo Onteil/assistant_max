@@ -97,12 +97,13 @@ async def get_employee_active_tickets(
 
     Filtering logic:
     - ADMINISTRATOR role: sees ALL active tickets (with optional type filter)
-    - All other roles: see only tickets assigned to them (with optional type filter)
+    - All other roles: see only tickets assigned to them (type filter is ignored)
 
     Args:
         session: Database session
         employee_id: MAX user ID of the employee
         ticket_type_filter: Optional filter ('invoice', 'technical_support', 'consultation', 'renewal', or None for all)
+                           Only applies to ADMINISTRATOR role, ignored for other roles
 
     Returns:
         List of active Ticket objects ordered by created_at
@@ -144,20 +145,11 @@ async def get_employee_active_tickets(
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # All other roles see only tickets assigned to them
+        # All other roles see only tickets assigned to them (any type, ignore filter)
         else:
-            logger.info(f"Employee {employee_id} (role={staff_member.staff_role.value}, is_estimate_tech_specialist={staff_member.is_estimate_tech_specialist}) viewing assigned tickets (filter={ticket_type_filter})")
+            logger.info(f"Employee {employee_id} (role={staff_member.staff_role.value}, is_estimate_tech_specialist={staff_member.is_estimate_tech_specialist}) viewing assigned tickets (ignoring filter={ticket_type_filter})")
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
-            # Add type filter if specified
-            if ticket_type_filter:
-                type_map = {
-                    "invoice": TicketType.INVOICE,
-                    "technical_support": TicketType.TECHNICAL_SUPPORT,
-                    "consultation": TicketType.CONSULTATION,
-                    "renewal": TicketType.RENEWAL
-                }
-                if ticket_type_filter in type_map:
-                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+            # Note: Type filter is ignored for non-admin employees - they see all assigned tickets
 
         # Query tickets
         stmt = (
@@ -1770,12 +1762,13 @@ async def get_employee_new_tickets_count(
 
     Filtering logic (same as get_employee_active_tickets):
     - ADMINISTRATOR role: counts ALL NEW tickets (with optional type filter)
-    - All other roles: count only NEW tickets assigned to them (with optional type filter)
+    - All other roles: count only NEW tickets assigned to them (type filter is ignored)
 
     Args:
         session: Database session
         employee_id: MAX user ID of the employee
         ticket_type_filter: Optional filter ('invoice', 'technical_support', 'consultation', 'renewal', or None for all)
+                           Only applies to ADMINISTRATOR role, ignored for other roles
 
     Returns:
         Count of NEW tickets
@@ -1812,19 +1805,10 @@ async def get_employee_new_tickets_count(
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # All other roles see only NEW tickets assigned to them
+        # All other roles see only NEW tickets assigned to them (any type, ignore filter)
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
-            # Add type filter if specified
-            if ticket_type_filter:
-                type_map = {
-                    "invoice": TicketType.INVOICE,
-                    "technical_support": TicketType.TECHNICAL_SUPPORT,
-                    "consultation": TicketType.CONSULTATION,
-                    "renewal": TicketType.RENEWAL
-                }
-                if ticket_type_filter in type_map:
-                    conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
+            # Note: Type filter is ignored for non-admin employees - they see all assigned tickets
 
         # Count tickets
         from sqlalchemy import func
