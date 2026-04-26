@@ -583,36 +583,34 @@ async def create_renewal_ticket(
         # Notify support staff about the TECHNICAL_SUPPORT ticket (if created)
         if support_ticket and is_working:
             try:
-                from database.models import Staff_Member, StaffRole
-                from sqlalchemy import select, and_
-                
-                stmt = select(Staff_Member).where(
-                    and_(
-                        Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_active == True,
-                        Staff_Member.max_user_id.isnot(None),
-                        Staff_Member.is_estimate_tech_specialist == False,
-                    )
-                )
-                result = await session.execute(stmt)
-                support_staff = result.scalars().all()
-                
-                if support_staff:
-                    for staff in support_staff:
-                        try:
-                            await send_staff_notification(
-                                bot=max_bot,
-                                staff_id=staff.id,
-                                ticket=support_ticket,
-                                routing_info={"expected_response_time": "в течение рабочего дня"},
-                                session=session
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to notify support staff about renewal support ticket: "
-                                f"ticket_id={support_ticket.id}, staff_id={staff.id}, error={e}",
-                                exc_info=True
-                            )
+                # Round-robin: assign to the next support staff member in rotation
+                from services.round_robin_service import get_next_support_staff
+
+                assigned_rr_staff = await get_next_support_staff(session)
+
+                if assigned_rr_staff:
+                    # Persist the assignment on the support ticket
+                    support_ticket.assigned_staff_id = assigned_rr_staff.id
+                    await session.commit()
+
+                    try:
+                        await send_staff_notification(
+                            bot=max_bot,
+                            staff_id=assigned_rr_staff.id,
+                            ticket=support_ticket,
+                            routing_info={"expected_response_time": "в течение рабочего дня"},
+                            session=session
+                        )
+                        logger.info(
+                            f"Support staff notified for renewal support ticket (round-robin): "
+                            f"ticket_id={support_ticket.id}, staff_id={assigned_rr_staff.id}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to notify support staff about renewal support ticket: "
+                            f"ticket_id={support_ticket.id}, staff_id={assigned_rr_staff.id}, error={e}",
+                            exc_info=True
+                        )
                 else:
                     # No support staff — notify admins
                     from services.escalation_service import get_active_admins
@@ -1814,32 +1812,9 @@ async def create_support_ticket(
         
         # Schedule 10-minute escalation check for technical support tickets
         # Only in REGULAR/EXTENDED modes - NON_WORKING tickets wait without escalation
-        if work_mode != WorkMode.NON_WORKING:
-            try:
-                from celery_app.escalation_tasks import schedule_technical_support_monitoring
-                
-                task_id = await schedule_technical_support_monitoring(ticket_id=ticket.id)
-                
-                logger.info(
-                    f"Technical support monitoring scheduled: ticket_id={ticket.id}, "
-                    f"task_id={task_id}"
-                )
-            
-            except Exception as e:
-                # Don't fail ticket creation if escalation scheduling fails
-                logger.error(
-                    f"Failed to schedule technical support monitoring for ticket {ticket.id}: {e}",
-                    exc_info=True
-                )
-                logger.warning(
-                    f"Ticket {ticket.id} created without escalation monitoring. "
-                    f"Manual intervention may be required."
-                )
-        else:
-            logger.info(
-                f"Technical support ticket {ticket.id} created in NON_WORKING mode - "
-                f"escalation not scheduled (will be processed in next working period)"
-            )
+        # NOTE: scheduling is deferred to AFTER the notification block so that
+        # ticket.assigned_staff_id is committed before the escalation task fires.
+        _schedule_escalation = work_mode != WorkMode.NON_WORKING
         
         # Clear FSM state
         await context.clear()
@@ -1903,51 +1878,44 @@ async def create_support_ticket(
         
         if work_mode == WorkMode.REGULAR:
             if has_support_staff:
-                # Send notification to all active support staff (excluding estimate specialists)
-                from database.models import Staff_Member, StaffRole
-                from sqlalchemy import select, and_
-                
-                stmt = select(Staff_Member).where(
-                    and_(
-                        Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                        Staff_Member.is_active == True,
-                        Staff_Member.max_user_id.isnot(None),
-                        Staff_Member.is_estimate_tech_specialist == False,
-                    )
-                )
-                result = await session.execute(stmt)
-                support_staff = result.scalars().all()
-                
-                if support_staff:
-                    for staff in support_staff:
-                        try:
-                            notification_sent = await send_staff_notification(
-                                bot=max_bot,
-                                staff_id=staff.id,
-                                ticket=ticket,
-                                routing_info={
-                                    "work_mode": work_mode.value,
-                                    "expected_response_time": "в течение рабочего дня"
-                                },
-                                session=session
+                # Round-robin: assign to the next support staff member in rotation
+                from services.round_robin_service import get_next_support_staff
+
+                assigned_rr_staff = await get_next_support_staff(session)
+
+                if assigned_rr_staff:
+                    # Persist the assignment on the ticket
+                    ticket.assigned_staff_id = assigned_rr_staff.id
+                    await session.commit()
+
+                    try:
+                        notification_sent = await send_staff_notification(
+                            bot=max_bot,
+                            staff_id=assigned_rr_staff.id,
+                            ticket=ticket,
+                            routing_info={
+                                "work_mode": work_mode.value,
+                                "expected_response_time": "в течение рабочего дня"
+                            },
+                            session=session
+                        )
+
+                        if notification_sent:
+                            logger.info(
+                                f"Support staff notification sent (round-robin): "
+                                f"ticket_id={ticket.id}, staff_id={assigned_rr_staff.id}"
                             )
-                            
-                            if notification_sent:
-                                logger.info(
-                                    f"Support staff notification sent: ticket_id={ticket.id}, "
-                                    f"staff_id={staff.id}"
-                                )
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send support staff notification: "
-                                f"ticket_id={ticket.id}, staff_id={staff.id}, error={e}",
-                                exc_info=True
+                        else:
+                            logger.warning(
+                                f"Failed to send support staff notification (round-robin): "
+                                f"ticket_id={ticket.id}, staff_id={assigned_rr_staff.id}"
                             )
-                    
-                    logger.info(
-                        f"Support team notifications sent: ticket_id={ticket.id}, "
-                        f"staff_count={len(support_staff)}"
-                    )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send support staff notification: "
+                            f"ticket_id={ticket.id}, staff_id={assigned_rr_staff.id}, error={e}",
+                            exc_info=True
+                        )
                 else:
                     logger.warning(
                         f"No active support staff with MAX ID found: ticket_id={ticket.id}"
@@ -1956,7 +1924,7 @@ async def create_support_ticket(
                 # No support staff available - notify ALL admins
                 from services.escalation_service import get_active_admins
                 admins = await get_active_admins(session)
-                
+
                 if admins:
                     for admin in admins:
                         try:
@@ -1970,13 +1938,13 @@ async def create_support_ticket(
                                 },
                                 session=session
                             )
-                            
+
                             if notification_sent:
                                 logger.info(
                                     f"Admin notification sent (no support staff): ticket_id={ticket.id}, "
                                     f"admin_id={admin.id}"
                                 )
-                                
+
                                 # Notify admin about missing support staff
                                 await _notify_admin_about_no_support_staff(
                                     session=session,
@@ -1995,7 +1963,7 @@ async def create_support_ticket(
                                 f"ticket_id={ticket.id}, admin_id={admin.id}, error={e}",
                                 exc_info=True
                             )
-                    
+
                     logger.info(
                         f"Admin notifications sent (no support staff): ticket_id={ticket.id}, "
                         f"admin_count={len(admins)}"
@@ -2095,23 +2063,14 @@ async def create_support_ticket(
         
         # Forward attachments to all notified staff (if any)
         if attachments and work_mode != WorkMode.NON_WORKING:
-            from database.models import Staff_Member, StaffRole
-            from sqlalchemy import select as sa_select, and_ as sa_and_
-
             # Collect staff IDs that were notified
+            # After round-robin, ticket.assigned_staff_id holds the chosen staff member.
             notified_staff_ids: list[int] = []
 
             if work_mode == WorkMode.REGULAR:
-                if has_support_staff:
-                    stmt = sa_select(Staff_Member).where(
-                        sa_and_(
-                            Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
-                            Staff_Member.is_active == True,
-                            Staff_Member.max_user_id.isnot(None)
-                        )
-                    )
-                    result = await session.execute(stmt)
-                    notified_staff_ids = [s.id for s in result.scalars().all()]
+                # Round-robin assigns exactly one staff member; use that ID.
+                if ticket.assigned_staff_id:
+                    notified_staff_ids = [ticket.assigned_staff_id]
                 elif assigned_staff_id:
                     notified_staff_ids = [assigned_staff_id]
             elif work_mode == WorkMode.EXTENDED:
@@ -2135,6 +2094,31 @@ async def create_support_ticket(
                         f"Failed to forward attachments to staff {sid}: {e}",
                         exc_info=True
                     )
+
+        # Schedule escalation monitoring AFTER round-robin assignment is committed
+        # so the escalation task sees the correct assigned_staff_id.
+        if _schedule_escalation:
+            try:
+                from celery_app.escalation_tasks import schedule_technical_support_monitoring
+                task_id = await schedule_technical_support_monitoring(ticket_id=ticket.id)
+                logger.info(
+                    f"Technical support monitoring scheduled: ticket_id={ticket.id}, "
+                    f"task_id={task_id}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to schedule technical support monitoring for ticket {ticket.id}: {e}",
+                    exc_info=True
+                )
+                logger.warning(
+                    f"Ticket {ticket.id} created without escalation monitoring. "
+                    f"Manual intervention may be required."
+                )
+        else:
+            logger.info(
+                f"Technical support ticket {ticket.id} created in NON_WORKING mode - "
+                f"escalation not scheduled (will be processed in next working period)"
+            )
     
     except Exception as e:
         logger.error(

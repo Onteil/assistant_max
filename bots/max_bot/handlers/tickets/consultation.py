@@ -864,19 +864,12 @@ async def handle_consultation_key_action(
                 await log_ticket_creation_to_itat(session, ticket)
             except Exception as e:
                 logger.error(f"Failed to log consultation ticket to i-TAT: {e}", exc_info=True)
-            if is_working:
-                try:
-                    from celery_app.escalation_tasks import schedule_technical_support_monitoring
-                    await schedule_technical_support_monitoring(ticket_id=ticket.id)
-                except Exception as e:
-                    logger.error(f"Failed to schedule escalation for consultation {ticket.id}: {e}", exc_info=True)
             confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
             await messenger_adapter.send_message(chat_id=chat_id, text=confirmation_text, parse_mode="HTML")
             if is_working:
                 from services.employee_service import get_estimate_tech_specialists
                 from services.ticket_service import send_staff_notification, route_ticket, _get_duty_estimate_specialist
                 from loaders import max_bot
-                routing_info = await route_ticket(session, ticket, work_mode)
                 if work_mode == WorkMode.EXTENDED:
                     duty_specialist = await _get_duty_estimate_specialist(session)
                     recipients = [duty_specialist] if duty_specialist else []
@@ -884,17 +877,30 @@ async def handle_consultation_key_action(
                         from services.escalation_service import get_active_admins
                         recipients = await get_active_admins(session)
                 else:
-                    specialists = await get_estimate_tech_specialists(session)
-                    if specialists:
-                        recipients = specialists
+                    # Round-robin: assign to the next consultation specialist in rotation
+                    from services.round_robin_service import get_next_consultation_specialist
+                    assigned_rr = await get_next_consultation_specialist(session)
+                    if assigned_rr:
+                        # Persist the assignment BEFORE computing routing_info and scheduling
+                        ticket.assigned_staff_id = assigned_rr.id
+                        await session.commit()
+                        recipients = [assigned_rr]
                     else:
                         from services.escalation_service import get_active_admins
                         recipients = await get_active_admins(session)
+                # Compute routing_info AFTER assignment is persisted
+                routing_info = await route_ticket(session, ticket, work_mode)
                 for recipient in recipients:
                     try:
                         await send_staff_notification(bot=max_bot, staff_id=recipient.id, ticket=ticket, routing_info=routing_info, session=session)
                     except Exception as e:
                         logger.error(f"Failed to notify recipient {recipient.id}: {e}", exc_info=True)
+                # Schedule escalation AFTER assignment is committed
+                try:
+                    from celery_app.escalation_tasks import schedule_technical_support_monitoring
+                    await schedule_technical_support_monitoring(ticket_id=ticket.id)
+                except Exception as e:
+                    logger.error(f"Failed to schedule escalation for consultation {ticket.id}: {e}", exc_info=True)
             await _show_main_menu(chat_id, max_user_id, session, messenger_adapter)
         except Exception as e:
             logger.error(f"Error creating consultation ticket (skip_description): {e}", exc_info=True)
@@ -1355,8 +1361,6 @@ async def handle_consultation_description_next(
             from services.ticket_service import send_staff_notification, _get_duty_estimate_specialist
             from loaders import max_bot
 
-            routing_info = await route_ticket(session, ticket, work_mode)
-
             if work_mode == WorkMode.EXTENDED:
                 # In extended hours — notify only the duty estimate specialist
                 duty_specialist = await _get_duty_estimate_specialist(session)
@@ -1377,10 +1381,14 @@ async def handle_consultation_description_next(
                         "Заявка требует ручного назначения."
                     )
             else:
-                # In regular hours — notify all estimate tech specialists
-                specialists = await get_estimate_tech_specialists(session)
-                if specialists:
-                    recipients = specialists
+                # In regular hours — round-robin: assign to the next specialist in rotation
+                from services.round_robin_service import get_next_consultation_specialist
+                assigned_rr = await get_next_consultation_specialist(session)
+                if assigned_rr:
+                    # Persist the assignment BEFORE computing routing_info
+                    ticket.assigned_staff_id = assigned_rr.id
+                    await session.commit()
+                    recipients = [assigned_rr]
                     no_specialist_suffix = None
                 else:
                     logger.warning(
@@ -1394,6 +1402,9 @@ async def handle_consultation_description_next(
                         "В системе не настроен ни один сметный тех. специалист. "
                         "Заявка требует ручного назначения."
                     )
+
+            # Compute routing_info AFTER assignment is persisted
+            routing_info = await route_ticket(session, ticket, work_mode)
 
             for recipient in recipients:
                 try:
