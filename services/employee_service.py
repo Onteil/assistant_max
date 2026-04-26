@@ -97,8 +97,8 @@ async def get_employee_active_tickets(
 
     Filtering logic:
     - ADMINISTRATOR role: sees ALL active tickets (with optional type filter)
-    - TECHNICAL_SUPPORT role: sees only TECHNICAL_SUPPORT tickets assigned to them
-    - Consultation specialists (is_estimate_tech_specialist=True): see only CONSULTATION tickets assigned to them
+    - Consultation specialists (is_estimate_tech_specialist=True): see only assigned CONSULTATION tickets (overrides role)
+    - TECHNICAL_SUPPORT role: sees TECHNICAL_SUPPORT tickets + all tickets assigned to them
     - Other roles (MANAGER, DUTY_ENGINEER): see only tickets assigned to them (with optional type filter)
 
     Args:
@@ -146,16 +146,20 @@ async def get_employee_active_tickets(
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # TECHNICAL_SUPPORT sees only TECHNICAL_SUPPORT tickets assigned to them
-        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
-            logger.info(f"Technical support {employee_id} viewing assigned TECHNICAL_SUPPORT tickets (filter={ticket_type_filter})")
-            conditions.append(Ticket.assigned_staff_id == staff_member.id)
-            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
-        # Consultation specialists see only CONSULTATION tickets assigned to them
+        # Consultation specialists (is_estimate_tech_specialist=True) see assigned CONSULTATION tickets (overrides role)
         elif staff_member.is_estimate_tech_specialist:
             logger.info(f"Consultation specialist {employee_id} viewing assigned CONSULTATION tickets (filter={ticket_type_filter})")
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
             conditions.append(Ticket.ticket_type == TicketType.CONSULTATION)
+        # TECHNICAL_SUPPORT sees assigned TECHNICAL_SUPPORT tickets + all assigned tickets
+        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
+            logger.info(f"Technical support {employee_id} viewing TECHNICAL_SUPPORT tickets + assigned tickets (filter={ticket_type_filter})")
+            # See TECHNICAL_SUPPORT tickets OR tickets assigned to them
+            tech_support_condition = or_(
+                Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT,
+                Ticket.assigned_staff_id == staff_member.id
+            )
+            conditions.append(tech_support_condition)
         # Other roles see only assigned tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
@@ -1781,8 +1785,8 @@ async def get_employee_new_tickets_count(
 
     Filtering logic (same as get_employee_active_tickets):
     - ADMINISTRATOR role: counts ALL NEW tickets (with optional type filter)
-    - TECHNICAL_SUPPORT role: counts only NEW TECHNICAL_SUPPORT tickets assigned to them
-    - Consultation specialists (is_estimate_tech_specialist=True): count only NEW CONSULTATION tickets assigned to them
+    - Consultation specialists (is_estimate_tech_specialist=True): count only assigned NEW CONSULTATION tickets (overrides role)
+    - TECHNICAL_SUPPORT role: counts NEW TECHNICAL_SUPPORT tickets + assigned NEW tickets
     - Other roles (MANAGER, DUTY_ENGINEER): count only NEW tickets assigned to them (with optional type filter)
 
     Args:
@@ -1825,14 +1829,18 @@ async def get_employee_new_tickets_count(
                 }
                 if ticket_type_filter in type_map:
                     conditions.append(Ticket.ticket_type == type_map[ticket_type_filter])
-        # TECHNICAL_SUPPORT sees only NEW TECHNICAL_SUPPORT tickets assigned to them
-        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
-            conditions.append(Ticket.assigned_staff_id == staff_member.id)
-            conditions.append(Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT)
-        # Consultation specialists see only NEW CONSULTATION tickets assigned to them
+        # Consultation specialists (is_estimate_tech_specialist=True) see assigned NEW CONSULTATION tickets (overrides role)
         elif staff_member.is_estimate_tech_specialist:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
             conditions.append(Ticket.ticket_type == TicketType.CONSULTATION)
+        # TECHNICAL_SUPPORT sees NEW TECHNICAL_SUPPORT tickets + assigned NEW tickets
+        elif staff_member.staff_role == StaffRole.TECHNICAL_SUPPORT:
+            # See NEW TECHNICAL_SUPPORT tickets OR NEW tickets assigned to them
+            tech_support_condition = or_(
+                Ticket.ticket_type == TicketType.TECHNICAL_SUPPORT,
+                Ticket.assigned_staff_id == staff_member.id
+            )
+            conditions.append(tech_support_condition)
         # Other roles see only assigned NEW tickets
         else:
             conditions.append(Ticket.assigned_staff_id == staff_member.id)
