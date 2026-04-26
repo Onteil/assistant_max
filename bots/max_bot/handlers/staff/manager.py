@@ -323,9 +323,9 @@ def get_employee_menu_text(
     # Show active tickets count with new tickets count
     if active_tickets_count > 0 or new_tickets_count > 0:
         if new_tickets_count > 0:
-            text += f"📥 <b>Активные заявки ({new_tickets_count})</b> — просмотр и обработка текущих обращений\n"
+            text += f"📥 <b>Активные заявки ({active_tickets_count})</b> — просмотр и обработка текущих обращений\n"
         else:
-            text += f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
+            text += f"📥 <b>Активные заявки ({active_tickets_count})</b> — просмотр и обработка текущих обращений\n"
     else:
         text += f"📥 <b>Активные заявки</b> — просмотр и обработка текущих обращений\n"
     
