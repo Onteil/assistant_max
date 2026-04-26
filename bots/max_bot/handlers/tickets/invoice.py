@@ -2610,7 +2610,7 @@ async def create_invoice_ticket(
         # Set queue_notification_sent_at immediately for working hours tickets
         # to prevent queue processing task from picking them up
         if work_mode != WorkMode.NON_WORKING:
-            from utils.timezone_utils import get_moscow_now_naive
+            from utils.timezone_helpers import get_moscow_now_naive
             ticket.queue_notification_sent_at = get_moscow_now_naive()
             logger.info(
                 f"Set queue_notification_sent_at immediately for working hours invoice ticket: ticket_id={ticket.id}"
