@@ -620,7 +620,7 @@ async def cmd_manager(
         # Generate menu keyboard based on employee role with new tickets count
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
         is_manager = employee.staff_role == StaffRole.MANAGER
-        keyboard = get_manager_menu_keyboard(is_admin=is_admin, is_manager=is_manager, new_tickets_count=new_tickets_count)
+        keyboard = get_manager_menu_keyboard(is_admin=is_admin, is_manager=is_manager, active_tickets_count=active_tickets_count)
         
         # Generate role-specific menu text with tickets counts
         menu_text = get_employee_menu_text(
@@ -761,7 +761,7 @@ async def handle_manager_menu_action(
             keyboard = get_manager_menu_keyboard(
                 is_admin=is_admin_role,
                 is_manager=is_manager_role,
-                new_tickets_count=new_tickets_count
+                active_tickets_count=len(active_tickets)
             )
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
@@ -1310,7 +1310,7 @@ async def handle_tickets_back(
             active_tickets_count = len(active_tickets)
             new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
             
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin, active_tickets_count=active_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode
@@ -2046,7 +2046,7 @@ async def handle_archive_back(
             active_tickets_count = len(active_tickets)
             new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
             
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin, new_tickets_count=new_tickets_count)
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin, active_tickets_count=active_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode

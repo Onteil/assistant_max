@@ -395,7 +395,7 @@ async def handle_admin_menu_action(
             active_tickets_count = len(active_tickets)
             new_tickets_count = await get_employee_new_tickets_count(session, admin.max_user_id, ticket_type_filter=None)
             
-            keyboard = get_manager_menu_keyboard(is_admin=is_admin_role, new_tickets_count=new_tickets_count)
+            keyboard = get_manager_menu_keyboard(is_admin=is_admin_role, active_tickets_count=active_tickets_count)
             
             # Get current work mode
             from services.calendar_service import get_current_work_mode
