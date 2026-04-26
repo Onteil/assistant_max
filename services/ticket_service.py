@@ -151,7 +151,12 @@ async def create_ticket(
         # Schedule escalation monitoring for NEW tickets
         # Requirements: FR-1.1.1, FR-1.1.2, NFR-2.2.1, TECH_SPEC 14.2
         # IMPORTANT: Do NOT schedule escalation in NON_WORKING mode
-        if ticket.ticket_status == TicketStatus.NEW:
+        # IMPORTANT: TECHNICAL_SUPPORT and CONSULTATION use schedule_technical_support_monitoring
+        #            which is called by the handler AFTER assignment is committed.
+        #            Do NOT schedule here for those types to avoid double-scheduling.
+        if ticket.ticket_status == TicketStatus.NEW and ticket.ticket_type not in (
+            TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION
+        ):
             try:
                 # Check current work mode - escalation only in REGULAR/EXTENDED modes
                 work_mode = await get_current_work_mode(session)

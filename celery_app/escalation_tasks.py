@@ -575,17 +575,31 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
             f"No backup managers configured for staff {ticket.assigned_staff.id}, "
             f"escalating directly to admins"
         )
+        ticket.escalation_level = 2
+        await session.commit()
         return await _escalate_to_admins(ticket, session)
     
     backup_manager = ticket.assigned_staff.backup_manager_1
     
     if not backup_manager:
-        logger.warning(
-            f"No backup_manager_1 configured for staff {ticket.assigned_staff.id}, "
-            f"escalating directly to admins"
-        )
-        # Skip directly to admin escalation since no backup manager available
-        return await _escalate_to_admins(ticket, session)
+        # No backup_manager_1 — check if backup_manager_2 exists
+        if ticket.assigned_staff.backup_manager_2_id:
+            logger.warning(
+                f"No backup_manager_1 for staff {ticket.assigned_staff.id}, "
+                f"but backup_manager_2 exists — skipping to level 1"
+            )
+            ticket.escalation_level = 1
+            await session.commit()
+            return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
+        else:
+            logger.warning(
+                f"No backup_manager_1 configured for staff {ticket.assigned_staff.id}, "
+                f"escalating directly to admins"
+            )
+            # Skip directly to admin escalation since no backup manager available
+            ticket.escalation_level = 2
+            await session.commit()
+            return await _escalate_to_admins(ticket, session)
     
     # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
     backup_chat_id = backup_manager.max_chat_id
@@ -607,13 +621,25 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     
     # Check if backup manager has MAX messenger
     if not backup_chat_id:
-        logger.error(
-            f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
-            f"has no MAX chat_id in Staff_Member or MAX_Messenger_Data table, "
-            f"cannot send notification, escalating directly to admins"
-        )
-        # Skip directly to admin escalation since backup manager can't be notified
-        return await _escalate_to_admins(ticket, session)
+        # backup_manager_1 exists but has no chat_id — check if backup_manager_2 exists
+        if ticket.assigned_staff.backup_manager_2_id:
+            logger.error(
+                f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
+                f"has no MAX chat_id, but backup_manager_2 exists — skipping to level 1"
+            )
+            ticket.escalation_level = 1
+            await session.commit()
+            return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
+        else:
+            logger.error(
+                f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
+                f"has no MAX chat_id in Staff_Member or MAX_Messenger_Data table, "
+                f"cannot send notification, escalating directly to admins"
+            )
+            # Skip directly to admin escalation since backup manager can't be notified
+            ticket.escalation_level = 2
+            await session.commit()
+            return await _escalate_to_admins(ticket, session)
     
     # Reassign ticket to backup_manager_1
     old_staff_id = ticket.assigned_staff_id
@@ -832,6 +858,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"Original staff not found for ticket {ticket.id}, "
             f"original_staff_id={original_staff_id}"
         )
+        ticket.escalation_level = 2
+        await session.commit()
         return await _escalate_to_admins(ticket, session)
 
     backup_manager = original_staff.backup_manager_2
@@ -841,6 +869,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"No backup_manager_2 configured for original staff {original_staff.id}, "
             f"escalating directly to admins"
         )
+        ticket.escalation_level = 2
+        await session.commit()
         return await _escalate_to_admins(ticket, session)
 
     # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
@@ -869,6 +899,8 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified
+        ticket.escalation_level = 2
+        await session.commit()
         return await _escalate_to_admins(ticket, session)
     
     # Reassign ticket to backup_manager_2
@@ -1103,6 +1135,18 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
                 "message": "Ticket already processed",
                 "ticket_id": ticket_id,
                 "ticket_status": ticket.ticket_status.value
+            }
+
+        # Guard against duplicate escalation (e.g. Celery retries or race conditions)
+        if ticket.is_escalated:
+            logger.info(
+                f"Ticket already escalated, skipping duplicate notification: "
+                f"ticket_id={ticket_id}"
+            )
+            return {
+                "status": "skipped",
+                "message": "Ticket already escalated",
+                "ticket_id": ticket_id,
             }
         
         # Create escalation
@@ -2438,7 +2482,20 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 "ticket_id": ticket_id,
                 "ticket_status": ticket.ticket_status.value
             }
-        
+
+        # Guard against duplicate final escalation (e.g. Celery retries or race conditions)
+        # Only block at level 2 (admin notification stage) — backup-manager steps are safe to retry.
+        if ticket.is_escalated and ticket.escalation_level >= 2:
+            logger.info(
+                f"Technical support ticket already escalated to admins, "
+                f"skipping duplicate notification: ticket_id={ticket_id}"
+            )
+            return {
+                "status": "skipped",
+                "message": "Ticket already escalated to admins",
+                "ticket_id": ticket_id,
+            }
+
         # Check current work mode - do NOT escalate during NON_WORKING hours
         from services.calendar_service import get_current_work_mode
         current_work_mode = await get_current_work_mode(session)
