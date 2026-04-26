@@ -559,6 +559,15 @@ async def create_renewal_ticket(
                     f"Staff notification sent: ticket_id={ticket.id}, "
                     f"staff_id={assigned_staff_id}"
                 )
+                
+                # Set queue_notification_sent_at to prevent queue processing
+                from utils.timezone_utils import get_moscow_now_naive
+                ticket.queue_notification_sent_at = get_moscow_now_naive()
+                await session.commit()
+                
+                logger.info(
+                    f"Set queue_notification_sent_at for renewal ticket: ticket_id={ticket.id}"
+                )
             else:
                 logger.warning(
                     f"Failed to send staff notification: ticket_id={ticket.id}, "
@@ -1905,6 +1914,12 @@ async def create_support_ticket(
                                 f"Support staff notification sent (round-robin): "
                                 f"ticket_id={ticket.id}, staff_id={assigned_rr_staff.id}"
                             )
+                            
+                            # Mark as notified to prevent queue processing
+                            from utils.timezone_helpers import get_moscow_now_naive
+                            ticket.queue_notification_sent_at = get_moscow_now_naive()
+                            await session.commit()
+                            
                         else:
                             logger.warning(
                                 f"Failed to send support staff notification (round-robin): "
@@ -1944,6 +1959,15 @@ async def create_support_ticket(
                                     f"Admin notification sent (no support staff): ticket_id={ticket.id}, "
                                     f"admin_id={admin.id}"
                                 )
+                                
+                                # Set queue_notification_sent_at to prevent queue processing
+                                from utils.timezone_utils import get_moscow_now_naive
+                                ticket.queue_notification_sent_at = get_moscow_now_naive()
+                                await session.commit()
+                                
+                                logger.info(
+                                    f"Set queue_notification_sent_at for support ticket (admin): ticket_id={ticket.id}"
+                                )
 
                                 # Notify admin about missing support staff
                                 await _notify_admin_about_no_support_staff(
@@ -1968,6 +1992,12 @@ async def create_support_ticket(
                         f"Admin notifications sent (no support staff): ticket_id={ticket.id}, "
                         f"admin_count={len(admins)}"
                     )
+                    
+                    # Mark as notified to prevent queue processing
+                    from utils.timezone_helpers import get_moscow_now_naive
+                    ticket.queue_notification_sent_at = get_moscow_now_naive()
+                    await session.commit()
+                    
                 else:
                     logger.error(
                         f"No support staff and no admins available: ticket_id={ticket.id}"
@@ -1996,6 +2026,12 @@ async def create_support_ticket(
                         f"Duty engineer notification sent: ticket_id={ticket.id}, "
                         f"staff_id={duty_engineer.id}"
                     )
+                    
+                    # Mark as notified to prevent queue processing
+                    from utils.timezone_helpers import get_moscow_now_naive
+                    ticket.queue_notification_sent_at = get_moscow_now_naive()
+                    await session.commit()
+                    
                 else:
                     logger.warning(
                         f"Failed to send duty engineer notification: "
@@ -2026,6 +2062,15 @@ async def create_support_ticket(
                                     f"admin_id={admin.id}"
                                 )
                                 
+                                # Set queue_notification_sent_at to prevent queue processing
+                                from utils.timezone_utils import get_moscow_now_naive
+                                ticket.queue_notification_sent_at = get_moscow_now_naive()
+                                await session.commit()
+                                
+                                logger.info(
+                                    f"Set queue_notification_sent_at for support ticket (admin, no duty): ticket_id={ticket.id}"
+                                )
+                                
                                 # Notify admin about missing duty engineer
                                 await _notify_admin_about_no_support_staff(
                                     session=session,
@@ -2049,6 +2094,12 @@ async def create_support_ticket(
                         f"Admin notifications sent (no duty engineer): ticket_id={ticket.id}, "
                         f"admin_count={len(admins)}"
                     )
+                    
+                    # Mark as notified to prevent queue processing
+                    from utils.timezone_helpers import get_moscow_now_naive
+                    ticket.queue_notification_sent_at = get_moscow_now_naive()
+                    await session.commit()
+                    
                 else:
                     logger.error(
                         f"No duty engineer and no admins available: ticket_id={ticket.id}"

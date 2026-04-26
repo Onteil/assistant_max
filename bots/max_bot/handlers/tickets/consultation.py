@@ -298,12 +298,22 @@ async def _create_renewal_ticket_for_consultation(
             # Notify manager during working hours
             if assigned_staff_id and is_working:
                 try:
-                    await send_staff_notification(
+                    notification_sent = await send_staff_notification(
                         bot=max_bot,
                         staff_id=assigned_staff_id,
                         ticket=ticket,
                         session=session,
                     )
+                    
+                    if notification_sent:
+                        # Set queue_notification_sent_at to prevent queue processing
+                        from utils.timezone_utils import get_moscow_now_naive
+                        ticket.queue_notification_sent_at = get_moscow_now_naive()
+                        await session.commit()
+                        
+                        logger.info(
+                            f"Set queue_notification_sent_at for auto-renewal ticket: ticket_id={ticket.id}"
+                        )
                 except Exception as e:
                     logger.error(
                         f"Failed to notify manager about auto-renewal ticket: "
@@ -892,9 +902,20 @@ async def handle_consultation_key_action(
                 routing_info = await route_ticket(session, ticket, work_mode)
                 for recipient in recipients:
                     try:
-                        await send_staff_notification(bot=max_bot, staff_id=recipient.id, ticket=ticket, routing_info=routing_info, session=session)
+                        notification_sent = await send_staff_notification(bot=max_bot, staff_id=recipient.id, ticket=ticket, routing_info=routing_info, session=session)
+                        if notification_sent:
+                            logger.info(f"Consultation notification sent: ticket_id={ticket.id}, staff_id={recipient.id}")
+                        else:
+                            logger.warning(f"Failed to send consultation notification: ticket_id={ticket.id}, staff_id={recipient.id}")
                     except Exception as e:
                         logger.error(f"Failed to notify recipient {recipient.id}: {e}", exc_info=True)
+                
+                # Mark as notified to prevent queue processing (if any notifications were sent)
+                if recipients:
+                    from utils.timezone_helpers import get_moscow_now_naive
+                    ticket.queue_notification_sent_at = get_moscow_now_naive()
+                    await session.commit()
+                
                 # Schedule escalation AFTER assignment is committed
                 try:
                     from celery_app.escalation_tasks import schedule_technical_support_monitoring
@@ -1423,6 +1444,12 @@ async def handle_consultation_description_next(
                             f"Consultation notification sent: ticket_id={ticket.id}, "
                             f"staff_id={recipient.id}, work_mode={work_mode.value}"
                         )
+                        
+                        # Mark as notified to prevent queue processing
+                        from utils.timezone_helpers import get_moscow_now_naive
+                        ticket.queue_notification_sent_at = get_moscow_now_naive()
+                        await session.commit()
+                        
                         # Forward attachments to recipient
                         if attachments:
                             try:
