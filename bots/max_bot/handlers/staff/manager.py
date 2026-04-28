@@ -620,7 +620,9 @@ async def cmd_manager(
         # Generate menu keyboard based on employee role with new tickets count
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
         is_manager = employee.staff_role == StaffRole.MANAGER
-        show_employee_menu = not is_admin and not is_manager
+        # Show employee self-service menu for all roles except ADMINISTRATOR
+        # This includes MANAGER with is_estimate_tech_specialist=True
+        show_employee_menu = not is_admin
         keyboard = get_manager_menu_keyboard(
             is_admin=is_admin,
             is_manager=is_manager,
@@ -756,7 +758,7 @@ async def handle_manager_menu_action(
             )
         
         elif action == "employee_menu":
-            # Show employee self-service menu (for non-admin, non-manager roles)
+            # Show employee self-service menu (for all roles except ADMINISTRATOR)
             if employee.staff_role == StaffRole.ADMINISTRATOR:
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
@@ -784,7 +786,8 @@ async def handle_manager_menu_action(
                 is_admin=is_admin_role,
                 is_manager=is_manager_role,
                 active_tickets_count=len(active_tickets),
-                show_employee_menu=not is_admin_role and not is_manager_role,
+                # Show employee self-service menu for all roles except ADMINISTRATOR
+                show_employee_menu=not is_admin_role,
             )
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
@@ -3839,7 +3842,8 @@ async def handle_employee_menu_action(
                 is_admin=is_admin,
                 is_manager=is_manager,
                 active_tickets_count=len(active_tickets),
-                show_employee_menu=not is_admin and not is_manager,
+                # Show employee self-service menu for all roles except ADMINISTRATOR
+                show_employee_menu=not is_admin,
             )
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
