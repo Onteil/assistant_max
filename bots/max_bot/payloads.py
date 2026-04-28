@@ -423,7 +423,41 @@ class KeyContextActionPayload(CallbackPayload, prefix='key_ctx_action'):
     going back, or canceling in support flow.
     
     Fields:
-        action: Action type - "add_new", "done", "skip", "back", "back_to_keys", or "cancel"
+        action: Action type - "add_new", "done", "skip", "back", "back_to_keys", 
+                "skip_description", or "cancel"
+    """
+    action: str
+
+
+# ============================================================================
+# Support Flow Organization Payloads
+# ============================================================================
+
+class SupportOrgSelectPayload(CallbackPayload, prefix='sup_org_select'):
+    """Payload for organization selection in support flow.
+
+    Used when user selects an organization by INN in the support ticket flow.
+
+    Fields:
+        inn: INN number of the selected organization
+    """
+    inn: str
+
+
+class SupportOrgPagePayload(CallbackPayload, prefix='sup_org_page'):
+    """Payload for organization list pagination in support flow.
+
+    Fields:
+        page: Page number (0-indexed)
+    """
+    page: int
+
+
+class SupportOrgActionPayload(CallbackPayload, prefix='sup_org_action'):
+    """Payload for organization-related actions in support flow.
+
+    Fields:
+        action: Action type - "add_new", "skip", or "cancel"
     """
     action: str
 
@@ -1297,3 +1331,42 @@ class NPSSkipFeedbackPayload(CallbackPayload, prefix='nps_skip'):
     survey_type: str
     rating: int
     trigger_event_id: int
+
+
+# ============================================================================
+# Employee Self-Service Payloads (меню сотрудника)
+# ============================================================================
+
+class StaffSelfServicePayload(CallbackPayload, prefix='staff_self'):
+    """Payload for employee self-service menu actions.
+
+    Used when employee navigates the employee menu (shown via /manager for non-admin roles).
+
+    Fields:
+        action: Action type - "set_duty_tp", "set_duty_estimate", "toggle_working", "back_to_manager"
+    """
+    action: str
+
+
+class StaffSetDutyPayload(CallbackPayload, prefix='staff_duty'):
+    """Payload for employee setting themselves as duty specialist.
+
+    Used when TP or estimate specialist clicks "Назначить себя дежурным".
+
+    Fields:
+        duty_type: "tp" for technical support duty, "estimate" for estimate consultation duty
+        confirm: True to confirm, False to cancel
+    """
+    duty_type: str
+    confirm: bool = False
+
+
+class StaffToggleWorkingPayload(CallbackPayload, prefix='staff_work'):
+    """Payload for employee toggling their working availability.
+
+    Used when employee clicks "Сделать себя активным/неактивным".
+
+    Fields:
+        confirm: True to confirm the toggle, False to cancel
+    """
+    confirm: bool = False

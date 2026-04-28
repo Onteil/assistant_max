@@ -109,6 +109,9 @@ from bots.max_bot.payloads import (
     InvoiceDescriptionNextPayload,
     SupportDescriptionNextPayload,
     ConsultationDescriptionNextPayload,
+    SupportOrgSelectPayload,
+    SupportOrgPagePayload,
+    SupportOrgActionPayload,
 )
 from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates
 
@@ -147,6 +150,12 @@ from .tickets.support import (
     process_new_key_for_support,
     cancel_support_flow,
     handle_support_description_next,
+    handle_support_org_select_callback,
+    handle_support_org_page_callback,
+    handle_support_org_action_callback,
+    handle_support_org_name_action_callback,
+    process_new_inn_for_support,
+    process_org_name_for_support,
 )
 from .tickets.consultation import (
     cmd_consultation,
@@ -218,6 +227,9 @@ from .staff.manager import (
     handle_manager_ticket_history_back,
     handle_take_from_message_notification,
     handle_focus_from_message_notification,
+    handle_employee_menu_action,
+    handle_employee_set_duty,
+    handle_employee_toggle_working,
 )
 from .staff.admin_panel import (
     handle_admin_panel_action,
@@ -327,6 +339,9 @@ from bots.max_bot.payloads import (
     KeyConflictPayload,
     EscalationPayload,
     SettingsPayload,
+    StaffSelfServicePayload,
+    StaffSetDutyPayload,
+    StaffToggleWorkingPayload,
 )
 from .staff.focus_messages import (
     handle_focus_message,
@@ -556,6 +571,13 @@ def create_user_router() -> Router:
     # Client message notification action handlers
     user_router.message_callback(ManagerTakeFromMessagePayload.filter())(handle_take_from_message_notification)
     user_router.message_callback(ManagerFocusFromMessagePayload.filter())(handle_focus_from_message_notification)
+    
+    # ========== Employee Self-Service Handlers ==========
+    
+    # Employee self-service menu (duty assignment, availability toggle)
+    user_router.message_callback(StaffSelfServicePayload.filter())(handle_employee_menu_action)
+    user_router.message_callback(StaffSetDutyPayload.filter())(handle_employee_set_duty)
+    user_router.message_callback(StaffToggleWorkingPayload.filter())(handle_employee_toggle_working)
     
     # ========== Admin Panel Handlers ==========
     
@@ -1492,6 +1514,9 @@ def create_tickets_router() -> Router:
         KeyContextTogglePayload,
         KeyContextPagePayload,
         KeyContextActionPayload,
+        SupportOrgSelectPayload,
+        SupportOrgPagePayload,
+        SupportOrgActionPayload,
     )
     
     # Renewal callback handler (when user clicks "Оформить заявку на продление")
@@ -1506,6 +1531,13 @@ def create_tickets_router() -> Router:
     # Cancel is handled inside handle_key_context_callback (action == "cancel")
     # which calls cancel_support_flow. The old string-match registrations below
     # were dead code (payload format is "key_ctx_action|cancel", not JSON).
+    
+    # ========== Support Flow Organization Callbacks ==========
+    # Organization selection step (mirrors invoice/consultation pattern)
+    
+    tickets_router.message_callback(SupportOrgSelectPayload.filter())(handle_support_org_select_callback)
+    tickets_router.message_callback(SupportOrgPagePayload.filter())(handle_support_org_page_callback)
+    tickets_router.message_callback(SupportOrgActionPayload.filter())(handle_support_org_action_callback)
     
     # ========== Support Flow Message Handlers ==========
     
@@ -1525,6 +1557,29 @@ def create_tickets_router() -> Router:
         F.message.body.text,
         SupportStates.adding_new_key
     )(process_new_key_for_support)
+
+    # Handler for entering new INN in support flow
+    tickets_router.message_created(
+        F.message.body.text,
+        SupportStates.adding_new_inn
+    )(process_new_inn_for_support)
+
+    # Handler for entering org name when INN not found in 1C (support flow)
+    tickets_router.message_created(
+        F.message.body.text,
+        SupportStates.adding_org_name
+    )(process_org_name_for_support)
+
+    # Action callbacks during org-name step (skip / back / cancel)
+    # Note: SupportOrgActionPayload without state filter already handles all actions.
+    # The adding_org_name-specific actions (skip_org_name, back_to_orgs) are routed
+    # inside handle_support_org_action_callback based on current FSM state.
+    # We register a dedicated handler for the adding_org_name state so it takes
+    # priority over the general handler when the user is in that state.
+    tickets_router.message_callback(
+        SupportOrgActionPayload.filter(),
+        SupportStates.adding_org_name
+    )(handle_support_org_name_action_callback)
 
     # ========== Consultation Flow Command ==========
 

@@ -41,6 +41,9 @@ class InvoiceStates(StatesGroup):
 class SupportStates(StatesGroup):
     """States for technical support flow."""
 
+    selecting_organization = State()
+    adding_new_inn = State()
+    adding_org_name = State()
     entering_problem = State()
     selecting_key_context = State()
     adding_new_key = State()

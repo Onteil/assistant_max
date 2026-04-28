@@ -2,7 +2,7 @@
 Technical Support Keyboards for MAX Bot
 
 Клавиатуры для процесса технической поддержки.
-Включает выбор контекста ключа и предложение продления подписки.
+Включает выбор организации, выбор контекста ключа и предложение продления подписки.
 """
 
 import math
@@ -14,10 +14,77 @@ from bots.max_bot.payloads import (
     KeyContextPagePayload,
     KeyContextActionPayload,
     SupportDescriptionNextPayload,
+    SupportOrgSelectPayload,
+    SupportOrgPagePayload,
+    SupportOrgActionPayload,
 )
 
 # Константы для пагинации
 ITEMS_PER_PAGE = 7
+
+
+def get_support_organization_keyboard(organizations: list, page: int = 0) -> Keyboard:
+    """
+    Создает клавиатуру для выбора организации в потоке тех.поддержки.
+
+    Одна кнопка на организацию: название если есть, иначе ИНН.
+    Включает пагинацию (7 на страницу), кнопки «Добавить новый ИНН»,
+    «Пропустить» и «Отмена».
+
+    Args:
+        organizations: Список объектов Organization из базы данных
+        page: Текущая страница (начиная с 0)
+
+    Returns:
+        Keyboard с организациями и навигацией
+    """
+    buttons = []
+
+    total_pages = math.ceil(len(organizations) / ITEMS_PER_PAGE) if organizations else 1
+    start_index = page * ITEMS_PER_PAGE
+    orgs_on_page = organizations[start_index:start_index + ITEMS_PER_PAGE]
+
+    # Одна кнопка на организацию: название если есть, иначе ИНН
+    for org in orgs_on_page:
+        label = org.organization_name if org.organization_name else f"ИНН: {org.inn}"
+        buttons.append([KeyboardButton(
+            text=label,
+            payload=SupportOrgSelectPayload(inn=org.inn).pack()
+        )])
+
+    # Пагинация
+    if total_pages > 1:
+        pagination_row = []
+        if page > 0:
+            pagination_row.append(KeyboardButton(
+                text="◀️ Назад",
+                payload=SupportOrgPagePayload(page=page - 1).pack()
+            ))
+        pagination_row.append(KeyboardButton(
+            text=f"{page + 1}/{total_pages}",
+            payload={"action": "noop"}
+        ))
+        if page < total_pages - 1:
+            pagination_row.append(KeyboardButton(
+                text="Вперед ▶️",
+                payload=SupportOrgPagePayload(page=page + 1).pack()
+            ))
+        buttons.append(pagination_row)
+
+    buttons.append([KeyboardButton(
+        text="➕ Добавить новый ИНН",
+        payload=SupportOrgActionPayload(action="add_new").pack()
+    )])
+    buttons.append([KeyboardButton(
+        text="⏭️️ Пропустить",
+        payload=SupportOrgActionPayload(action="skip").pack()
+    )])
+    buttons.append([KeyboardButton(
+        text="❌ Отмена",
+        payload=SupportOrgActionPayload(action="cancel").pack()
+    )])
+
+    return Keyboard(buttons=buttons, inline=True)
 
 
 def get_renewal_keyboard() -> Keyboard:
@@ -155,7 +222,7 @@ def get_problem_description_keyboard(has_content: bool = False) -> Keyboard:
 
     Если пользователь уже ввёл текст или прикрепил файлы (has_content=True),
     показывает кнопку «➡️ Далее» для перехода к следующему шагу.
-    Иначе показывает только «Пропустить» и «Отмена».
+    Иначе показывает только «Пропустить», «Назад» и «Отмена».
 
     Args:
         has_content: True если пользователь уже ввёл описание или вложения
@@ -177,10 +244,16 @@ def get_problem_description_keyboard(has_content: bool = False) -> Keyboard:
         text="⏭️️ Пропустить",
         payload=KeyContextActionPayload(action="skip_description").pack()
     )])
-    buttons.append([KeyboardButton(
-        text="❌ Отмена",
-        payload=KeyContextActionPayload(action="cancel").pack()
-    )])
+    buttons.append([
+        KeyboardButton(
+            text="⬅️ Назад",
+            payload=SupportOrgActionPayload(action="back_from_description").pack()
+        ),
+        KeyboardButton(
+            text="❌ Отмена",
+            payload=KeyContextActionPayload(action="cancel").pack()
+        )
+    ])
 
     return Keyboard(buttons=buttons, inline=True)
 

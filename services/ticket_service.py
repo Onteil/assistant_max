@@ -17,6 +17,7 @@ from aiogram import Bot
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database.models import (
     ActionType,
@@ -230,12 +231,14 @@ async def determine_assigned_manager(
     assign_admin_if_no_manager: bool = False
 ) -> tuple[int | None, bool]:
     """
-    Determine assigned manager based on user's default_manager_id.
+    Determine assigned manager based on user's default_manager_id with backup chain.
     
     Logic:
-    1. Use user's default_manager_id
-    2. If no manager found and assign_admin_if_no_manager=True, assign first active admin
-    3. If no manager found and assign_admin_if_no_manager=False, return None
+    1. Use user's default_manager_id if manager is working today
+    2. If default manager unavailable, try backup_manager_1_id if working today
+    3. If backup_manager_1 unavailable, try backup_manager_2_id if working today
+    4. If no manager found and assign_admin_if_no_manager=True, assign first active admin
+    5. If no manager found and assign_admin_if_no_manager=False, return None
     
     Args:
         session: Database session
@@ -245,12 +248,12 @@ async def determine_assigned_manager(
     Returns:
         Tuple of (Staff member ID or None, has_assigned_manager: bool)
         - Staff member ID: Internal staff ID or None if no staff assigned
-        - has_assigned_manager: True if user had assigned manager, False if admin fallback used
+        - has_assigned_manager: True if user had assigned manager (even if backup used), False if admin fallback used
     
     Raises:
         SQLAlchemyError: If database operation fails
     
-    Requirements: 10.2, 10.3
+    Requirements: 10.2, 10.3, Manager Backup Chain
     """
     try:
         # Get user's default manager
@@ -259,35 +262,124 @@ async def determine_assigned_manager(
         )
         default_manager_id = result.scalar_one_or_none()
         
-        if default_manager_id:
-            logger.debug(
-                f"Default manager found: user_id={user_id}, "
+        if not default_manager_id:
+            logger.warning(f"No default manager assigned to user: user_id={user_id}")
+            
+            # No manager found - assign admin if requested
+            if assign_admin_if_no_manager:
+                from services.escalation_service import get_active_admins
+                
+                admins = await get_active_admins(session)
+                if admins:
+                    # Assign first active admin
+                    assigned_admin_id = admins[0].id
+                    logger.info(
+                        f"No manager found for user, assigning admin: user_id={user_id}, "
+                        f"admin_id={assigned_admin_id}, admin_name={admins[0].full_name}"
+                    )
+                    return assigned_admin_id, False
+                else:
+                    logger.error(
+                        f"No manager and no active admins found for user: user_id={user_id}"
+                    )
+                    return None, False
+            
+            return None, False
+        
+        # Check manager availability chain: default → backup_1 → backup_2
+        manager_chain = []
+        
+        # Get default manager with backup managers loaded
+        stmt = (
+            select(Staff_Member)
+            .where(
+                and_(
+                    Staff_Member.id == default_manager_id,
+                    Staff_Member.is_active == True
+                )
+            )
+            .options(
+                selectinload(Staff_Member.backup_manager_1),
+                selectinload(Staff_Member.backup_manager_2)
+            )
+        )
+        result = await session.execute(stmt)
+        default_manager = result.scalar_one_or_none()
+        
+        if not default_manager:
+            logger.warning(
+                f"Default manager not found or inactive: user_id={user_id}, "
                 f"manager_id={default_manager_id}"
             )
-            return default_manager_id, True
+            
+            # Manager not found - assign admin if requested
+            if assign_admin_if_no_manager:
+                from services.escalation_service import get_active_admins
+                
+                admins = await get_active_admins(session)
+                if admins:
+                    assigned_admin_id = admins[0].id
+                    logger.info(
+                        f"Default manager inactive, assigning admin: user_id={user_id}, "
+                        f"admin_id={assigned_admin_id}, admin_name={admins[0].full_name}"
+                    )
+                    return assigned_admin_id, False
+                else:
+                    logger.error(
+                        f"Default manager inactive and no active admins found: user_id={user_id}"
+                    )
+                    return None, False
+            
+            return None, False
         
-        # No manager found - assign admin if requested
+        # Build manager chain: default → backup_1 → backup_2
+        manager_chain.append(("default", default_manager))
+        
+        if default_manager.backup_manager_1:
+            manager_chain.append(("backup_1", default_manager.backup_manager_1))
+        
+        if default_manager.backup_manager_2:
+            manager_chain.append(("backup_2", default_manager.backup_manager_2))
+        
+        # Try each manager in chain until we find one who is working today
+        for manager_type, manager in manager_chain:
+            if manager.is_active and manager.is_working_today:
+                logger.info(
+                    f"Manager assigned from {manager_type}: user_id={user_id}, "
+                    f"manager_id={manager.id}, manager_name={manager.full_name}"
+                )
+                return manager.id, True
+            else:
+                logger.info(
+                    f"Manager {manager_type} unavailable: user_id={user_id}, "
+                    f"manager_id={manager.id}, manager_name={manager.full_name}, "
+                    f"is_active={manager.is_active}, is_working_today={manager.is_working_today}"
+                )
+        
+        # No manager in chain is available
+        logger.warning(
+            f"All managers in chain unavailable: user_id={user_id}, "
+            f"chain_length={len(manager_chain)}"
+        )
+        
+        # No available manager - assign admin if requested
         if assign_admin_if_no_manager:
             from services.escalation_service import get_active_admins
             
             admins = await get_active_admins(session)
             if admins:
-                # Assign first active admin
                 assigned_admin_id = admins[0].id
                 logger.info(
-                    f"No manager found for user, assigning admin: user_id={user_id}, "
+                    f"All managers unavailable, assigning admin: user_id={user_id}, "
                     f"admin_id={assigned_admin_id}, admin_name={admins[0].full_name}"
                 )
                 return assigned_admin_id, False
             else:
                 logger.error(
-                    f"No manager and no active admins found for user: user_id={user_id}"
+                    f"All managers unavailable and no active admins found: user_id={user_id}"
                 )
                 return None, False
         
-        logger.warning(
-            f"No manager found for user: user_id={user_id}"
-        )
         return None, False
     
     except SQLAlchemyError as e:
@@ -1756,7 +1848,8 @@ async def _get_duty_engineer(session: AsyncSession) -> Staff_Member | None:
                 select(Staff_Member).where(
                     and_(
                         Staff_Member.id == int(duty_account_id),
-                        Staff_Member.is_active == True
+                        Staff_Member.is_active == True,
+                        Staff_Member.is_working_today == True,  # Must be available today
                     )
                 )
             )
@@ -1767,23 +1860,24 @@ async def _get_duty_engineer(session: AsyncSession) -> Staff_Member | None:
                 return duty_engineer
             else:
                 logger.warning(
-                    f"Configured duty support account not found or inactive: "
+                    f"Configured duty support account not found, inactive, or unavailable today: "
                     f"staff_id={duty_account_id}"
                 )
         
-        # Fallback: find any active staff member with DUTY_ENGINEER role
+        # Fallback: find any active staff member with DUTY_ENGINEER role who is working today
         result = await session.execute(
             select(Staff_Member).where(
                 and_(
                     Staff_Member.staff_role == StaffRole.DUTY_ENGINEER,
-                    Staff_Member.is_active == True
+                    Staff_Member.is_active == True,
+                    Staff_Member.is_working_today == True,  # Must be available today
                 )
             ).limit(1)
         )
         duty_engineer = result.scalar_one_or_none()
         
         if not duty_engineer:
-            logger.warning("No active duty engineer found (neither configured nor by role)")
+            logger.warning("No active duty engineer found who is working today")
         else:
             logger.info(
                 f"Duty engineer found by role fallback: staff_id={duty_engineer.id}"
@@ -1827,6 +1921,7 @@ async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member |
                     and_(
                         Staff_Member.id == int(duty_account_id),
                         Staff_Member.is_active == True,
+                        Staff_Member.is_working_today == True,  # Must be available today
                         Staff_Member.is_estimate_tech_specialist == True,
                     )
                 )
@@ -1840,16 +1935,17 @@ async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member |
                 return duty_specialist
             else:
                 logger.warning(
-                    f"Configured duty estimate specialist not found, inactive, or missing flag: "
+                    f"Configured duty estimate specialist not found, inactive, unavailable today, or missing flag: "
                     f"staff_id={duty_account_id}"
                 )
 
-        # Fallback: find any active staff member with is_estimate_tech_specialist=True
+        # Fallback: find any active staff member with is_estimate_tech_specialist=True who is working today
         result = await session.execute(
             select(Staff_Member).where(
                 and_(
                     Staff_Member.is_estimate_tech_specialist == True,
                     Staff_Member.is_active == True,
+                    Staff_Member.is_working_today == True,  # Must be available today
                 )
             ).limit(1)
         )
@@ -1857,7 +1953,7 @@ async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member |
 
         if not duty_specialist:
             logger.warning(
-                "No active duty estimate specialist found (neither configured nor by flag)"
+                "No active duty estimate specialist found who is working today"
             )
         else:
             logger.info(

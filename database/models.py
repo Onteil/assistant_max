@@ -519,6 +519,11 @@ class Staff_Member(Base, TimestampMixin):
     # Soft delete flag
     is_active = Column(Boolean, default=True, nullable=False)
     
+    # Availability flag — can be toggled by the employee themselves
+    # False means the employee is temporarily unavailable (sick, day off, etc.)
+    # and should not receive new ticket assignments
+    is_working_today = Column(Boolean, default=True, nullable=False, comment="Сотрудник доступен сегодня — если False, не получает новые заявки")
+    
     # Self-referential backup manager references
     backup_manager_1_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)
     backup_manager_2_id = Column(BigInteger, ForeignKey("staff_members.id"), nullable=True)

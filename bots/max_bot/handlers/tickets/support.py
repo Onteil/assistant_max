@@ -3,7 +3,7 @@ Technical Support Handler for MAX Bot
 
 Handles technical support flow including:
 - /support command to initiate flow
-- Subscription status check and renewal option
+- Organization (INN) selection with pagination
 - Problem description collection (text, photo, voice, document)
 - Key context selection with multi-select toggle
 - Support ticket creation and manager notification
@@ -26,13 +26,21 @@ from bots.max_bot.keyboards.tickets.support_kb import (
     get_key_context_keyboard,
     get_problem_description_keyboard,
     get_renewal_keyboard,
+    get_support_organization_keyboard,
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
-from bots.max_bot.payloads import RenewalActionPayload, SupportDescriptionNextPayload
+from bots.max_bot.payloads import (
+    RenewalActionPayload,
+    SupportDescriptionNextPayload,
+    SupportOrgSelectPayload,
+    SupportOrgPagePayload,
+    SupportOrgActionPayload,
+)
 from bots.max_bot.states import SupportStates
 from bots.max_bot.texts import (
     ERROR_GENERAL,
     ERROR_TEXT_TOO_LONG,
+    ERROR_VALIDATION_INN,
     ERROR_VALIDATION_KEY,
     FLOW_CANCELLED,
     RENEWAL_STATUS_ACTIVE,
@@ -42,6 +50,7 @@ from bots.max_bot.texts import (
     SUPPORT_CREATE_TICKET,
     SUPPORT_NO_SUBSCRIPTION,
     SUPPORT_SELECT_KEY_CONTEXT,
+    SUPPORT_SELECT_ORGANIZATION,
     SUPPORT_SUBSCRIPTION_EXPIRED,
     SUPPORT_TICKET_CREATED,
     SUPPORT_ROUTING_REGULAR,
@@ -70,11 +79,13 @@ from services.user_service import (
     KeyAlreadyOwnedByUserError,
     KeyConflictError,
     add_user_key,
+    add_user_organization,
     get_user_by_id,
     get_user_by_max_id,
     get_user_keys,
+    get_user_organizations,
 )
-from services.validation_service import validate_gs_key
+from services.validation_service import validate_gs_key, validate_inn
 
 logger = logging.getLogger(__name__)
 
@@ -124,21 +135,23 @@ async def cmd_support(
             )
             return
 
-        logger.info(f"Proceeding to problem description (no subscription check): user_id={user.id}")
+        logger.info(f"Proceeding to organization selection: user_id={user.id}")
 
         await context.update_data(
             user_id=user.id,
+            selected_inn=None,
             problem_description=None,
             attachments=[],
             selected_keys=[]
         )
-        await context.set_state(SupportStates.entering_problem)
+        await context.set_state(SupportStates.selecting_organization)
 
-        await messenger_adapter.send_message(
+        await show_support_organization_selection(
             chat_id=chat_id,
-            text=SUPPORT_CREATE_TICKET,
-            keyboard=get_problem_description_keyboard(),
-            parse_mode="HTML"
+            user_id=user.id,
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter
         )
 
     except SQLAlchemyError as e:
@@ -162,6 +175,549 @@ async def cmd_support(
             text=ERROR_GENERAL,
             parse_mode="HTML"
         )
+
+
+# ========== Organization Selection Handlers ==========
+
+
+async def show_support_organization_selection(
+    chat_id: int,
+    user_id: int,
+    page: int,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+    message_id: Optional[int] = None
+) -> None:
+    """
+    Display organization selection with pagination for support flow.
+
+    Shows user's existing organizations. Includes pagination (7 per page),
+    add new INN, skip, and cancel buttons.
+
+    Args:
+        chat_id: Chat ID for sending messages
+        user_id: Internal user ID (primary key)
+        page: Current page number (0-indexed)
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+        message_id: Optional message ID to delete before sending new one
+    """
+    logger.info(f"Showing support organization selection: user_id={user_id}, page={page}")
+
+    try:
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message in show_support_organization_selection: {e}")
+
+        organizations = await get_user_organizations(session, user_id)
+        keyboard = get_support_organization_keyboard(organizations, page)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=SUPPORT_SELECT_ORGANIZATION,
+            keyboard=keyboard,
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error showing support organization selection: user_id={user_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_support_org_select_callback(
+    event: MessageCallback,
+    payload: SupportOrgSelectPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization selection by INN in support flow.
+
+    Stores the selected INN and proceeds to problem description step.
+
+    Args:
+        event: Callback event from MAX
+        payload: Parsed organization selection payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Support org selected: chat_id={chat_id}, inn={payload.inn}")
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    try:
+        await context.update_data(selected_inn=payload.inn)
+        await context.set_state(SupportStates.entering_problem)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=SUPPORT_CREATE_TICKET,
+            keyboard=get_problem_description_keyboard(),
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error handling support org select: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML"
+        )
+
+
+async def handle_support_org_page_callback(
+    event: MessageCallback,
+    payload: SupportOrgPagePayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization list pagination in support flow.
+
+    Args:
+        event: Callback event from MAX
+        payload: Parsed page payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Support org page: chat_id={chat_id}, page={payload.page}")
+
+    try:
+        data = await context.get_data()
+        user_id = data.get("user_id")
+
+        if not user_id:
+            logger.error(f"No user_id in context for org page: chat_id={chat_id}")
+            await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+            await context.clear()
+            return
+
+        await show_support_organization_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            page=payload.page,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=message_id
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error handling support org page: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+async def handle_support_org_action_callback(
+    event: MessageCallback,
+    payload: SupportOrgActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle organization action callbacks in support flow.
+
+    Actions:
+    - "add_new": Prompt user to enter a new INN
+    - "skip": Skip organization selection, proceed to problem description
+    - "cancel": Cancel the support flow and return to main menu
+
+    Args:
+        event: Callback event from MAX
+        payload: Parsed action payload
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(f"Support org action: chat_id={chat_id}, action={payload.action}")
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    try:
+        if payload.action == "cancel":
+            await cancel_support_flow(event, context, session, messenger_adapter)
+            return
+
+        if payload.action == "skip":
+            logger.info(f"User skipped organization selection: chat_id={chat_id}")
+            await context.update_data(selected_inn=None)
+            await context.set_state(SupportStates.entering_problem)
+
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=SUPPORT_CREATE_TICKET,
+                keyboard=get_problem_description_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        if payload.action == "add_new":
+            await context.set_state(SupportStates.adding_new_inn)
+
+            from bots.max_bot.texts import INVOICE_ADD_NEW_INN
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=INVOICE_ADD_NEW_INN,
+                keyboard=_get_support_add_inn_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        if payload.action == "back_to_orgs":
+            # Return from adding_new_inn to organization selection
+            data = await context.get_data()
+            user_id = data.get("user_id")
+            await context.set_state(SupportStates.selecting_organization)
+            await show_support_organization_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+            return
+
+        if payload.action == "back_from_description":
+            # Return from entering_problem to organization selection
+            data = await context.get_data()
+            user_id = data.get("user_id")
+            # Clear accumulated description so user starts fresh if they go back
+            await context.update_data(problem_description=None, attachments=[])
+            await context.set_state(SupportStates.selecting_organization)
+            await show_support_organization_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+            return
+
+    except Exception as e:
+        logger.error(
+            f"Error handling support org action: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+def _get_support_add_inn_keyboard() -> "Keyboard":
+    """Return a simple back/cancel keyboard for the add-INN step."""
+    from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+    buttons = [[
+        KeyboardButton(
+            text="⬅️ Назад",
+            payload=SupportOrgActionPayload(action="back_to_orgs").pack()
+        ),
+        KeyboardButton(
+            text="❌ Отмена",
+            payload=SupportOrgActionPayload(action="cancel").pack()
+        )
+    ]]
+    return Keyboard(buttons=buttons, inline=True)
+
+
+async def process_new_inn_for_support(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process new INN text input in support flow (SupportStates.adding_new_inn).
+
+    Validates the INN, checks i-TAT API for organization name.
+    If found — saves and proceeds to problem description.
+    If not found — transitions to adding_org_name to ask for a short name.
+
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    text = (event.message.body.text or "").strip() if event.message.body else ""
+
+    logger.info(f"Processing new INN for support: chat_id={chat_id}")
+
+    try:
+        data = await context.get_data()
+        user_id = data.get("user_id")
+
+        if not user_id:
+            logger.error(f"No user_id in context for new INN: chat_id={chat_id}")
+            await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+            await context.clear()
+            return
+
+        # Validate INN format
+        if not validate_inn(text):
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ERROR_VALIDATION_INN,
+                keyboard=_get_support_add_inn_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        inn = text
+
+        # Try to look up organization name via i-TAT API
+        organization_name = None
+        try:
+            itat_client = await get_itat_client(session)
+            if itat_client:
+                org_info = await call_itat_with_retry(itat_client.get_organization_by_inn, inn)
+                if org_info:
+                    organization_name = org_info.get("name") or org_info.get("short_name")
+        except Exception as e:
+            logger.warning(f"i-TAT lookup failed for INN {inn}: {e}")
+
+        if organization_name is None:
+            # INN not found in 1C — ask user for a short name
+            await context.update_data(pending_inn=inn)
+            await context.set_state(SupportStates.adding_org_name)
+
+            from bots.max_bot.texts import ENTER_ORG_NAME
+            from bots.max_bot.payloads import KeyContextActionPayload
+            skip_kb = _get_support_org_name_keyboard()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=ENTER_ORG_NAME.format(inn=inn),
+                keyboard=skip_kb,
+                parse_mode="HTML"
+            )
+            return
+
+        # INN found — save organization and proceed
+        await _save_support_inn_and_proceed(
+            chat_id=chat_id,
+            user_id=user_id,
+            inn=inn,
+            organization_name=organization_name,
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error processing new INN for support: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+def _get_support_org_name_keyboard() -> "Keyboard":
+    """Return keyboard for the org-name input step (skip + cancel)."""
+    from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+    buttons = [
+        [KeyboardButton(
+            text="⏭️ Пропустить",
+            payload=SupportOrgActionPayload(action="skip_org_name").pack()
+        )],
+        [KeyboardButton(
+            text="❌ Отмена",
+            payload=SupportOrgActionPayload(action="cancel").pack()
+        )]
+    ]
+    return Keyboard(buttons=buttons, inline=True)
+
+
+async def process_org_name_for_support(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Process organization name text input in support flow (SupportStates.adding_org_name).
+
+    Saves the INN with the provided short name and proceeds to problem description.
+
+    Args:
+        event: Message event from MAX
+        context: FSM context for state management
+        session: Database session
+        messenger_adapter: Messenger adapter for sending messages
+    """
+    chat_id = event.message.recipient.chat_id
+    org_name = (event.message.body.text or "").strip() if event.message.body else ""
+
+    logger.info(f"Processing org name for support: chat_id={chat_id}")
+
+    try:
+        data = await context.get_data()
+        user_id = data.get("user_id")
+        inn = data.get("pending_inn")
+
+        if not user_id or not inn:
+            logger.error(f"Missing user_id or pending_inn in context: chat_id={chat_id}")
+            await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+            await context.clear()
+            return
+
+        await _save_support_inn_and_proceed(
+            chat_id=chat_id,
+            user_id=user_id,
+            inn=inn,
+            organization_name=org_name or None,
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error processing org name for support: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+async def handle_support_org_name_action_callback(
+    event: MessageCallback,
+    payload: SupportOrgActionPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Handle action callbacks during the org-name input step.
+
+    Actions:
+    - "skip_org_name": Save INN without a name and proceed
+    - "back_to_orgs": Return to organization selection
+    - "cancel": Cancel the support flow
+    """
+    chat_id = event.message.recipient.chat_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    if message_id:
+        try:
+            await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+        except Exception as e:
+            logger.warning(f"Failed to delete old message: {e}")
+
+    try:
+        if payload.action == "cancel":
+            await cancel_support_flow(event, context, session, messenger_adapter)
+            return
+
+        if payload.action == "back_to_orgs":
+            data = await context.get_data()
+            user_id = data.get("user_id")
+            await context.set_state(SupportStates.selecting_organization)
+            await show_support_organization_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                page=0,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+            return
+
+        if payload.action == "skip_org_name":
+            data = await context.get_data()
+            user_id = data.get("user_id")
+            inn = data.get("pending_inn")
+
+            if not user_id or not inn:
+                await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+                await context.clear()
+                return
+
+            await _save_support_inn_and_proceed(
+                chat_id=chat_id,
+                user_id=user_id,
+                inn=inn,
+                organization_name=None,
+                context=context,
+                session=session,
+                messenger_adapter=messenger_adapter
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Error handling support org name action: chat_id={chat_id}, error={e}",
+            exc_info=True
+        )
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+
+
+async def _save_support_inn_and_proceed(
+    chat_id: int,
+    user_id: int,
+    inn: str,
+    organization_name: Optional[str],
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter
+) -> None:
+    """
+    Save INN to user's organizations and transition to problem description.
+
+    Helper used by both process_new_inn_for_support and process_org_name_for_support.
+    """
+    try:
+        await add_user_organization(session, user_id, inn, organization_name=organization_name)
+        await session.commit()
+        logger.info(f"Organization added (support): user_id={user_id}, inn={inn}, name={organization_name}")
+    except IntegrityError:
+        await session.rollback()
+        logger.info(f"Organization already exists (support): user_id={user_id}, inn={inn}")
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error saving organization (support): user_id={user_id}, inn={inn}, error={e}")
+        await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
+        return
+
+    await context.update_data(selected_inn=inn, pending_inn=None)
+    await context.set_state(SupportStates.entering_problem)
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=SUPPORT_CREATE_TICKET,
+        keyboard=get_problem_description_keyboard(),
+        parse_mode="HTML"
+    )
 
 
 # ========== Subscription Renewal Handlers ==========
@@ -1677,6 +2233,7 @@ async def create_support_ticket(
         problem_description = data.get("problem_description") or ""
         attachments = data.get("attachments") or []
         selected_keys = data.get("selected_keys") or []
+        selected_inn = data.get("selected_inn")
         
         # Get user to determine assigned manager
         user = await get_user_by_id(session, user_id)
@@ -1777,6 +2334,7 @@ async def create_support_ticket(
             "ticket_type": TicketType.TECHNICAL_SUPPORT,
             "user_id": user_id,
             "assigned_staff_id": assigned_staff_id,
+            "organization_inn": selected_inn,
             "description": full_description,
             "selected_key_ids": selected_keys
         }

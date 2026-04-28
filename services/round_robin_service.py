@@ -169,6 +169,7 @@ async def get_next_support_staff(session: AsyncSession) -> Staff_Member | None:
     Selects from active staff with:
       - staff_role == TECHNICAL_SUPPORT
       - is_active == True
+      - is_working_today == True  (available for work)
       - max_user_id IS NOT NULL  (must be reachable via MAX)
       - is_estimate_tech_specialist == False  (exclude consultation specialists)
 
@@ -184,6 +185,7 @@ async def get_next_support_staff(session: AsyncSession) -> Staff_Member | None:
         and_(
             Staff_Member.staff_role == StaffRole.TECHNICAL_SUPPORT,
             Staff_Member.is_active.is_(True),
+            Staff_Member.is_working_today.is_(True),  # Only available employees
             Staff_Member.max_user_id.isnot(None),
             Staff_Member.is_estimate_tech_specialist.is_(False),
         )
@@ -205,6 +207,7 @@ async def get_next_consultation_specialist(session: AsyncSession) -> Staff_Membe
     Selects from active staff with:
       - is_estimate_tech_specialist == True
       - is_active == True
+      - is_working_today == True  (available for work)
       - max_user_id IS NOT NULL
 
     Returns None if no eligible specialists exist.
@@ -218,6 +221,7 @@ async def get_next_consultation_specialist(session: AsyncSession) -> Staff_Membe
     stmt = select(Staff_Member).where(
         and_(
             Staff_Member.is_active.is_(True),
+            Staff_Member.is_working_today.is_(True),  # Only available employees
             Staff_Member.is_estimate_tech_specialist.is_(True),
             Staff_Member.max_user_id.isnot(None),
         )

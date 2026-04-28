@@ -81,6 +81,7 @@ from bots.tg_bot.texts import (
     
     # Support messages
     SUPPORT_CREATE_TICKET,
+    SUPPORT_SELECT_ORGANIZATION,
     SUPPORT_SELECT_KEY_CONTEXT,
     SUPPORT_TICKET_CREATED,
     SUPPORT_ROUTING_REGULAR,

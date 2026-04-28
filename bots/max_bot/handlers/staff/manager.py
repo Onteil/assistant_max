@@ -620,7 +620,13 @@ async def cmd_manager(
         # Generate menu keyboard based on employee role with new tickets count
         is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
         is_manager = employee.staff_role == StaffRole.MANAGER
-        keyboard = get_manager_menu_keyboard(is_admin=is_admin, is_manager=is_manager, active_tickets_count=active_tickets_count)
+        show_employee_menu = not is_admin and not is_manager
+        keyboard = get_manager_menu_keyboard(
+            is_admin=is_admin,
+            is_manager=is_manager,
+            active_tickets_count=active_tickets_count,
+            show_employee_menu=show_employee_menu,
+        )
         
         # Generate role-specific menu text with tickets counts
         menu_text = get_employee_menu_text(
@@ -749,6 +755,22 @@ async def handle_manager_menu_action(
                 message_already_deleted=True
             )
         
+        elif action == "employee_menu":
+            # Show employee self-service menu (for non-admin, non-manager roles)
+            if employee.staff_role == StaffRole.ADMINISTRATOR:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Меню сотрудника недоступно для администраторов.",
+                    parse_mode="HTML"
+                )
+                return
+            await show_employee_self_service_menu(
+                chat_id=chat_id,
+                employee=employee,
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
+
         elif action == "back_to_menu":
             # Return to manager main menu (used after transfer_clients)
             is_admin_role = employee.staff_role == StaffRole.ADMINISTRATOR
@@ -761,7 +783,8 @@ async def handle_manager_menu_action(
             keyboard = get_manager_menu_keyboard(
                 is_admin=is_admin_role,
                 is_manager=is_manager_role,
-                active_tickets_count=len(active_tickets)
+                active_tickets_count=len(active_tickets),
+                show_employee_menu=not is_admin_role and not is_manager_role,
             )
             menu_text = get_employee_menu_text(
                 role=employee.staff_role.value,
@@ -3596,5 +3619,504 @@ async def handle_focus_from_message_notification(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="❌ Произошла ошибка при включении режима общения.",
+            parse_mode="HTML",
+        )
+
+
+# ========== Employee Self-Service Menu ==========
+
+
+async def show_employee_self_service_menu(
+    chat_id: int,
+    employee: "Staff_Member",
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Show employee self-service menu with duty and availability controls.
+
+    Determines which buttons to show based on employee role:
+    - TECHNICAL_SUPPORT (is_estimate_tech_specialist=False): duty TP button
+    - Any role with is_estimate_tech_specialist=True: duty estimate button
+    - All non-admin, non-manager roles: toggle working availability button
+
+    Args:
+        chat_id: MAX chat ID
+        employee: Staff_Member object
+        session: Database session
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    from bots.max_bot.keyboards.staff.manager_kb import get_employee_self_service_keyboard
+    from services.settings_service import get_setting
+
+    # Determine which duty buttons to show
+    can_set_duty_tp = (
+        employee.staff_role == StaffRole.TECHNICAL_SUPPORT
+        and not employee.is_estimate_tech_specialist
+    )
+    can_set_duty_estimate = employee.is_estimate_tech_specialist
+
+    # Check if employee is currently the duty specialist
+    is_current_duty_tp = False
+    is_current_duty_estimate = False
+
+    if can_set_duty_tp:
+        duty_tp_id = await get_setting(session, "duty_support_account")
+        is_current_duty_tp = duty_tp_id is not None and int(duty_tp_id) == employee.id
+
+    if can_set_duty_estimate:
+        duty_est_id = await get_setting(session, "duty_estimate_specialist_account")
+        is_current_duty_estimate = duty_est_id is not None and int(duty_est_id) == employee.id
+
+    keyboard = get_employee_self_service_keyboard(
+        can_set_duty_tp=can_set_duty_tp,
+        can_set_duty_estimate=can_set_duty_estimate,
+        is_working_today=employee.is_working_today,
+        is_current_duty_tp=is_current_duty_tp,
+        is_current_duty_estimate=is_current_duty_estimate,
+    )
+
+    # Build status text
+    working_status = "🟢 Доступен" if employee.is_working_today else "🔴 Недоступен"
+    duty_lines = []
+    if is_current_duty_tp:
+        duty_lines.append("⚡ Вы назначены дежурным ТП")
+    if is_current_duty_estimate:
+        duty_lines.append("📊 Вы назначены дежурным по сметной консультации")
+
+    text = (
+        f"👤 <b>Меню сотрудника</b>\n\n"
+        f"<b>Сотрудник:</b> {employee.full_name}\n"
+        f"<b>Статус доступности:</b> {working_status}\n"
+    )
+    if duty_lines:
+        text += "\n" + "\n".join(duty_lines) + "\n"
+
+    text += "\nВыберите действие 👇"
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=text,
+        keyboard=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def handle_employee_menu_action(
+    event: MessageCallback,
+    payload: "StaffSelfServicePayload",
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle employee self-service menu action callbacks.
+
+    Routes to:
+    - set_duty_tp: Show confirmation for setting self as duty TP
+    - set_duty_estimate: Show confirmation for setting self as duty estimate specialist
+    - toggle_working: Show confirmation for toggling working availability
+    - back_to_manager: Return to main manager menu
+
+    maxapi Pattern Notes:
+    - Uses event.callback.user.user_id for user identification
+    - Uses replace_message pattern (delete old + send new)
+
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed StaffSelfServicePayload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    from bots.max_bot.keyboards.staff.manager_kb import (
+        get_employee_duty_confirm_keyboard,
+        get_employee_toggle_working_confirm_keyboard,
+    )
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+    action = payload.action
+
+    logger.info(f"Employee menu action: max_user_id={max_user_id}, action={action}")
+
+    try:
+        await event.answer()
+
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Delete old message (replace_message pattern)
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        if action == "set_duty_tp":
+            # Only TECHNICAL_SUPPORT (non-estimate) can set themselves as duty TP
+            if not (employee.staff_role == StaffRole.TECHNICAL_SUPPORT and not employee.is_estimate_tech_specialist):
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Эта функция доступна только для специалистов техподдержки.",
+                    parse_mode="HTML",
+                )
+                return
+
+            keyboard = get_employee_duty_confirm_keyboard(duty_type="tp")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "⚡ <b>Назначить себя дежурным ТП</b>\n\n"
+                    "Вы будете назначены дежурным специалистом техподдержки.\n"
+                    "В продлённое рабочее время заявки типа «Техподдержка» будут направляться вам.\n\n"
+                    "Подтвердить?"
+                ),
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+
+        elif action == "set_duty_estimate":
+            # Only estimate specialists can set themselves as duty estimate
+            if not employee.is_estimate_tech_specialist:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Эта функция доступна только для сметных специалистов.",
+                    parse_mode="HTML",
+                )
+                return
+
+            keyboard = get_employee_duty_confirm_keyboard(duty_type="estimate")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "📊 <b>Назначить себя дежурным по сметной консультации</b>\n\n"
+                    "Вы будете назначены дежурным специалистом по сметной консультации.\n"
+                    "В продлённое рабочее время заявки типа «Консультация» будут направляться вам.\n\n"
+                    "Подтвердить?"
+                ),
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+
+        elif action == "toggle_working":
+            if employee.is_working_today:
+                confirm_text = (
+                    "🔴 <b>Сделать себя недоступным</b>\n\n"
+                    "Вы не будете получать новые заявки, пока не вернёте статус «Доступен».\n"
+                    "Уже назначенные заявки остаются у вас.\n\n"
+                    "Подтвердить?"
+                )
+            else:
+                confirm_text = (
+                    "🟢 <b>Сделать себя доступным</b>\n\n"
+                    "Вы снова будете получать новые заявки.\n\n"
+                    "Подтвердить?"
+                )
+            keyboard = get_employee_toggle_working_confirm_keyboard()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=confirm_text,
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+
+        elif action == "back_to_manager":
+            # Return to main manager menu
+            is_admin = employee.staff_role == StaffRole.ADMINISTRATOR
+            is_manager = employee.staff_role == StaffRole.MANAGER
+            from services.employee_service import get_employee_active_tickets, get_employee_new_tickets_count
+            active_tickets = await get_employee_active_tickets(session, employee.max_user_id, ticket_type_filter=None)
+            new_tickets_count = await get_employee_new_tickets_count(session, employee.max_user_id, ticket_type_filter=None)
+            keyboard = get_manager_menu_keyboard(
+                is_admin=is_admin,
+                is_manager=is_manager,
+                active_tickets_count=len(active_tickets),
+                show_employee_menu=not is_admin and not is_manager,
+            )
+            menu_text = get_employee_menu_text(
+                role=employee.staff_role.value,
+                full_name=employee.full_name,
+                position=employee.position,
+                active_tickets_count=len(active_tickets),
+                new_tickets_count=new_tickets_count,
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=menu_text,
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+
+        else:
+            logger.warning(f"Unknown employee menu action: {action}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Неизвестное действие.",
+                parse_mode="HTML",
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Error handling employee menu action: action={action}, max_user_id={max_user_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка.\nПожалуйста, попробуйте позже.",
+            parse_mode="HTML",
+        )
+
+
+async def handle_employee_set_duty(
+    event: MessageCallback,
+    payload: "StaffSetDutyPayload",
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle confirmation of setting employee as duty specialist.
+
+    On confirm=True: updates the system setting (duty_support_account or
+    duty_estimate_specialist_account) to this employee's staff ID.
+    On confirm=False: returns to employee self-service menu.
+
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed StaffSetDutyPayload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    from services.settings_service import set_setting
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(
+        f"Employee set duty: max_user_id={max_user_id}, duty_type={payload.duty_type}, confirm={payload.confirm}"
+    )
+
+    try:
+        await event.answer()
+
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Delete old message (replace_message pattern)
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        if not payload.confirm:
+            # User cancelled — return to employee menu
+            await show_employee_self_service_menu(
+                chat_id=chat_id,
+                employee=employee,
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
+            return
+
+        # Validate permissions
+        if payload.duty_type == "tp":
+            if not (employee.staff_role == StaffRole.TECHNICAL_SUPPORT and not employee.is_estimate_tech_specialist):
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Эта функция доступна только для специалистов техподдержки.",
+                    parse_mode="HTML",
+                )
+                return
+            setting_key = "duty_support_account"
+            success_text = (
+                "✅ <b>Вы назначены дежурным специалистом ТП</b>\n\n"
+                "В продлённое рабочее время заявки типа «Техподдержка» будут направляться вам."
+            )
+
+        elif payload.duty_type == "estimate":
+            if not employee.is_estimate_tech_specialist:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Эта функция доступна только для сметных специалистов.",
+                    parse_mode="HTML",
+                )
+                return
+            setting_key = "duty_estimate_specialist_account"
+            success_text = (
+                "✅ <b>Вы назначены дежурным по сметной консультации</b>\n\n"
+                "В продлённое рабочее время заявки типа «Консультация» будут направляться вам."
+            )
+
+        else:
+            logger.warning(f"Unknown duty_type: {payload.duty_type}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Неизвестный тип дежурства.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Save setting: store staff internal ID as string
+        await set_setting(session, setting_key, str(employee.id))
+        await session.commit()
+
+        logger.info(
+            f"Employee {max_user_id} (staff_id={employee.id}) set as duty {payload.duty_type}"
+        )
+
+        # Show success and return to employee menu
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=success_text,
+            parse_mode="HTML",
+        )
+
+        # Re-fetch employee to get fresh state
+        employee = await is_staff_member(session, max_user_id)
+        if employee:
+            await show_employee_self_service_menu(
+                chat_id=chat_id,
+                employee=employee,
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Error setting duty specialist: max_user_id={max_user_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при назначении дежурного.\nПожалуйста, попробуйте позже.",
+            parse_mode="HTML",
+        )
+
+
+async def handle_employee_toggle_working(
+    event: MessageCallback,
+    payload: "StaffToggleWorkingPayload",
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """
+    Handle confirmation of toggling employee working availability.
+
+    On confirm=True: flips employee.is_working_today in the database.
+    On confirm=False: returns to employee self-service menu.
+
+    When is_working_today becomes False, the employee is excluded from
+    round-robin assignment and duty routing.
+
+    Args:
+        event: MessageCallback event from maxapi
+        payload: Parsed StaffToggleWorkingPayload
+        context: MemoryContext for FSM state management
+        session: AsyncSession for database operations
+        messenger_adapter: MAXMessengerAdapter for sending messages
+    """
+    from sqlalchemy import select as sa_select
+
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
+
+    logger.info(
+        f"Employee toggle working: max_user_id={max_user_id}, confirm={payload.confirm}"
+    )
+
+    try:
+        await event.answer()
+
+        employee = await is_staff_member(session, max_user_id)
+        if not employee:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ У вас нет доступа к интерфейсу сотрудника.",
+                parse_mode="HTML",
+            )
+            return
+
+        # Delete old message (replace_message pattern)
+        if message_id:
+            try:
+                await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete old message: {e}")
+
+        if not payload.confirm:
+            # User cancelled — return to employee menu
+            await show_employee_self_service_menu(
+                chat_id=chat_id,
+                employee=employee,
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
+            return
+
+        # Toggle the flag
+        new_status = not employee.is_working_today
+        employee.is_working_today = new_status
+        await session.commit()
+
+        logger.info(
+            f"Employee {max_user_id} (staff_id={employee.id}) toggled is_working_today to {new_status}"
+        )
+
+        if new_status:
+            status_text = (
+                "🟢 <b>Статус изменён: Доступен</b>\n\n"
+                "Вы снова будете получать новые заявки."
+            )
+        else:
+            status_text = (
+                "🔴 <b>Статус изменён: Недоступен</b>\n\n"
+                "Вы не будете получать новые заявки.\n"
+                "Уже назначенные заявки остаются у вас.\n"
+                "Не забудьте вернуть статус «Доступен», когда будете готовы к работе."
+            )
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=status_text,
+            parse_mode="HTML",
+        )
+
+        # Re-fetch employee to get fresh state and show updated menu
+        employee = await is_staff_member(session, max_user_id)
+        if employee:
+            await show_employee_self_service_menu(
+                chat_id=chat_id,
+                employee=employee,
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
+
+    except Exception as e:
+        logger.error(
+            f"Error toggling working status: max_user_id={max_user_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Произошла ошибка при изменении статуса.\nПожалуйста, попробуйте позже.",
             parse_mode="HTML",
         )

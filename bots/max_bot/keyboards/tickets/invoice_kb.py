@@ -49,25 +49,13 @@ def get_organization_keyboard(organizations: list, page: int = 0) -> Keyboard:
     end_index = start_index + ITEMS_PER_PAGE
     orgs_on_page = organizations[start_index:end_index]
     
-    # Кнопки организаций
+    # Кнопки организаций — одна кнопка: название если есть, иначе ИНН
     for org in orgs_on_page:
-        if org.organization_name:
-            # Three buttons: [Name] [INN] [select via name click]
-            buttons.append([
-                KeyboardButton(
-                    text=org.organization_name,
-                    payload=OrganizationSelectPayload(inn=org.inn).pack()
-                ),
-                KeyboardButton(
-                    text=org.inn,
-                    payload=OrganizationSelectPayload(inn=org.inn).pack()
-                )
-            ])
-        else:
-            buttons.append([KeyboardButton(
-                text=f"ИНН: {org.inn}",
-                payload=OrganizationSelectPayload(inn=org.inn).pack()
-            )])
+        label = org.organization_name if org.organization_name else f"ИНН: {org.inn}"
+        buttons.append([KeyboardButton(
+            text=label,
+            payload=OrganizationSelectPayload(inn=org.inn).pack()
+        )])
     
     # Кнопки пагинации (если страниц больше одной)
     if total_pages > 1:
