@@ -12,8 +12,7 @@ import logging
 from maxapi.types import MessageCallback, MessageCreated
 from maxapi.context import MemoryContext
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
+from sqlalchemy.ext.asyncio import AsyncSession        
 from bots.max_bot.keyboards.staff.manager_kb import get_manager_menu_keyboard
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
 from bots.max_bot.payloads import (
@@ -34,6 +33,7 @@ from bots.max_bot.payloads import (
     ManagerTicketHistoryBackPayload,
 )
 from database.models import Staff_Member, StaffRole, Ticket, TicketStatus, TicketType
+from database.models import System_Settings, Action_Log, ActionType
 from services.employee_service import (
     get_employee_active_tickets,
     format_ticket_card,
@@ -3896,7 +3896,7 @@ async def handle_employee_set_duty(
         session: AsyncSession for database operations
         messenger_adapter: MAXMessengerAdapter for sending messages
     """
-    from services.settings_service import set_setting
+    from database.models import System_Settings
 
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id
@@ -3973,8 +3973,39 @@ async def handle_employee_set_duty(
             )
             return
 
+        # # Save setting: store staff internal ID as string
+        # await set_setting(session, setting_key, str(employee.id))
+        # await session.commit()
+
         # Save setting: store staff internal ID as string
-        await set_setting(session, setting_key, str(employee.id))
+
+
+        setting_stmt = select(System_Settings).where(System_Settings.key == setting_key)
+        setting_result = await session.execute(setting_stmt)
+        setting = setting_result.scalar_one_or_none()
+
+        if setting:
+            setting.value = str(employee.id)
+            setting.updated_by = employee.id
+        else:
+            setting = System_Settings(
+                key=setting_key,
+                value=str(employee.id),
+                updated_by=employee.id
+            )
+            session.add(setting)
+
+        # Log action
+        action_log = Action_Log(
+            action_type=ActionType.STAFF_UPDATED,
+            staff_id=employee.id,
+            action_details={
+                "action": "self_set_duty",
+                "duty_type": payload.duty_type,
+                "setting_key": setting_key
+            }
+        )
+        session.add(action_log)
         await session.commit()
 
         logger.info(
