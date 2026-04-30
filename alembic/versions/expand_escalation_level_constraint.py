@@ -12,7 +12,7 @@ so the constraint must be widened to include 3.
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = 'expand_escalation_level_constraint'
+revision = 'expand_escalation_lvl_3'
 down_revision = 'add_is_working_today_to_staff'
 branch_labels = None
 depends_on = None
