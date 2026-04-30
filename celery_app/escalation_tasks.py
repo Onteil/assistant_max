@@ -705,6 +705,10 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
     # Update escalation level (0 → 1)
     ticket.escalation_level = 1
     
+    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
+    # if task scheduling fails
+    await session.commit()
+    
     # Log action
     action_log = Action_Log(
         ticket_id=ticket.id,
@@ -849,6 +853,10 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     old_staff_id = ticket.assigned_staff_id
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 2
+    
+    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
+    # if message sending or task scheduling fails
+    await session.commit()
     
     # Build notification message
     ticket_type_names = {
@@ -1112,6 +1120,10 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     old_staff_id = ticket.assigned_staff_id
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 3
+    
+    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
+    # if message sending or task scheduling fails
+    await session.commit()
     
     # Build notification message
     ticket_type_names = {
