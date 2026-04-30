@@ -58,12 +58,14 @@ async def log_ticket_to_itat(
             return False
         
         # Map ticket type to API format
+        # NOTE: i-TAT API only accepts: "Счет", "Техподдержка", "Продление", "Конфликт ключа", "Перенос номера"
+        # CONSULTATION is mapped to "Техподдержка" since it's not a separate type in i-TAT API
         ticket_type_map = {
             TicketType.INVOICE: "Счет",
             TicketType.TECHNICAL_SUPPORT: "Техподдержка",
-            TicketType.CONSULTATION: "Консультация",
+            TicketType.CONSULTATION: "Техподдержка",  # Mapped to Техподдержка (i-TAT doesn't have separate Consultation type)
             TicketType.RENEWAL: "Продление",
-            TicketType.PHONE_CHANGE: "Смена телефона",
+            TicketType.PHONE_CHANGE: "Перенос номера",
             TicketType.KEY_CONFLICT: "Конфликт ключа"
         }
         
