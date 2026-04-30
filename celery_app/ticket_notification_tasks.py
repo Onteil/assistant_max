@@ -447,7 +447,10 @@ async def _process_invoice_ticket(
                 admin_message += f"• MAX ID: {ticket.user.max_user_id}\n"
             
             if ticket.organization_inn:
-                admin_message += f"\n<b>Организация:</b> {ticket.organization_inn}\n"
+                if ticket.organization and ticket.organization.organization_name:
+                    admin_message += f"\n<b>Организация:</b> {ticket.organization.organization_name} (ИНН: {ticket.organization_inn})\n"
+                else:
+                    admin_message += f"\n<b>Организация:</b> ИНН: {ticket.organization_inn} (название не указано)\n"
             
             # Add delivery method information
             if hasattr(ticket, 'delivery_method') and ticket.delivery_method:
@@ -914,7 +917,10 @@ async def _process_consultation_ticket(
     )
 
     if ticket.organization_inn:
-        notification_text += f"<b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
+        if ticket.organization and ticket.organization.organization_name:
+            notification_text += f"<b>Организация:</b> {ticket.organization.organization_name} (ИНН: <code>{ticket.organization_inn}</code>)\n"
+        else:
+            notification_text += f"<b>Организация:</b> ИНН: <code>{ticket.organization_inn}</code> (название не указано)\n"
 
     if ticket.gs_keys:
         keys_text = ", ".join([key.key_number for key in ticket.gs_keys])

@@ -379,6 +379,7 @@ async def delete_organization(
                     break
             
             if org_to_remove:
+                org_name = org_to_remove.organization_name
                 user.organizations.remove(org_to_remove)
                 await session.commit()
                 
@@ -410,9 +411,15 @@ async def delete_organization(
                     max_user_id=user.max_user_id or 0
                 )
                 
+                # Format success message with organization name if available
+                if org_name:
+                    success_text = f"✅ Организация {org_name} (ИНН: {inn}) удалена из профиля."
+                else:
+                    success_text = f"✅ Организация с ИНН {inn} (название не указано) удалена из профиля."
+                
                 await messenger_adapter.send_message(
                     chat_id=chat_id,
-                    text=f"✅ Организация с ИНН {inn} удалена из профиля.",
+                    text=success_text,
                     parse_mode="HTML"
                 )
                 logger.info(f"Organization removed from user: user_id={user_id}, inn={inn}")
@@ -698,6 +705,13 @@ async def show_delete_organization_confirmation(
     try:
         from bots.max_bot.payloads import ProfileConfirmDeleteOrgPayload, ProfileViewPayload
         from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from database.models import Organization
+        from sqlalchemy import select
+        
+        # Get organization to show its name
+        stmt = select(Organization).where(Organization.inn == inn)
+        result = await session.execute(stmt)
+        org = result.scalar_one_or_none()
         
         # Build confirmation keyboard
         buttons = [
@@ -717,7 +731,11 @@ async def show_delete_organization_confirmation(
         
         keyboard = Keyboard(buttons=buttons, inline=True)
         
-        text = f"⚠️ <b>Удаление организации</b>\n\nВы уверены, что хотите удалить организацию с ИНН <b>{inn}</b> из профиля?"
+        # Format text with organization name if available
+        if org and org.organization_name:
+            text = f"⚠️ <b>Удаление организации</b>\n\nВы уверены, что хотите удалить организацию <b>{org.organization_name}</b> (ИНН: <b>{inn}</b>) из профиля?"
+        else:
+            text = f"⚠️ <b>Удаление организации</b>\n\nВы уверены, что хотите удалить организацию с ИНН <b>{inn}</b> (название не указано) из профиля?"
         
         await messenger_adapter.send_message(
             chat_id=chat_id,
@@ -850,9 +868,9 @@ def _format_profile_text(user, organizations: list, gs_keys: list) -> str:
         display_orgs = organizations[:10]
         for org in display_orgs:
             if org.organization_name:
-                text += f"  • {org.organization_name} ({org.inn})\n"
+                text += f"  • {org.organization_name} (ИНН: {org.inn})\n"
             else:
-                text += f"  • {org.inn}\n"
+                text += f"  • ИНН: {org.inn} (название не указано)\n"
         
         if len(organizations) > 10:
             text += f"  <i>... и еще {len(organizations) - 10}</i>\n"

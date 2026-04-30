@@ -124,9 +124,9 @@ def format_ticket_card_detailed(ticket: Ticket) -> str:
     # INN (if available)
     if ticket.organization_inn:
         if ticket.organization and ticket.organization.organization_name:
-            lines.append(f"<b>Организация:</b> {ticket.organization.organization_name} ({ticket.organization_inn})")
+            lines.append(f"<b>Организация:</b> {ticket.organization.organization_name} (ИНН: {ticket.organization_inn})")
         else:
-            lines.append(f"<b>ИНН:</b> {ticket.organization_inn}")
+            lines.append(f"<b>ИНН:</b> {ticket.organization_inn} (название не указано)")
     
     # GS Keys (if available)
     if ticket.gs_keys:

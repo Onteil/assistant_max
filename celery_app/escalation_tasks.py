@@ -675,9 +675,10 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     )
     
     if ticket.organization:
-        org_text = ticket.organization.inn
         if ticket.organization.organization_name:
-            org_text += f" ({ticket.organization.organization_name})"
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
     if ticket.gs_keys:
@@ -938,9 +939,10 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     )
     
     if ticket.organization:
-        org_text = ticket.organization.inn
         if ticket.organization.organization_name:
-            org_text += f" ({ticket.organization.organization_name})"
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
     if ticket.gs_keys:
@@ -1779,9 +1781,10 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     )
     
     if ticket.organization:
-        org_text = ticket.organization.inn
         if ticket.organization.organization_name:
-            org_text += f" ({ticket.organization.organization_name})"
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
     if ticket.gs_keys:
@@ -2042,9 +2045,10 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     )
     
     if ticket.organization:
-        org_text = ticket.organization.inn
         if ticket.organization.organization_name:
-            org_text += f" ({ticket.organization.organization_name})"
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
     if ticket.gs_keys:
@@ -2244,9 +2248,10 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
     )
     
     if ticket.organization:
-        org_text = ticket.organization.inn
         if ticket.organization.organization_name:
-            org_text += f" ({ticket.organization.organization_name})"
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
     if ticket.gs_keys:

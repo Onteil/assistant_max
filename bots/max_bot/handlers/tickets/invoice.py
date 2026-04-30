@@ -2987,9 +2987,9 @@ async def _notify_admin_about_unassigned_user(
         
         if ticket.organization:
             if ticket.organization.organization_name:
-                org_text = f"{ticket.organization.organization_name} ({ticket.organization.inn})"
+                org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
             else:
-                org_text = ticket.organization.inn
+                org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
             notification_text += f"<b>Организация:</b> {org_text}\n"
         
         if ticket.description:

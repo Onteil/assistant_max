@@ -723,13 +723,18 @@ async def handle_escalation_reassign_confirm(
                 
                 # Organization(s)
                 if ticket.organization_inn:
-                    orgs = [org.strip() for org in ticket.organization_inn.split(',') if org.strip()]
-                    if len(orgs) > 1:
-                        notification_text += f"\n🏢 <b>Организации:</b>\n"
-                        for idx, org in enumerate(orgs, 1):
-                            notification_text += f"   {idx}. <code>{org}</code>\n"
+                    # Check if we have organization relationship loaded with name
+                    if ticket.organization and ticket.organization.organization_name:
+                        notification_text += f"\n🏢 <b>Организация:</b> {ticket.organization.organization_name} (ИНН: <code>{ticket.organization_inn}</code>)\n"
                     else:
-                        notification_text += f"\n🏢 <b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
+                        # Multiple INNs or no name available
+                        orgs = [org.strip() for org in ticket.organization_inn.split(',') if org.strip()]
+                        if len(orgs) > 1:
+                            notification_text += f"\n🏢 <b>Организации:</b>\n"
+                            for idx, org in enumerate(orgs, 1):
+                                notification_text += f"   {idx}. ИНН: <code>{org}</code> (название не указано)\n"
+                        else:
+                            notification_text += f"\n🏢 <b>Организация:</b> ИНН: <code>{ticket.organization_inn}</code> (название не указано)\n"
                 
                 # GS Keys
                 try:

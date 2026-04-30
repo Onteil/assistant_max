@@ -598,6 +598,50 @@ async def _build_escalation_settings_message(session: AsyncSession) -> tuple[str
     return "\n".join(text_lines), buttons
 
 
+async def _get_full_name_by_chat_id(session: AsyncSession, chat_id: int) -> str | None:
+    """
+    Resolve a human-readable full name for the given MAX chat_id.
+
+    Lookup order:
+    1. max_messenger_data → max_user_id → staff_members.full_name
+    2. max_messenger_data → user_id     → users.full_name
+
+    Returns the full name string, or None if not found.
+    """
+    from database.models import MAX_Messenger_Data, User
+    
+    # Step 1: find the messenger data record for this chat_id
+    result = await session.execute(
+        select(MAX_Messenger_Data).where(MAX_Messenger_Data.max_chat_id == chat_id)
+    )
+    messenger_data = result.scalar_one_or_none()
+
+    if messenger_data is None:
+        return None
+
+    # Step 2a: try staff_members by max_user_id
+    if messenger_data.max_user_id:
+        staff_result = await session.execute(
+            select(Staff_Member.full_name).where(
+                Staff_Member.max_user_id == messenger_data.max_user_id
+            )
+        )
+        staff_name = staff_result.scalar_one_or_none()
+        if staff_name:
+            return staff_name
+
+    # Step 2b: fall back to users table by user_id
+    if messenger_data.user_id:
+        user_result = await session.execute(
+            select(User.full_name).where(User.id == messenger_data.user_id)
+        )
+        user_name = user_result.scalar_one_or_none()
+        if user_name:
+            return user_name
+
+    return None
+
+
 async def _build_escalation_channel_type_message(
     session: AsyncSession,
     setting_key: str,
@@ -626,7 +670,23 @@ async def _build_escalation_channel_type_message(
     ]
     if channels:
         for ch in page_channels:
-            text_lines.append(f"  • <code>{ch}</code>")
+            # Try to resolve full name for this chat_id
+            try:
+                chat_id_int = int(ch)
+                full_name = await _get_full_name_by_chat_id(session, chat_id_int)
+                
+                if full_name:
+                    # Show chat_id with full name
+                    text_lines.append(f"  • <code>{ch}</code> — {full_name}")
+                else:
+                    # No user found - likely group chat or unknown user
+                    if chat_id_int < 0:
+                        text_lines.append(f"  • <code>{ch}</code> — <i>Групповой чат</i>")
+                    else:
+                        text_lines.append(f"  • <code>{ch}</code> — <i>Неизвестный пользователь</i>")
+            except (ValueError, TypeError):
+                # Invalid chat_id format
+                text_lines.append(f"  • <code>{ch}</code> — <i>Некорректный ID</i>")
     else:
         text_lines.append("  ❌ Каналы не настроены")
 
