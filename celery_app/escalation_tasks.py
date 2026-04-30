@@ -705,14 +705,19 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
     # Update escalation level (0 → 1)
     ticket.escalation_level = 1
     
+    # Save ticket_id and ticket_type before commit (ticket becomes detached after commit)
+    ticket_id_reminder = ticket.id
+    ticket_type_reminder = ticket.ticket_type
+    staff_id_reminder = assigned_staff.id
+    
     # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
     # if task scheduling fails
     await session.commit()
     
     # Log action
     action_log = Action_Log(
-        ticket_id=ticket.id,
-        staff_id=assigned_staff.id,
+        ticket_id=ticket_id_reminder,
+        staff_id=staff_id_reminder,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
             "escalation_level": 1,
@@ -723,25 +728,32 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
     session.add(action_log)
     
     # Schedule next escalation check (to backup_manager_1)
-    if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+    if ticket_type_reminder in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
         reminder_task = check_technical_support_ticket.apply_async(
-            args=[ticket.id],
+            args=[ticket_id_reminder],
             countdown=timeout_seconds
         )
     else:
         reminder_task = check_ticket_reminder.apply_async(
-            args=[ticket.id],
+            args=[ticket_id_reminder],
             countdown=timeout_seconds
         )
-    ticket.escalation_task_reminder_id = reminder_task.id
+
+    # Use direct UPDATE to avoid detached instance issues
+    from sqlalchemy import update as sa_update
+    await session.execute(
+        sa_update(Ticket)
+        .where(Ticket.id == ticket_id_reminder)
+        .values(escalation_task_reminder_id=reminder_task.id)
+    )
     
     await session.commit()
     
     return {
         "status": "success",
         "message": "Reminder sent to assigned staff",
-        "ticket_id": ticket.id,
-        "staff_id": assigned_staff.id,
+        "ticket_id": ticket_id_reminder,
+        "staff_id": staff_id_reminder,
         "escalation_level": 1,
         "time_elapsed_minutes": minutes
     }
@@ -1007,7 +1019,14 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
             args=[ticket_id],
             countdown=timeout_seconds
         )
-    ticket.escalation_task_reminder_id = reminder_task.id
+
+    # Use direct UPDATE to avoid detached instance issues (ticket was committed above)
+    from sqlalchemy import update as sa_update
+    await session.execute(
+        sa_update(Ticket)
+        .where(Ticket.id == ticket_id)
+        .values(escalation_task_reminder_id=reminder_task.id)
+    )
 
     await session.commit()
 
@@ -1180,6 +1199,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     timeout_minutes_3x = int(timeout_minutes) * 3
     
     ticket_id = ticket.id
+    ticket_type_for_routing = ticket.ticket_type
     
     # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
     # if message sending or task scheduling fails
@@ -1279,7 +1299,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
 
     # Schedule final escalation check in configured timeout.
     # Use check_technical_support_ticket for TP/Consultation, check_ticket_reminder for others.
-    if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+    if ticket_type_for_routing in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
         reminder_task = check_technical_support_ticket.apply_async(
             args=[ticket_id],
             countdown=timeout_seconds
@@ -1289,7 +1309,14 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             args=[ticket_id],
             countdown=timeout_seconds
         )
-    ticket.escalation_task_reminder_id = reminder_task.id
+
+    # Use direct UPDATE to avoid detached instance issues (ticket was committed above)
+    from sqlalchemy import update as sa_update
+    await session.execute(
+        sa_update(Ticket)
+        .where(Ticket.id == ticket_id)
+        .values(escalation_task_reminder_id=reminder_task.id)
+    )
 
     await session.commit()
 
