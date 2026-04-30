@@ -159,10 +159,18 @@ async def create_ticket(
             TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION
         ):
             try:
-                # Check current work mode - escalation only in REGULAR/EXTENDED modes
+                # Check current work mode - escalation only when the ticket is actively
+                # assigned to a manager right now.
+                # INVOICE / RENEWAL: only REGULAR is "working" — in EXTENDED there is no
+                # manager on duty, so the ticket is queued and must NOT be escalated yet.
+                # Escalation will be scheduled by ticket_notification_tasks when the
+                # ticket is forwarded at the start of the next working period.
                 work_mode = await get_current_work_mode(session)
                 
-                if work_mode != WorkMode.NON_WORKING:
+                # For INVOICE/RENEWAL only REGULAR triggers immediate escalation.
+                should_schedule = work_mode == WorkMode.REGULAR
+                
+                if should_schedule:
                     # Import here to avoid circular dependency
                     from celery_app.escalation_tasks import schedule_escalation_monitoring
                     
@@ -183,9 +191,9 @@ async def create_ticket(
                         f"escalation_task_id={escalation_task_id}"
                     )
                 else:
-                    # NON_WORKING mode - ticket queued, no escalation
+                    # EXTENDED or NON_WORKING — ticket is queued, no escalation yet
                     logger.info(
-                        f"Ticket {ticket.id} created in NON_WORKING mode - "
+                        f"Ticket {ticket.id} created in {work_mode.value} mode - "
                         f"escalation not scheduled (will be processed in next working period)"
                     )
             
