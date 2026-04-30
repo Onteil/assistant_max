@@ -1071,7 +1071,7 @@ CREATE TABLE public.tickets (
     new_phone character varying(20),
     resolution_comment character varying,
     queue_notification_sent_at timestamp without time zone,
-    CONSTRAINT ck_tickets_escalation_level CHECK ((escalation_level = ANY (ARRAY[0, 1, 2])))
+    CONSTRAINT ck_tickets_escalation_level CHECK ((escalation_level = ANY (ARRAY[0, 1, 2, 3])))
 );
 
 
