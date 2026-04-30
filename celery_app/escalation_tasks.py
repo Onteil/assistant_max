@@ -854,11 +854,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 2
     
-    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
-    # if message sending or task scheduling fails
-    await session.commit()
-    
-    # Build notification message
+    # Prepare notification data BEFORE commit (to avoid detached instance issues)
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
@@ -870,15 +866,44 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
+    # Get organization info before commit
+    org_text = None
+    if ticket.organization:
+        if ticket.organization.organization_name:
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
+    
+    # Get keys info before commit
+    keys_text = None
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+    
+    # Get description before commit
+    description = ticket.description
+    desc_preview = None
+    if description:
+        desc_preview = description[:150]
+        if len(description) > 150:
+            desc_preview += "..."
+    
     # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
     minutes, reference_time = get_ticket_elapsed_time(ticket)
 
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
     timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
-
+    
+    ticket_id = ticket.id
+    ticket_type_for_routing = ticket.ticket_type
+    
+    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
+    # if message sending or task scheduling fails
+    await session.commit()
+    
+    # Build notification message using pre-fetched data
     notification_text = (
-        f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
+        f"⚠️ <b>Эскалация заявки #{ticket_id}</b>\n\n"
         f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником в течение {timeout_minutes * 2} минут (включая повторное напоминание)\n\n"
         f"Вы назначены резервным менеджером (Резерв 1).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
@@ -886,21 +911,13 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         f"<b>Телефон:</b> {user_phone}\n"
     )
     
-    if ticket.organization:
-        if ticket.organization.organization_name:
-            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
-        else:
-            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
+    if org_text:
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
-    if ticket.gs_keys:
-        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+    if keys_text:
         notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
     
-    if ticket.description:
-        desc_preview = ticket.description[:150]
-        if len(ticket.description) > 150:
-            desc_preview += "..."
+    if desc_preview:
         notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
     
     notification_text += (
@@ -913,7 +930,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     
     take_over_payload = BackupEscalationPayload(
         action="take_over",
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         escalation_level=1
     ).pack()
     
@@ -939,7 +956,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         
         logger.info(
             f"Escalation notification sent to backup_manager_1: "
-            f"ticket_id={ticket.id}, backup_id={backup_manager.id}, "
+            f"ticket_id={ticket_id}, backup_id={backup_manager.id}, "
             f"max_user_id={backup_manager.max_user_id}, chat_id={backup_chat_id}"
         )
     
@@ -964,7 +981,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     # Log action — store original_staff_id so _escalate_to_backup_manager_2
     # can find backup_manager_2 without a fragile full-table scan.
     action_log = Action_Log(
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         staff_id=backup_manager.id,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
@@ -980,14 +997,14 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
 
     # Schedule next escalation check in configured timeout.
     # Use check_technical_support_ticket for TP/Consultation, check_ticket_reminder for others.
-    if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+    if ticket_type_for_routing in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
         reminder_task = check_technical_support_ticket.apply_async(
-            args=[ticket.id],
+            args=[ticket_id],
             countdown=timeout_seconds
         )
     else:
         reminder_task = check_ticket_reminder.apply_async(
-            args=[ticket.id],
+            args=[ticket_id],
             countdown=timeout_seconds
         )
     ticket.escalation_task_reminder_id = reminder_task.id
@@ -997,7 +1014,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     return {
         "status": "success",
         "message": "Escalated to backup_manager_1",
-        "ticket_id": ticket.id,
+        "ticket_id": ticket_id,
         "old_staff_id": old_staff_id,
         "new_staff_id": backup_manager.id,
         "escalation_level": 2,
@@ -1121,11 +1138,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 3
     
-    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
-    # if message sending or task scheduling fails
-    await session.commit()
-    
-    # Build notification message
+    # Prepare notification data BEFORE commit (to avoid detached instance issues)
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
@@ -1137,6 +1150,27 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
+    # Get organization info before commit
+    org_text = None
+    if ticket.organization:
+        if ticket.organization.organization_name:
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
+    
+    # Get keys info before commit
+    keys_text = None
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+    
+    # Get description before commit
+    description = ticket.description
+    desc_preview = None
+    if description:
+        desc_preview = description[:150]
+        if len(description) > 150:
+            desc_preview += "..."
+    
     # Calculate time elapsed (from queue notification if applicable, otherwise from creation)
     minutes, reference_time = get_ticket_elapsed_time(ticket)
 
@@ -1144,9 +1178,16 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     from services.settings_service import get_setting
     timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
     timeout_minutes_3x = int(timeout_minutes) * 3
-
+    
+    ticket_id = ticket.id
+    
+    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
+    # if message sending or task scheduling fails
+    await session.commit()
+    
+    # Build notification message using pre-fetched data
     notification_text = (
-        f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
+        f"⚠️⚠️ <b>Эскалация заявки #{ticket_id}</b>\n\n"
         f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником и первым резервным менеджером в течение {timeout_minutes_3x} минут\n\n"
         f"Вы назначены вторым резервным менеджером (Резерв 2).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
@@ -1154,21 +1195,13 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
         f"<b>Телефон:</b> {user_phone}\n"
     )
     
-    if ticket.organization:
-        if ticket.organization.organization_name:
-            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
-        else:
-            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
+    if org_text:
         notification_text += f"<b>Организация:</b> {org_text}\n"
     
-    if ticket.gs_keys:
-        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+    if keys_text:
         notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
     
-    if ticket.description:
-        desc_preview = ticket.description[:150]
-        if len(ticket.description) > 150:
-            desc_preview += "..."
+    if desc_preview:
         notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
     
     notification_text += (
@@ -1181,7 +1214,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     
     take_over_payload = BackupEscalationPayload(
         action="take_over",
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         escalation_level=2
     ).pack()
     
@@ -1207,7 +1240,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
         
         logger.info(
             f"Escalation notification sent to backup_manager_2: "
-            f"ticket_id={ticket.id}, backup_id={backup_manager.id}, "
+            f"ticket_id={ticket_id}, backup_id={backup_manager.id}, "
             f"max_user_id={backup_manager.max_user_id}, chat_id={backup_chat_id}"
         )
     
@@ -1231,7 +1264,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     
     # Log action
     action_log = Action_Log(
-        ticket_id=ticket.id,
+        ticket_id=ticket_id,
         staff_id=backup_manager.id,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
@@ -1248,12 +1281,12 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     # Use check_technical_support_ticket for TP/Consultation, check_ticket_reminder for others.
     if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
         reminder_task = check_technical_support_ticket.apply_async(
-            args=[ticket.id],
+            args=[ticket_id],
             countdown=timeout_seconds
         )
     else:
         reminder_task = check_ticket_reminder.apply_async(
-            args=[ticket.id],
+            args=[ticket_id],
             countdown=timeout_seconds
         )
     ticket.escalation_task_reminder_id = reminder_task.id
@@ -1263,7 +1296,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     return {
         "status": "success",
         "message": "Escalated to backup_manager_2",
-        "ticket_id": ticket.id,
+        "ticket_id": ticket_id,
         "old_staff_id": old_staff_id,
         "new_staff_id": backup_manager.id,
         "escalation_level": 3,
