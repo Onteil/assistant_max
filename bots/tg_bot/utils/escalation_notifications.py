@@ -37,6 +37,7 @@ def format_ticket_type(ticket_type: TicketType) -> str:
     ticket_type_display = {
         TicketType.INVOICE: "Счет",
         TicketType.TECHNICAL_SUPPORT: "Техподдержка",
+        TicketType.CONSULTATION: "Консультация",
         TicketType.RENEWAL: "Продление"
     }
     return ticket_type_display.get(ticket_type, ticket_type.value)
