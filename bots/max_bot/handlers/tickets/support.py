@@ -922,9 +922,9 @@ async def create_renewal_ticket(
         from database.models import WorkMode
         
         work_mode = await get_current_work_mode(session)
-        is_working = work_mode != WorkMode.NON_WORKING
-        
-        # Determine assigned manager (with admin fallback if no manager)
+        # For RENEWAL tickets, only REGULAR mode is working hours —
+        # EXTENDED has no manager available, so the ticket must be queued.
+        is_working = work_mode == WorkMode.REGULAR
         from services.ticket_service import determine_assigned_manager
         
         assigned_staff_id, has_manager = await determine_assigned_manager(
@@ -953,7 +953,8 @@ async def create_renewal_ticket(
         ticket = await create_ticket(session, ticket_data)
         
         # Set queue_notification_sent_at immediately for working hours tickets
-        # to prevent queue processing task from picking them up
+        # to prevent queue processing task from picking them up.
+        # For RENEWAL tickets, only REGULAR mode is working hours.
         if is_working:
             from utils.timezone_helpers import get_moscow_now_naive
             ticket.queue_notification_sent_at = get_moscow_now_naive()

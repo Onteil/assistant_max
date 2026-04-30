@@ -234,7 +234,9 @@ async def _create_renewal_ticket_for_consultation(
 
     try:
         work_mode = await get_current_work_mode(session)
-        is_working = work_mode != WorkMode.NON_WORKING
+        # For RENEWAL tickets, only REGULAR mode is working hours —
+        # EXTENDED has no manager available, so the ticket must be queued.
+        is_working = work_mode == WorkMode.REGULAR
 
         assigned_staff_id, has_manager = await determine_assigned_manager(
             session=session,

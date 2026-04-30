@@ -2633,8 +2633,10 @@ async def create_invoice_ticket(
         work_mode = await get_current_work_mode(session)
         
         # Set queue_notification_sent_at immediately for working hours tickets
-        # to prevent queue processing task from picking them up
-        if work_mode != WorkMode.NON_WORKING:
+        # to prevent queue processing task from picking them up.
+        # For INVOICE tickets, only REGULAR is considered working hours —
+        # EXTENDED has no manager available, so the ticket must be queued.
+        if work_mode == WorkMode.REGULAR:
             from utils.timezone_helpers import get_moscow_now_naive
             ticket.queue_notification_sent_at = get_moscow_now_naive()
             logger.info(
@@ -2704,8 +2706,10 @@ async def create_invoice_ticket(
         
         # Determine response time message based on working hours
         from datetime import datetime
-        
-        is_working = work_mode != WorkMode.NON_WORKING
+
+        # For INVOICE tickets, only REGULAR mode is considered working hours.
+        # EXTENDED mode has no manager available — treat as non-working (queue).
+        is_working = work_mode == WorkMode.REGULAR
         
         # Send success message to user
         # In NON_WORKING mode, show queue message instead of manager info
@@ -2773,9 +2777,9 @@ async def create_invoice_ticket(
                     assigned_admin_id=assigned_staff_id
                 )
             else:
-                # Send standard notification to assigned manager (only in working hours)
-                # In NON_WORKING mode, notifications will be sent by queue task at 9 AM
-                if work_mode != WorkMode.NON_WORKING:
+                # Send standard notification to assigned manager (only in regular working hours)
+                # In EXTENDED or NON_WORKING mode, notifications will be sent by queue task at 9 AM
+                if work_mode == WorkMode.REGULAR:
                     notification_sent = await send_staff_notification(
                         bot=max_bot,
                         staff_id=assigned_staff_id,
