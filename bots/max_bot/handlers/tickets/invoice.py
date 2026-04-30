@@ -2470,10 +2470,30 @@ async def show_invoice_confirmation(
             orgs = [org.strip() for org in selected_inn.split(',') if org.strip()]
             if len(orgs) > 1:
                 confirmation_text += "🏢 <b>Организации:</b>\n"
-                for idx, org in enumerate(orgs, 1):
-                    confirmation_text += f"   {idx}. {org}\n"
+                for idx, org_inn in enumerate(orgs, 1):
+                    # Try to get organization name from database
+                    from database.models import Organization
+                    from sqlalchemy import select
+                    stmt = select(Organization).where(Organization.inn == org_inn)
+                    result = await session.execute(stmt)
+                    org_obj = result.scalar_one_or_none()
+                    
+                    if org_obj and org_obj.organization_name:
+                        confirmation_text += f"   {idx}. {org_obj.organization_name} (ИНН: {org_inn})\n"
+                    else:
+                        confirmation_text += f"   {idx}. ИНН: {org_inn} (название не указано)\n"
             else:
-                confirmation_text += f"🏢 <b>Организация:</b> {selected_inn}\n"
+                # Single organization - get name from database
+                from database.models import Organization
+                from sqlalchemy import select
+                stmt = select(Organization).where(Organization.inn == selected_inn)
+                result = await session.execute(stmt)
+                org_obj = result.scalar_one_or_none()
+                
+                if org_obj and org_obj.organization_name:
+                    confirmation_text += f"🏢 <b>Организация:</b> {org_obj.organization_name} (ИНН: {selected_inn})\n"
+                else:
+                    confirmation_text += f"🏢 <b>Организация:</b> ИНН: {selected_inn} (название не указано)\n"
         else:
             confirmation_text += "🏢 <b>Организация:</b> Не указана\n"
         

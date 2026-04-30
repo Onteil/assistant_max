@@ -715,10 +715,40 @@ async def send_staff_notification(
             orgs = [org.strip() for org in ticket.organization_inn.split(',') if org.strip()]
             if len(orgs) > 1:
                 message_text += f"\n🏢 <b>Организации:</b>\n"
-                for idx, org in enumerate(orgs, 1):
-                    message_text += f"   {idx}. <code>{org}</code>\n"
+                for idx, org_inn in enumerate(orgs, 1):
+                    # Try to get organization name from database
+                    from database.models import Organization
+                    if session:
+                        stmt_org = select(Organization).where(Organization.inn == org_inn)
+                        result_org = await session.execute(stmt_org)
+                        org_obj = result_org.scalar_one_or_none()
+                    else:
+                        async with get_session() as new_session:
+                            stmt_org = select(Organization).where(Organization.inn == org_inn)
+                            result_org = await new_session.execute(stmt_org)
+                            org_obj = result_org.scalar_one_or_none()
+                    
+                    if org_obj and org_obj.organization_name:
+                        message_text += f"   {idx}. {org_obj.organization_name} (ИНН: <code>{org_inn}</code>)\n"
+                    else:
+                        message_text += f"   {idx}. ИНН: <code>{org_inn}</code> (название не указано)\n"
             else:
-                message_text += f"\n🏢 <b>Организация:</b> <code>{ticket.organization_inn}</code>\n"
+                # Single organization - get name from database
+                from database.models import Organization
+                if session:
+                    stmt_org = select(Organization).where(Organization.inn == ticket.organization_inn)
+                    result_org = await session.execute(stmt_org)
+                    org_obj = result_org.scalar_one_or_none()
+                else:
+                    async with get_session() as new_session:
+                        stmt_org = select(Organization).where(Organization.inn == ticket.organization_inn)
+                        result_org = await new_session.execute(stmt_org)
+                        org_obj = result_org.scalar_one_or_none()
+                
+                if org_obj and org_obj.organization_name:
+                    message_text += f"\n🏢 <b>Организация:</b> {org_obj.organization_name} (ИНН: <code>{ticket.organization_inn}</code>)\n"
+                else:
+                    message_text += f"\n🏢 <b>Организация:</b> ИНН: <code>{ticket.organization_inn}</code> (название не указано)\n"
         
         # GS Keys - formatted as numbered list
         try:
