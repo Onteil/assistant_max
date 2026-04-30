@@ -440,10 +440,11 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
     """
     Async implementation of backup manager escalation check.
     
-    Implements 3-level escalation:
-    - Level 0 (10 min): Reassign to backup_manager_1, send notification
-    - Level 1 (20 min): Reassign to backup_manager_2, send notification
-    - Level 2 (30 min): Create escalation, notify admins and group chat
+    Implements 4-level escalation:
+    - Level 0 (10 min): Send reminder to assigned staff
+    - Level 1 (20 min): Reassign to backup_manager_1, send notification
+    - Level 2 (30 min): Reassign to backup_manager_2, send notification
+    - Level 3 (40 min): Create escalation, notify admins and group chat
     
     Uses MAX messenger only. Sends notifications with "take over" buttons.
     
@@ -518,16 +519,20 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
             f"for ticket_id={ticket_id}, level={current_level}"
         )
 
-        # Level 0: Escalate to backup_manager_1
+        # Level 0: Send reminder to assigned staff
         if current_level == 0:
+            return await _send_reminder_to_assigned_staff(ticket, session, timeout_seconds)
+        
+        # Level 1: Escalate to backup_manager_1
+        elif current_level == 1:
             return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
         
-        # Level 1: Escalate to backup_manager_2
-        elif current_level == 1:
+        # Level 2: Escalate to backup_manager_2
+        elif current_level == 2:
             return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         
-        # Level 2: Create escalation and notify admins
-        elif current_level == 2:
+        # Level 3: Create escalation and notify admins
+        elif current_level == 3:
             return await _escalate_to_admins(ticket, session)
         
         else:
@@ -539,9 +544,208 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
             }
 
 
+async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession, timeout_seconds: int) -> dict[str, Any]:
+    """
+    Send reminder notification to assigned staff (Level 0 → Level 1).
+    
+    This is the first escalation step - reminds the assigned staff member
+    that the ticket is still waiting. Does NOT reassign the ticket.
+    
+    Args:
+        ticket: Ticket object with loaded relationships
+        session: Database session
+        timeout_seconds: Escalation timeout in seconds (from system settings)
+    
+    Returns:
+        Dict with execution result
+    """
+    from maxapi import Bot as MAXBot
+    from maxapi.enums.parse_mode import ParseMode
+    from maxapi.exceptions import MaxApiError
+    from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
+    from maxapi.types import CallbackButton
+    from constants import MAX_BOT_TOKEN
+    
+    if not ticket.assigned_staff:
+        logger.warning(
+            f"No assigned staff for ticket {ticket.id}, "
+            f"skipping reminder and escalating to backup_manager_1"
+        )
+        # Skip reminder, go directly to backup_manager_1
+        ticket.escalation_level = 1
+        await session.commit()
+        return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
+    
+    assigned_staff = ticket.assigned_staff
+    
+    # Get MAX chat_id with fallback: Staff_Member.max_chat_id → MAX_Messenger_Data
+    staff_chat_id = assigned_staff.max_chat_id
+    
+    if not staff_chat_id and assigned_staff.max_user_id:
+        from database.models import MAX_Messenger_Data
+        stmt_chat = select(MAX_Messenger_Data.max_chat_id).where(
+            MAX_Messenger_Data.max_user_id == assigned_staff.max_user_id
+        )
+        result_chat = await session.execute(stmt_chat)
+        staff_chat_id = result_chat.scalar_one_or_none()
+        
+        if staff_chat_id:
+            logger.info(
+                f"Using fallback chat_id from MAX_Messenger_Data for assigned staff {assigned_staff.id} "
+                f"(max_user_id={assigned_staff.max_user_id})"
+            )
+    
+    if not staff_chat_id:
+        logger.warning(
+            f"Assigned staff {assigned_staff.id} (max_user_id={assigned_staff.max_user_id}) "
+            f"has no MAX chat_id, skipping reminder and escalating to backup_manager_1"
+        )
+        # Skip reminder, go directly to backup_manager_1
+        ticket.escalation_level = 1
+        await session.commit()
+        return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
+    
+    # Build reminder notification
+    ticket_type_names = {
+        TicketType.INVOICE: "💰 Счёт",
+        TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
+        TicketType.CONSULTATION: "💬 Консультация",
+        TicketType.RENEWAL: "🔄 Продление"
+    }
+    
+    ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))
+    user_name = ticket.user.full_name if ticket.user else "Неизвестно"
+    user_phone = ticket.user.phone_number if ticket.user else "Не указано"
+    
+    # Calculate time elapsed
+    minutes, reference_time = get_ticket_elapsed_time(ticket)
+    
+    # Get timeout for notification text
+    from services.settings_service import get_setting
+    timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
+    
+    notification_text = (
+        f"⏰ <b>НАПОМИНАНИЕ: Заявка #{ticket.id} ожидает</b>\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу в течение {timeout_minutes} минут\n\n"
+        f"<b>Тип:</b> {ticket_type}\n"
+        f"<b>Клиент:</b> {user_name}\n"
+        f"<b>Телефон:</b> {user_phone}\n"
+    )
+    
+    if ticket.organization:
+        if ticket.organization.organization_name:
+            org_text = f"{ticket.organization.organization_name} (ИНН: {ticket.organization.inn})"
+        else:
+            org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
+        notification_text += f"<b>Организация:</b> {org_text}\n"
+    
+    if ticket.gs_keys:
+        keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
+        notification_text += f"<b>Ключи ГС:</b> {keys_text}\n"
+    
+    if ticket.description:
+        desc_preview = ticket.description[:150]
+        if len(ticket.description) > 150:
+            desc_preview += "..."
+        notification_text += f"\n<b>Описание:</b>\n{desc_preview}\n"
+    
+    notification_text += (
+        f"\n⏱ <b>Время с создания:</b> {minutes} мин\n"
+        f"⚠️ <b>Если не возьмете в работу в течение {timeout_minutes} минут, "
+        f"заявка будет передана резервному менеджеру.</b>"
+    )
+    
+    # Build keyboard with "Take Over" button
+    from bots.max_bot.payloads import ManagerViewTicketPayload
+    
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        CallbackButton(
+            text="✋ Взять в работу",
+            payload=ManagerViewTicketPayload(ticket_id=ticket.id).pack()
+        )
+    )
+    keyboard = builder.as_markup()
+    
+    # Send reminder via MAX
+    max_bot = None
+    try:
+        max_bot = MAXBot(token=MAX_BOT_TOKEN, parse_mode=ParseMode.HTML)
+        
+        await max_bot.send_message(
+            chat_id=staff_chat_id,
+            text=notification_text,
+            attachments=[keyboard]
+        )
+        
+        logger.info(
+            f"Reminder sent to assigned staff: "
+            f"ticket_id={ticket.id}, staff_id={assigned_staff.id}, "
+            f"max_user_id={assigned_staff.max_user_id}, chat_id={staff_chat_id}"
+        )
+    
+    except MaxApiError as e:
+        error_str = str(e).lower()
+        if "blocked" in error_str or "forbidden" in error_str or "chat.not.found" in error_str:
+            logger.warning(
+                f"MAX bot blocked by assigned staff: "
+                f"staff_id={assigned_staff.id}, max_user_id={assigned_staff.max_user_id}, "
+                f"chat_id={staff_chat_id}"
+            )
+        else:
+            logger.error(f"Failed to send reminder: {e}", exc_info=True)
+    
+    except Exception as e:
+        logger.error(f"Failed to send reminder: {e}", exc_info=True)
+    
+    finally:
+        if max_bot and max_bot.session:
+            await max_bot.session.close()
+    
+    # Update escalation level (0 → 1)
+    ticket.escalation_level = 1
+    
+    # Log action
+    action_log = Action_Log(
+        ticket_id=ticket.id,
+        staff_id=assigned_staff.id,
+        action_type=ActionType.TICKET_ASSIGNED,
+        action_details={
+            "escalation_level": 1,
+            "action": "reminder_sent",
+            "time_elapsed_minutes": minutes,
+        }
+    )
+    session.add(action_log)
+    
+    # Schedule next escalation check (to backup_manager_1)
+    if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+        reminder_task = check_technical_support_ticket.apply_async(
+            args=[ticket.id],
+            countdown=timeout_seconds
+        )
+    else:
+        reminder_task = check_ticket_reminder.apply_async(
+            args=[ticket.id],
+            countdown=timeout_seconds
+        )
+    ticket.escalation_task_reminder_id = reminder_task.id
+    
+    await session.commit()
+    
+    return {
+        "status": "success",
+        "message": "Reminder sent to assigned staff",
+        "ticket_id": ticket.id,
+        "staff_id": assigned_staff.id,
+        "escalation_level": 1,
+        "time_elapsed_minutes": minutes
+    }
+
+
 async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, timeout_seconds: int) -> dict[str, Any]:
     """
-    Escalate ticket to backup_manager_1 (Level 0 → Level 1).
+    Escalate ticket to backup_manager_1 (Level 1 → Level 2).
     
     Reassigns ticket to backup_manager_1, sends notification with "take over" button,
     and schedules next escalation check in configured timeout.
@@ -575,7 +779,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
             f"No backup managers configured for staff {ticket.assigned_staff.id}, "
             f"escalating directly to admins"
         )
-        ticket.escalation_level = 2
+        ticket.escalation_level = 3
         await session.commit()
         return await _escalate_to_admins(ticket, session)
     
@@ -586,9 +790,9 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         if ticket.assigned_staff.backup_manager_2_id:
             logger.warning(
                 f"No backup_manager_1 for staff {ticket.assigned_staff.id}, "
-                f"but backup_manager_2 exists — skipping to level 1"
+                f"but backup_manager_2 exists — skipping to level 2"
             )
-            ticket.escalation_level = 1
+            ticket.escalation_level = 2
             await session.commit()
             return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         else:
@@ -597,7 +801,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
                 f"escalating directly to admins"
             )
             # Skip directly to admin escalation since no backup manager available
-            ticket.escalation_level = 2
+            ticket.escalation_level = 3
             await session.commit()
             return await _escalate_to_admins(ticket, session)
     
@@ -625,9 +829,9 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         if ticket.assigned_staff.backup_manager_2_id:
             logger.error(
                 f"Backup manager {backup_manager.id} (max_user_id={backup_manager.max_user_id}) "
-                f"has no MAX chat_id, but backup_manager_2 exists — skipping to level 1"
+                f"has no MAX chat_id, but backup_manager_2 exists — skipping to level 2"
             )
-            ticket.escalation_level = 1
+            ticket.escalation_level = 2
             await session.commit()
             return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         else:
@@ -637,14 +841,14 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
                 f"cannot send notification, escalating directly to admins"
             )
             # Skip directly to admin escalation since backup manager can't be notified
-            ticket.escalation_level = 2
+            ticket.escalation_level = 3
             await session.commit()
             return await _escalate_to_admins(ticket, session)
     
     # Reassign ticket to backup_manager_1
     old_staff_id = ticket.assigned_staff_id
     ticket.assigned_staff_id = backup_manager.id
-    ticket.escalation_level = 1
+    ticket.escalation_level = 2
     
     # Build notification message
     ticket_type_names = {
@@ -667,7 +871,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
 
     notification_text = (
         f"⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником в течение {timeout_minutes} минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником в течение {timeout_minutes * 2} минут (включая повторное напоминание)\n\n"
         f"Вы назначены резервным менеджером (Резерв 1).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -756,7 +960,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         staff_id=backup_manager.id,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
-            "escalation_level": 1,
+            "escalation_level": 2,
             "old_staff_id": old_staff_id,
             "new_staff_id": backup_manager.id,
             "backup_type": "backup_manager_1",
@@ -788,14 +992,14 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         "ticket_id": ticket.id,
         "old_staff_id": old_staff_id,
         "new_staff_id": backup_manager.id,
-        "escalation_level": 1,
+        "escalation_level": 2,
         "time_elapsed_minutes": minutes
     }
 
 
 async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, timeout_seconds: int) -> dict[str, Any]:
     """
-    Escalate ticket to backup_manager_2 (Level 1 → Level 2).
+    Escalate ticket to backup_manager_2 (Level 2 → Level 3).
     
     Reassigns ticket to backup_manager_2, sends notification with "take over" button,
     and schedules final escalation check in configured timeout.
@@ -859,7 +1063,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"Original staff not found for ticket {ticket.id}, "
             f"original_staff_id={original_staff_id}"
         )
-        ticket.escalation_level = 2
+        ticket.escalation_level = 3
         await session.commit()
         return await _escalate_to_admins(ticket, session)
 
@@ -870,7 +1074,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"No backup_manager_2 configured for original staff {original_staff.id}, "
             f"escalating directly to admins"
         )
-        ticket.escalation_level = 2
+        ticket.escalation_level = 3
         await session.commit()
         return await _escalate_to_admins(ticket, session)
 
@@ -900,14 +1104,14 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             f"cannot send notification, escalating directly to admins"
         )
         # Skip directly to admin escalation since backup manager can't be notified
-        ticket.escalation_level = 2
+        ticket.escalation_level = 3
         await session.commit()
         return await _escalate_to_admins(ticket, session)
     
     # Reassign ticket to backup_manager_2
     old_staff_id = ticket.assigned_staff_id
     ticket.assigned_staff_id = backup_manager.id
-    ticket.escalation_level = 2
+    ticket.escalation_level = 3
     
     # Build notification message
     ticket_type_names = {
@@ -927,11 +1131,11 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     # Get escalation timeout from settings for notification text
     from services.settings_service import get_setting
     timeout_minutes = await get_setting(session, "manager_response_timeout") or 10
-    timeout_minutes_2x = int(timeout_minutes) * 2
+    timeout_minutes_3x = int(timeout_minutes) * 3
 
     notification_text = (
         f"⚠️⚠️ <b>Эскалация заявки #{ticket.id}</b>\n\n"
-        f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником и первым резервным менеджером в течение {timeout_minutes_2x} минут\n\n"
+        f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником и первым резервным менеджером в течение {timeout_minutes_3x} минут\n\n"
         f"Вы назначены вторым резервным менеджером (Резерв 2).\n\n"
         f"<b>Тип:</b> {ticket_type}\n"
         f"<b>Клиент:</b> {user_name}\n"
@@ -1019,7 +1223,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
         staff_id=backup_manager.id,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
-            "escalation_level": 2,
+            "escalation_level": 3,
             "old_staff_id": old_staff_id,
             "new_staff_id": backup_manager.id,
             "backup_type": "backup_manager_2",
@@ -1050,14 +1254,14 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
         "ticket_id": ticket.id,
         "old_staff_id": old_staff_id,
         "new_staff_id": backup_manager.id,
-        "escalation_level": 2,
+        "escalation_level": 3,
         "time_elapsed_minutes": minutes
     }
 
 
 async def _escalate_to_admins(ticket: Ticket, session: AsyncSession) -> dict[str, Any]:
     """
-    Final escalation to administrators (Level 2 → Escalation record).
+    Final escalation to administrators (Level 3 → Escalation record).
     
     Creates escalation record, notifies all admins with action buttons,
     and sends notification to group chat.
@@ -2414,10 +2618,11 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
     """
     Async implementation of technical support ticket escalation check.
     
-    Implements 3-level escalation for TECHNICAL_SUPPORT and CONSULTATION tickets:
-    - Level 0 (10 min): Notify all backup_manager_1 from all support staff (deduplicated)
-    - Level 1 (20 min): Notify all backup_manager_2 from all support staff (deduplicated)
-    - Level 2 (30 min): Notify all administrators and escalation channels
+    Implements 4-level escalation for TECHNICAL_SUPPORT and CONSULTATION tickets:
+    - Level 0 (10 min): Send reminder to assigned staff
+    - Level 1 (20 min): Notify backup_manager_1 or all backup_1 (broadcast)
+    - Level 2 (30 min): Notify backup_manager_2 or all backup_2 (broadcast)
+    - Level 3 (40 min): Notify all administrators and escalation channels
     
     For tickets from queue (created in non-working hours), time is calculated from
     queue_notification_sent_at instead of created_at.
@@ -2489,8 +2694,8 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
             }
 
         # Guard against duplicate final escalation (e.g. Celery retries or race conditions)
-        # Only block at level 2 (admin notification stage) — backup-manager steps are safe to retry.
-        if ticket.is_escalated and ticket.escalation_level >= 2:
+        # Only block at level 3 (admin notification stage) — backup-manager steps are safe to retry.
+        if ticket.is_escalated and ticket.escalation_level >= 3:
             logger.info(
                 f"Technical support ticket already escalated to admins, "
                 f"skipping duplicate notification: ticket_id={ticket_id}"
@@ -2535,7 +2740,7 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
 
         # If a specific staff member is assigned (round-robin), use the same
         # backup-manager escalation chain as invoice/renewal tickets.
-        # This gives: assigned → backup_1 → backup_2 → admins.
+        # This gives: reminder → backup_1 → backup_2 → admins.
         if ticket.assigned_staff_id:
             # Reload ticket with backup manager relationships
             stmt_full = (
@@ -2563,10 +2768,12 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
                 }
 
             if current_level == 0:
-                return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
+                return await _send_reminder_to_assigned_staff(ticket, session, timeout_seconds)
             elif current_level == 1:
-                return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
+                return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
             elif current_level == 2:
+                return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
+            elif current_level == 3:
                 return await _escalate_to_admins(ticket, session)
             else:
                 logger.error(
@@ -2584,16 +2791,23 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
             f"No assigned_staff_id on ticket {ticket_id} — using broadcast escalation fallback"
         )
 
-        # Level 0: Escalate to all backup_manager_1 (deduplicated)
+        # For broadcast mode, skip reminder (no specific staff to remind)
+        # Go directly to backup level 1
         if current_level == 0:
+            ticket.escalation_level = 1
+            await session.commit()
             return await _escalate_technical_support_to_backup_level_1(ticket, session)
 
-        # Level 1: Escalate to all backup_manager_2 (deduplicated)
+        # Level 1: Escalate to all backup_manager_1 (deduplicated)
         elif current_level == 1:
+            return await _escalate_technical_support_to_backup_level_1(ticket, session)
+
+        # Level 2: Escalate to all backup_manager_2 (deduplicated)
+        elif current_level == 2:
             return await _escalate_technical_support_to_backup_level_2(ticket, session)
 
-        # Level 2: Escalate to administrators and channels
-        elif current_level == 2:
+        # Level 3: Escalate to administrators and channels
+        elif current_level == 3:
             return await _escalate_technical_support_to_admins(ticket, session)
 
         else:
