@@ -571,9 +571,8 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
             f"No assigned staff for ticket {ticket.id}, "
             f"skipping reminder and escalating to backup_manager_1"
         )
-        # Skip reminder, go directly to backup_manager_1
+        # Skip reminder, go directly to backup_manager_1 (no commit needed, level stays 0)
         ticket.escalation_level = 1
-        await session.commit()
         return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
     
     assigned_staff = ticket.assigned_staff
@@ -600,9 +599,8 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
             f"Assigned staff {assigned_staff.id} (max_user_id={assigned_staff.max_user_id}) "
             f"has no MAX chat_id, skipping reminder and escalating to backup_manager_1"
         )
-        # Skip reminder, go directly to backup_manager_1
+        # Skip reminder, go directly to backup_manager_1 (no commit needed, level stays 0)
         ticket.escalation_level = 1
-        await session.commit()
         return await _escalate_to_backup_manager_1(ticket, session, timeout_seconds)
     
     # Build reminder notification
@@ -705,19 +703,10 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
     # Update escalation level (0 → 1)
     ticket.escalation_level = 1
     
-    # Save ticket_id and ticket_type before commit (ticket becomes detached after commit)
-    ticket_id_reminder = ticket.id
-    ticket_type_reminder = ticket.ticket_type
-    staff_id_reminder = assigned_staff.id
-    
-    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
-    # if task scheduling fails
-    await session.commit()
-    
     # Log action
     action_log = Action_Log(
-        ticket_id=ticket_id_reminder,
-        staff_id=staff_id_reminder,
+        ticket_id=ticket.id,
+        staff_id=assigned_staff.id,
         action_type=ActionType.TICKET_ASSIGNED,
         action_details={
             "escalation_level": 1,
@@ -728,32 +717,25 @@ async def _send_reminder_to_assigned_staff(ticket: Ticket, session: AsyncSession
     session.add(action_log)
     
     # Schedule next escalation check (to backup_manager_1)
-    if ticket_type_reminder in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
+    if ticket.ticket_type in (TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION):
         reminder_task = check_technical_support_ticket.apply_async(
-            args=[ticket_id_reminder],
+            args=[ticket.id],
             countdown=timeout_seconds
         )
     else:
         reminder_task = check_ticket_reminder.apply_async(
-            args=[ticket_id_reminder],
+            args=[ticket.id],
             countdown=timeout_seconds
         )
-
-    # Use direct UPDATE to avoid detached instance issues
-    from sqlalchemy import update as sa_update
-    await session.execute(
-        sa_update(Ticket)
-        .where(Ticket.id == ticket_id_reminder)
-        .values(escalation_task_reminder_id=reminder_task.id)
-    )
+    ticket.escalation_task_reminder_id = reminder_task.id
     
     await session.commit()
     
     return {
         "status": "success",
         "message": "Reminder sent to assigned staff",
-        "ticket_id": ticket_id_reminder,
-        "staff_id": staff_id_reminder,
+        "ticket_id": ticket.id,
+        "staff_id": assigned_staff.id,
         "escalation_level": 1,
         "time_elapsed_minutes": minutes
     }
@@ -809,7 +791,6 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
                 f"but backup_manager_2 exists — skipping to level 2"
             )
             ticket.escalation_level = 2
-            await session.commit()
             return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         else:
             logger.warning(
@@ -848,7 +829,6 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
                 f"has no MAX chat_id, but backup_manager_2 exists — skipping to level 2"
             )
             ticket.escalation_level = 2
-            await session.commit()
             return await _escalate_to_backup_manager_2(ticket, session, timeout_seconds)
         else:
             logger.error(
@@ -866,7 +846,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 2
     
-    # Prepare notification data BEFORE commit (to avoid detached instance issues)
+    # Build notification message
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
@@ -878,7 +858,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Get organization info before commit
+    # Get organization info
     org_text = None
     if ticket.organization:
         if ticket.organization.organization_name:
@@ -886,12 +866,12 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
         else:
             org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
     
-    # Get keys info before commit
+    # Get keys info
     keys_text = None
     if ticket.gs_keys:
         keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
     
-    # Get description before commit
+    # Get description
     description = ticket.description
     desc_preview = None
     if description:
@@ -909,11 +889,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
     ticket_id = ticket.id
     ticket_type_for_routing = ticket.ticket_type
     
-    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
-    # if message sending or task scheduling fails
-    await session.commit()
-    
-    # Build notification message using pre-fetched data
+    # Build notification message
     notification_text = (
         f"⚠️ <b>Эскалация заявки #{ticket_id}</b>\n\n"
         f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником в течение {timeout_minutes * 2} минут (включая повторное напоминание)\n\n"
@@ -1019,14 +995,7 @@ async def _escalate_to_backup_manager_1(ticket: Ticket, session: AsyncSession, t
             args=[ticket_id],
             countdown=timeout_seconds
         )
-
-    # Use direct UPDATE to avoid detached instance issues (ticket was committed above)
-    from sqlalchemy import update as sa_update
-    await session.execute(
-        sa_update(Ticket)
-        .where(Ticket.id == ticket_id)
-        .values(escalation_task_reminder_id=reminder_task.id)
-    )
+    ticket.escalation_task_reminder_id = reminder_task.id
 
     await session.commit()
 
@@ -1157,7 +1126,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     ticket.assigned_staff_id = backup_manager.id
     ticket.escalation_level = 3
     
-    # Prepare notification data BEFORE commit (to avoid detached instance issues)
+    # Build notification message
     ticket_type_names = {
         TicketType.INVOICE: "💰 Счёт",
         TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
@@ -1169,7 +1138,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     user_name = ticket.user.full_name if ticket.user else "Неизвестно"
     user_phone = ticket.user.phone_number if ticket.user else "Не указано"
     
-    # Get organization info before commit
+    # Get organization info
     org_text = None
     if ticket.organization:
         if ticket.organization.organization_name:
@@ -1177,12 +1146,12 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
         else:
             org_text = f"ИНН: {ticket.organization.inn} (название не указано)"
     
-    # Get keys info before commit
+    # Get keys info
     keys_text = None
     if ticket.gs_keys:
         keys_text = ", ".join([key.key_number for key in ticket.gs_keys])
     
-    # Get description before commit
+    # Get description
     description = ticket.description
     desc_preview = None
     if description:
@@ -1201,11 +1170,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
     ticket_id = ticket.id
     ticket_type_for_routing = ticket.ticket_type
     
-    # CRITICAL: Commit escalation_level IMMEDIATELY to prevent infinite loops
-    # if message sending or task scheduling fails
-    await session.commit()
-    
-    # Build notification message using pre-fetched data
+    # Build notification message
     notification_text = (
         f"⚠️⚠️ <b>Эскалация заявки #{ticket_id}</b>\n\n"
         f"📋 <b>Причина:</b> Заявка не была взята в работу назначенным сотрудником и первым резервным менеджером в течение {timeout_minutes_3x} минут\n\n"
@@ -1309,14 +1274,7 @@ async def _escalate_to_backup_manager_2(ticket: Ticket, session: AsyncSession, t
             args=[ticket_id],
             countdown=timeout_seconds
         )
-
-    # Use direct UPDATE to avoid detached instance issues (ticket was committed above)
-    from sqlalchemy import update as sa_update
-    await session.execute(
-        sa_update(Ticket)
-        .where(Ticket.id == ticket_id)
-        .values(escalation_task_reminder_id=reminder_task.id)
-    )
+    ticket.escalation_task_reminder_id = reminder_task.id
 
     await session.commit()
 
