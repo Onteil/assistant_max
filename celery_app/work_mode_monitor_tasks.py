@@ -104,21 +104,33 @@ async def _check_work_mode_transition_async() -> dict[str, Any]:
                     "transition_time": current_time.isoformat()
                 }
             
-            # Even without a transition, check for unprocessed tickets in REGULAR mode
-            # This handles tickets created after the NON_WORKING → REGULAR transition
-            if current_work_mode in [WorkMode.REGULAR, WorkMode.EXTENDED]:
+            # Even without a transition, check for unprocessed tickets.
+            # In REGULAR: process all ticket types.
+            # In EXTENDED: process only TECHNICAL_SUPPORT and CONSULTATION
+            #   (INVOICE/RENEWAL have no manager on duty — they stay queued until REGULAR).
+            # process_pending_tickets_task handles the type filtering internally,
+            # so we just need to trigger it when there are relevant pending tickets.
+            if current_work_mode in (WorkMode.REGULAR, WorkMode.EXTENDED):
                 from sqlalchemy import select, and_
                 from database.models import Ticket, TicketStatus, TicketType
                 from datetime import timedelta
-                cutoff = (current_time - timedelta(hours=72)).replace(tzinfo=None)
+
+                if current_work_mode == WorkMode.REGULAR:
+                    types_to_check = [
+                        TicketType.INVOICE, TicketType.RENEWAL,
+                        TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION,
+                    ]
+                else:  # EXTENDED
+                    types_to_check = [
+                        TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION,
+                    ]
+
+                cutoff = (current_time - timedelta(hours=336)).replace(tzinfo=None)
                 stmt = select(Ticket.id).where(
                     and_(
                         Ticket.ticket_status == TicketStatus.NEW,
                         Ticket.created_at >= cutoff,
-                        Ticket.ticket_type.in_([
-                            TicketType.INVOICE, TicketType.RENEWAL,
-                            TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION
-                        ]),
+                        Ticket.ticket_type.in_(types_to_check),
                         Ticket.queue_notification_sent_at.is_(None),
                     )
                 ).limit(1)
@@ -127,7 +139,8 @@ async def _check_work_mode_transition_async() -> dict[str, Any]:
 
                 if has_pending:
                     logger.info(
-                        "Unprocessed queued tickets found in REGULAR mode — triggering queue processing"
+                        f"Unprocessed queued tickets found in {current_work_mode.value} mode "
+                        f"— triggering queue processing"
                     )
                     from celery_app.ticket_notification_tasks import process_pending_tickets_task
                     task_result = process_pending_tickets_task.apply_async(queue="ticket_notifications")

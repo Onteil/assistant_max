@@ -88,26 +88,50 @@ async def _process_pending_tickets_async() -> dict:
             # Check current work mode
             work_mode = await get_current_work_mode(session)
             
-            if work_mode != WorkMode.REGULAR:
-                logger.info(
-                    f"Not in REGULAR work mode (current: {work_mode.value}). "
-                    f"Skipping pending ticket processing."
-                )
+            # NON_WORKING — nothing to do yet, tickets stay in queue
+            if work_mode == WorkMode.NON_WORKING:
+                logger.info("Still in NON_WORKING mode. Skipping pending ticket processing.")
                 return stats
+            
+            # EXTENDED — only TECHNICAL_SUPPORT and CONSULTATION have duty staff available.
+            # INVOICE and RENEWAL have no manager on duty in EXTENDED, so they stay queued
+            # until REGULAR hours. We still process TP/CONSULTATION here.
+            # REGULAR — process all ticket types.
+            process_invoice_renewal = (work_mode == WorkMode.REGULAR)
+            
+            if work_mode == WorkMode.EXTENDED:
+                logger.info(
+                    "In EXTENDED work mode — processing TECHNICAL_SUPPORT and CONSULTATION only. "
+                    "INVOICE and RENEWAL will be processed when REGULAR hours start."
+                )
             
             # Get current time in Moscow timezone
             current_time = datetime.now(MOSCOW_TZ)
             
-            # Find tickets created in the last 72 hours that are still NEW
-            # 72h window covers weekends (ticket created Friday evening → processed Monday morning)
+            # Find tickets created in the last 336 hours (14 days) that are still NEW.
+            # 336h window covers extended holiday periods (e.g. 7-day May holidays)
+            # with a comfortable margin. Previously 72h which was too short.
             # Strip timezone info: DB stores TIMESTAMP WITHOUT TIME ZONE (naive UTC/Moscow)
-            cutoff_time = (current_time - timedelta(hours=72)).replace(tzinfo=None)
+            cutoff_time = (current_time - timedelta(hours=336)).replace(tzinfo=None)
             
+            # Determine which ticket types to process based on work mode:
+            # REGULAR  → all types (INVOICE, RENEWAL, TECHNICAL_SUPPORT, CONSULTATION)
+            # EXTENDED → only types with duty staff (TECHNICAL_SUPPORT, CONSULTATION)
+            if process_invoice_renewal:
+                ticket_types_to_process = [
+                    TicketType.INVOICE, TicketType.RENEWAL,
+                    TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION,
+                ]
+            else:
+                ticket_types_to_process = [
+                    TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION,
+                ]
+
             stmt = select(Ticket).where(
                 and_(
                     Ticket.ticket_status == TicketStatus.NEW,
                     Ticket.created_at >= cutoff_time,
-                    Ticket.ticket_type.in_([TicketType.INVOICE, TicketType.RENEWAL, TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION]),
+                    Ticket.ticket_type.in_(ticket_types_to_process),
                     Ticket.queue_notification_sent_at.is_(None),
                 )
             ).options(
@@ -365,17 +389,63 @@ async def _process_invoice_ticket(
     Process INVOICE ticket - notify manager or admins.
     Supports MAX messenger only.
     
+    Re-checks manager availability at the time of processing: if the originally
+    assigned manager is now inactive or not working today, the backup chain is
+    traversed and the ticket is reassigned before sending the notification.
+    
     Returns True if at least one notification was sent successfully.
     """
-    from database.models import MAX_Messenger_Data
-    
+    from database.models import MAX_Messenger_Data, Staff_Member
+
+    if ticket.assigned_staff_id:
+        # Re-check that the assigned manager is still available right now.
+        # The ticket may have been created hours ago; the manager could have
+        # set is_working_today=False since then.
+        stmt_mgr = select(Staff_Member).where(Staff_Member.id == ticket.assigned_staff_id)
+        result_mgr = await session.execute(stmt_mgr)
+        current_manager = result_mgr.scalar_one_or_none()
+
+        manager_available = (
+            current_manager is not None
+            and current_manager.is_active
+            and current_manager.is_working_today
+        )
+
+        if not manager_available:
+            logger.warning(
+                f"Assigned manager for invoice ticket {ticket.id} is unavailable "
+                f"(staff_id={ticket.assigned_staff_id}, "
+                f"is_active={current_manager.is_active if current_manager else 'N/A'}, "
+                f"is_working_today={current_manager.is_working_today if current_manager else 'N/A'}). "
+                f"Re-running assignment via backup chain."
+            )
+            # Re-run the full backup chain to find an available manager
+            from services.ticket_service import determine_assigned_manager
+            new_staff_id, has_manager = await determine_assigned_manager(
+                session=session,
+                user_id=ticket.user_id,
+                assign_admin_if_no_manager=True,
+            )
+            if new_staff_id:
+                ticket.assigned_staff_id = new_staff_id
+                await session.commit()
+                logger.info(
+                    f"Invoice ticket {ticket.id} reassigned: "
+                    f"old_staff={ticket.assigned_staff_id}, new_staff={new_staff_id}, "
+                    f"has_manager={has_manager}"
+                )
+            else:
+                # No one available at all — fall through to admin notification below
+                ticket.assigned_staff_id = None
+                await session.commit()
+
     if ticket.assigned_staff_id:
         # Notify assigned manager
         logger.info(
             f"Processing invoice ticket {ticket.id} from queue: "
             f"assigned_staff_id={ticket.assigned_staff_id}"
         )
-        
+
         notification_sent = await send_staff_notification(
             bot=max_bot,
             staff_id=ticket.assigned_staff_id,
@@ -383,9 +453,9 @@ async def _process_invoice_ticket(
             routing_info={
                 "work_mode": "regular",
                 "expected_response_time": "в течение рабочего дня",
-                "from_queue": True  # Mark as from queue
+                "from_queue": True,
             },
-            session=session
+            session=session,
         )
         
         if notification_sent:
@@ -554,8 +624,55 @@ async def _process_renewal_ticket(
     """
     Process RENEWAL ticket - notify assigned manager.
     Supports MAX messenger only.
+    
+    Re-checks manager availability at the time of processing: if the originally
+    assigned manager is now inactive or not working today, the backup chain is
+    traversed and the ticket is reassigned before sending the notification.
+    
     Returns True if at least one notification was sent successfully.
     """
+    # Re-check manager availability if one was assigned
+    if ticket.assigned_staff_id:
+        from database.models import Staff_Member
+
+        stmt_mgr = select(Staff_Member).where(Staff_Member.id == ticket.assigned_staff_id)
+        result_mgr = await session.execute(stmt_mgr)
+        current_manager = result_mgr.scalar_one_or_none()
+
+        manager_available = (
+            current_manager is not None
+            and current_manager.is_active
+            and current_manager.is_working_today
+        )
+
+        if not manager_available:
+            logger.warning(
+                f"Assigned manager for renewal ticket {ticket.id} is unavailable "
+                f"(staff_id={ticket.assigned_staff_id}, "
+                f"is_active={current_manager.is_active if current_manager else 'N/A'}, "
+                f"is_working_today={current_manager.is_working_today if current_manager else 'N/A'}). "
+                f"Re-running assignment via backup chain."
+            )
+            # Re-run the full backup chain to find an available manager
+            from services.ticket_service import determine_assigned_manager
+            new_staff_id, has_manager = await determine_assigned_manager(
+                session=session,
+                user_id=ticket.user_id,
+                assign_admin_if_no_manager=True,
+            )
+            if new_staff_id:
+                ticket.assigned_staff_id = new_staff_id
+                await session.commit()
+                logger.info(
+                    f"Renewal ticket {ticket.id} reassigned: "
+                    f"old_staff={ticket.assigned_staff_id}, new_staff={new_staff_id}, "
+                    f"has_manager={has_manager}"
+                )
+            else:
+                # No one available at all — fall through to admin notification below
+                ticket.assigned_staff_id = None
+                await session.commit()
+
     if not ticket.assigned_staff_id:
         logger.warning(
             f"Renewal ticket {ticket.id} has no assigned manager, notifying admins"
