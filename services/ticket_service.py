@@ -1936,14 +1936,19 @@ async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member |
     Get duty estimate specialist for extended hours consultation support.
 
     Retrieves the designated duty estimate specialist account from system settings.
-    Falls back to finding any active staff member with is_estimate_tech_specialist=True
-    if no specific account is configured.
+    Returns None if no specific account is configured or the configured account
+    is unavailable — the caller is responsible for falling back to admins.
+
+    NOTE: There is intentionally NO fallback to "any active specialist" here.
+    In EXTENDED hours, only the explicitly designated duty specialist should
+    receive consultation tickets. If they are unavailable, the ticket must go
+    to an administrator, not to a random specialist who may not be on duty.
 
     Args:
         session: Database session
 
     Returns:
-        Staff_Member object or None if no duty estimate specialist found
+        Staff_Member object or None if no duty estimate specialist available
 
     Raises:
         SQLAlchemyError: If database operation fails
@@ -1953,49 +1958,33 @@ async def _get_duty_estimate_specialist(session: AsyncSession) -> Staff_Member |
 
         duty_account_id = await get_setting(session, "duty_estimate_specialist_account")
 
-        if duty_account_id:
-            result = await session.execute(
-                select(Staff_Member).where(
-                    and_(
-                        Staff_Member.id == int(duty_account_id),
-                        Staff_Member.is_active == True,
-                        Staff_Member.is_working_today == True,  # Must be available today
-                        Staff_Member.is_estimate_tech_specialist == True,
-                    )
-                )
+        if not duty_account_id:
+            logger.warning(
+                "No duty estimate specialist configured in system settings "
+                "(duty_estimate_specialist_account). Caller should fall back to admins."
             )
-            duty_specialist = result.scalar_one_or_none()
+            return None
 
-            if duty_specialist:
-                logger.info(
-                    f"Duty estimate specialist found from settings: staff_id={duty_specialist.id}"
-                )
-                return duty_specialist
-            else:
-                logger.warning(
-                    f"Configured duty estimate specialist not found, inactive, unavailable today, or missing flag: "
-                    f"staff_id={duty_account_id}"
-                )
-
-        # Fallback: find any active staff member with is_estimate_tech_specialist=True who is working today
         result = await session.execute(
             select(Staff_Member).where(
                 and_(
-                    Staff_Member.is_estimate_tech_specialist == True,
+                    Staff_Member.id == int(duty_account_id),
                     Staff_Member.is_active == True,
-                    Staff_Member.is_working_today == True,  # Must be available today
+                    Staff_Member.is_working_today == True,
+                    Staff_Member.is_estimate_tech_specialist == True,
                 )
-            ).limit(1)
+            )
         )
         duty_specialist = result.scalar_one_or_none()
 
-        if not duty_specialist:
-            logger.warning(
-                "No active duty estimate specialist found who is working today"
+        if duty_specialist:
+            logger.info(
+                f"Duty estimate specialist found from settings: staff_id={duty_specialist.id}"
             )
         else:
-            logger.info(
-                f"Duty estimate specialist found by flag fallback: staff_id={duty_specialist.id}"
+            logger.warning(
+                f"Configured duty estimate specialist not found, inactive, unavailable today, "
+                f"or missing flag: staff_id={duty_account_id}. Caller should fall back to admins."
             )
 
         return duty_specialist
