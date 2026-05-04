@@ -866,12 +866,41 @@ async def handle_consultation_key_action(
             from database.models import WorkMode
             work_mode = await get_current_work_mode(session)
             is_working = work_mode != WorkMode.NON_WORKING
+
+            # Determine assigned staff BEFORE creating the ticket (same pattern as TECHNICAL_SUPPORT)
+            assigned_staff_id = None
+            if work_mode == WorkMode.REGULAR:
+                from services.round_robin_service import get_next_consultation_specialist
+                assigned_rr = await get_next_consultation_specialist(session)
+                if assigned_rr:
+                    assigned_staff_id = assigned_rr.id
+                    logger.info(f"Consultation REGULAR (skip): round-robin assigned staff_id={assigned_staff_id}")
+                else:
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    if admins:
+                        assigned_staff_id = admins[0].id
+                        logger.warning(f"No consultation specialists (skip), falling back to admin: admin_id={assigned_staff_id}")
+            elif work_mode == WorkMode.EXTENDED:
+                from services.ticket_service import _get_duty_estimate_specialist
+                duty_specialist = await _get_duty_estimate_specialist(session)
+                if duty_specialist:
+                    assigned_staff_id = duty_specialist.id
+                    logger.info(f"Consultation EXTENDED (skip): duty specialist assigned staff_id={assigned_staff_id}")
+                else:
+                    from services.escalation_service import get_active_admins
+                    admins = await get_active_admins(session)
+                    if admins:
+                        assigned_staff_id = admins[0].id
+                        logger.warning(f"No duty estimate specialist (skip), falling back to admin: admin_id={assigned_staff_id}")
+
             ticket_data = {
                 "ticket_type": TicketType.CONSULTATION,
                 "user_id": user_id,
                 "organization_inn": selected_inn,
                 "description": None,
                 "selected_key_ids": selected_keys_list,
+                "assigned_staff_id": assigned_staff_id,
             }
             ticket = await create_ticket(session, ticket_data)
             
@@ -892,45 +921,21 @@ async def handle_consultation_key_action(
                 logger.error(f"Failed to log consultation ticket to i-TAT: {e}", exc_info=True)
             confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
             await messenger_adapter.send_message(chat_id=chat_id, text=confirmation_text, parse_mode="HTML")
-            if is_working:
-                from services.employee_service import get_estimate_tech_specialists
-                from services.ticket_service import send_staff_notification, route_ticket, _get_duty_estimate_specialist
+            if is_working and ticket.assigned_staff_id:
+                from services.ticket_service import send_staff_notification, route_ticket
                 from loaders import max_bot
-                if work_mode == WorkMode.EXTENDED:
-                    duty_specialist = await _get_duty_estimate_specialist(session)
-                    recipients = [duty_specialist] if duty_specialist else []
-                    if not recipients:
-                        from services.escalation_service import get_active_admins
-                        recipients = await get_active_admins(session)
-                else:
-                    # Round-robin: assign to the next consultation specialist in rotation
-                    from services.round_robin_service import get_next_consultation_specialist
-                    assigned_rr = await get_next_consultation_specialist(session)
-                    if assigned_rr:
-                        # Persist the assignment BEFORE computing routing_info and scheduling
-                        ticket.assigned_staff_id = assigned_rr.id
-                        await session.commit()
-                        recipients = [assigned_rr]
-                    else:
-                        from services.escalation_service import get_active_admins
-                        recipients = await get_active_admins(session)
-                # Compute routing_info AFTER assignment is persisted
                 routing_info = await route_ticket(session, ticket, work_mode)
-                for recipient in recipients:
-                    try:
-                        notification_sent = await send_staff_notification(bot=max_bot, staff_id=recipient.id, ticket=ticket, routing_info=routing_info, session=session)
-                        if notification_sent:
-                            logger.info(f"Consultation notification sent: ticket_id={ticket.id}, staff_id={recipient.id}")
-                        else:
-                            logger.warning(f"Failed to send consultation notification: ticket_id={ticket.id}, staff_id={recipient.id}")
-                    except Exception as e:
-                        logger.error(f"Failed to notify recipient {recipient.id}: {e}", exc_info=True)
-                
-                # Mark as notified to prevent queue processing (if any notifications were sent)
-                if recipients:
-                    from utils.timezone_helpers import get_moscow_now_naive
-                    ticket.queue_notification_sent_at = get_moscow_now_naive()
-                    await session.commit()
+                notification_sent = await send_staff_notification(
+                    bot=max_bot,
+                    staff_id=ticket.assigned_staff_id,
+                    ticket=ticket,
+                    routing_info=routing_info,
+                    session=session,
+                )
+                if notification_sent:
+                    logger.info(f"Consultation notification sent: ticket_id={ticket.id}, staff_id={ticket.assigned_staff_id}")
+                else:
+                    logger.warning(f"Failed to send consultation notification: ticket_id={ticket.id}, staff_id={ticket.assigned_staff_id}")
                 
                 # Schedule escalation AFTER assignment is committed
                 try:
@@ -1301,6 +1306,55 @@ async def handle_consultation_description_next(
         work_mode = await get_current_work_mode(session)
         is_working = work_mode != WorkMode.NON_WORKING
 
+        # Determine assigned staff BEFORE creating the ticket (same pattern as TECHNICAL_SUPPORT).
+        # REGULAR  → round-robin among active consultation specialists; fallback to admins
+        # EXTENDED → duty estimate specialist; fallback to admins
+        # NON_WORKING → no assignment (queued)
+        assigned_staff_id = None
+        if work_mode == WorkMode.REGULAR:
+            from services.round_robin_service import get_next_consultation_specialist
+            assigned_rr = await get_next_consultation_specialist(session)
+            if assigned_rr:
+                assigned_staff_id = assigned_rr.id
+                logger.info(
+                    f"Consultation REGULAR: round-robin assigned staff_id={assigned_staff_id}"
+                )
+            else:
+                from services.escalation_service import get_active_admins
+                admins = await get_active_admins(session)
+                if admins:
+                    assigned_staff_id = admins[0].id
+                    logger.warning(
+                        f"No consultation specialists, falling back to admin: "
+                        f"admin_id={assigned_staff_id}"
+                    )
+                else:
+                    logger.error("No consultation specialists and no admins available")
+
+        elif work_mode == WorkMode.EXTENDED:
+            from services.ticket_service import _get_duty_estimate_specialist
+            duty_specialist = await _get_duty_estimate_specialist(session)
+            if duty_specialist:
+                assigned_staff_id = duty_specialist.id
+                logger.info(
+                    f"Consultation EXTENDED: duty specialist assigned staff_id={assigned_staff_id}"
+                )
+            else:
+                from services.escalation_service import get_active_admins
+                admins = await get_active_admins(session)
+                if admins:
+                    assigned_staff_id = admins[0].id
+                    logger.warning(
+                        f"No duty estimate specialist configured, falling back to admin: "
+                        f"admin_id={assigned_staff_id}"
+                    )
+                else:
+                    logger.error("No duty estimate specialist and no admins available")
+
+        else:  # NON_WORKING
+            assigned_staff_id = None
+            logger.info("Consultation NON_WORKING: ticket queued, no assignment")
+
         # Create ticket
         ticket_data = {
             "ticket_type": TicketType.CONSULTATION,
@@ -1308,6 +1362,7 @@ async def handle_consultation_description_next(
             "organization_inn": selected_inn,
             "description": description or None,
             "selected_key_ids": selected_keys,
+            "assigned_staff_id": assigned_staff_id,
         }
 
         ticket = await create_ticket(session, ticket_data)
@@ -1402,106 +1457,52 @@ async def handle_consultation_description_next(
                 parse_mode="HTML",
             )
 
-        # Send notifications to estimate tech specialists (only in working hours)
+        # Send notifications to assigned staff (only in working hours)
         if is_working:
-            from services.employee_service import get_estimate_tech_specialists
-            from services.ticket_service import send_staff_notification, _get_duty_estimate_specialist
+            from services.ticket_service import send_staff_notification
             from loaders import max_bot
 
-            if work_mode == WorkMode.EXTENDED:
-                # In extended hours — notify only the duty estimate specialist
-                duty_specialist = await _get_duty_estimate_specialist(session)
-                if duty_specialist:
-                    recipients = [duty_specialist]
-                    no_specialist_suffix = None
-                else:
-                    # No duty specialist configured — fall back to admins
-                    logger.warning(
-                        f"No duty estimate specialist configured for consultation ticket "
-                        f"{ticket.id} in EXTENDED mode, falling back to admins"
+            if ticket.assigned_staff_id:
+                routing_info = await route_ticket(session, ticket, work_mode)
+                notification_sent = await send_staff_notification(
+                    bot=max_bot,
+                    staff_id=ticket.assigned_staff_id,
+                    ticket=ticket,
+                    routing_info=routing_info,
+                    session=session,
+                )
+                if notification_sent:
+                    logger.info(
+                        f"Consultation notification sent: ticket_id={ticket.id}, "
+                        f"staff_id={ticket.assigned_staff_id}, work_mode={work_mode.value}"
                     )
-                    from services.escalation_service import get_active_admins
-                    recipients = await get_active_admins(session)
-                    no_specialist_suffix = (
-                        "⚠️ <b>Причина уведомления администратора:</b> "
-                        "В системе не настроен дежурный сметный специалист. "
-                        "Заявка требует ручного назначения."
+                    # Forward attachments to recipient
+                    if attachments:
+                        try:
+                            await _forward_attachments_to_staff(
+                                messenger_adapter=messenger_adapter,
+                                session=session,
+                                ticket_id=ticket.id,
+                                staff_id=ticket.assigned_staff_id,
+                                attachments=attachments,
+                                user_name=user.full_name if user else "Клиент",
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to forward attachments for consultation ticket "
+                                f"{ticket.id}: {e}",
+                                exc_info=True,
+                            )
+                else:
+                    logger.warning(
+                        f"Failed to send consultation notification: "
+                        f"ticket_id={ticket.id}, staff_id={ticket.assigned_staff_id}"
                     )
             else:
-                # In regular hours — round-robin: assign to the next specialist in rotation
-                from services.round_robin_service import get_next_consultation_specialist
-                assigned_rr = await get_next_consultation_specialist(session)
-                if assigned_rr:
-                    # Persist the assignment BEFORE computing routing_info
-                    ticket.assigned_staff_id = assigned_rr.id
-                    await session.commit()
-                    recipients = [assigned_rr]
-                    no_specialist_suffix = None
-                else:
-                    logger.warning(
-                        f"No estimate tech specialists found for consultation ticket {ticket.id}, "
-                        f"falling back to admins"
-                    )
-                    from services.escalation_service import get_active_admins
-                    recipients = await get_active_admins(session)
-                    no_specialist_suffix = (
-                        "⚠️ <b>Причина уведомления администратора:</b> "
-                        "В системе не настроен ни один сметный тех. специалист. "
-                        "Заявка требует ручного назначения."
-                    )
-
-            # Compute routing_info AFTER assignment is persisted
-            routing_info = await route_ticket(session, ticket, work_mode)
-
-            for recipient in recipients:
-                try:
-                    recipient_routing_info = dict(routing_info) if routing_info else {}
-                    if no_specialist_suffix:
-                        recipient_routing_info["no_specialist_reason"] = no_specialist_suffix
-                    notification_sent = await send_staff_notification(
-                        bot=max_bot,
-                        staff_id=recipient.id,
-                        ticket=ticket,
-                        routing_info=recipient_routing_info,
-                        session=session,
-                    )
-                    if notification_sent:
-                        logger.info(
-                            f"Consultation notification sent: ticket_id={ticket.id}, "
-                            f"staff_id={recipient.id}, work_mode={work_mode.value}"
-                        )
-                        
-                        # Mark as notified to prevent queue processing
-                        from utils.timezone_helpers import get_moscow_now_naive
-                        ticket.queue_notification_sent_at = get_moscow_now_naive()
-                        await session.commit()
-                        
-                        # Forward attachments to recipient
-                        if attachments:
-                            try:
-                                await _forward_attachments_to_staff(
-                                    messenger_adapter=messenger_adapter,
-                                    session=session,
-                                    ticket_id=ticket.id,
-                                    staff_id=recipient.id,
-                                    attachments=attachments,
-                                    user_name=user.full_name if user else "Клиент",
-                                )
-                            except Exception as e:
-                                logger.error(
-                                    f"Failed to forward attachments to recipient {recipient.id}: {e}",
-                                    exc_info=True,
-                                )
-                    else:
-                        logger.warning(
-                            f"Failed to send consultation notification: "
-                            f"ticket_id={ticket.id}, staff_id={recipient.id}"
-                        )
-                except Exception as notify_err:
-                    logger.error(
-                        f"Error notifying recipient {recipient.id}: {notify_err}",
-                        exc_info=True,
-                    )
+                logger.error(
+                    f"Consultation ticket {ticket.id} is_working but no assigned_staff_id — "
+                    f"no notification sent"
+                )
         else:
             logger.info(
                 f"Consultation ticket {ticket.id} queued — notifications deferred to working hours."
