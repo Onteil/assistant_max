@@ -2,6 +2,24 @@
 
 FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и Celery-задачами для интеграции с i-TAT API.
 
+## Краткие ответы по запуску и актуальности
+
+1. **Актуальная инструкция для локального запуска под Windows/PyCharm** находится в разделе `Локальный запуск под Windows/PyCharm` ниже. Короткий путь: открыть корень проекта в PyCharm, выбрать Python 3.10, создать `venv`, установить `requirements.txt`, поднять PostgreSQL/Redis, создать `.env` из `.env.example`, выполнить `alembic upgrade head`, проверить `python scripts/check_setup.py`, затем запускать FastAPI/Celery.
+
+2. **Версия Python: используйте Python `3.10.x`**. На prod работает Python `3.10.12`; `pyproject.toml` допускает `>=3.10`; Ruff настроен на `py310`. Старое указание `Python 3.11+` было неактуальным.
+
+3. **Обязательные локальные сервисы**: PostgreSQL обязателен всегда; Redis нужен для Celery и Redis-backed bot/FSM сценариев. Для минимального API/admin запуска достаточно PostgreSQL + FastAPI. Для полного режима нужны PostgreSQL, Redis, Celery worker и Celery beat.
+
+4. **VPN/SSH tunnel к i-TAT API для локальной разработки не нужен**, если включен мок: `USE_MOCK_ITAT_API=true` и `LOCAL_DEV=false`. Для реальных вызовов i-TAT API нужен доступ в корпоративную сеть и настройки `LOCAL_DEV=true`/SSH tunnel.
+
+5. **Правильный порядок запуска**: PostgreSQL → Redis → установка зависимостей и `.env` → `alembic upgrade head` → `python scripts/check_setup.py` → FastAPI → Celery worker → Celery beat.
+
+6. **Обязательные переменные `.env` и примеры заполнения** описаны в разделе `Обязательные переменные .env`. Актуальный шаблон без секретов: `.env.example`. В нем подписано, какие значения являются секретами, где используются и какой формат ожидается.
+
+7. **Актуальный `alembic.ini` находится в корне проекта** и должен быть в git. Alembic берет `DB_URL` из `.env` через `constants.py`/`alembic/env.py`, поэтому команда `alembic upgrade head` запускается из корня проекта.
+
+8. **Актуальная кодовая база синхронизирована в git в ветке `Main` (`origin/main`)**. Prod на момент проверки 2026-07-07 работал из `/home/razrab/i-tat-bot` на commit `1b3edc619e5e6f5265135908a74504c390bef8a7`; текущая git-версия содержит обновленные инструкции, `.env.example`, `alembic.ini`, prod-примеры systemd/nginx и проверочный скрипт. Для server deployment ориентируйтесь на раздел `Prod systemd и nginx`, `deployment/systemd/` и `deployment/nginx/i-tat-bot.conf`.
+
 ## Актуальный статус
 
 Проверено 2026-07-07:
@@ -12,7 +30,7 @@ FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и 
 - prod Python: `3.10.12`
 - prod services: `i-tat-bot`, `i-tat-celery-worker`, `i-tat-celery-beat` активны
 
-Локальная ветка `Main` на этой машине указывает на тот же commit `origin/main`, но remote отличается: локально используется GitHub, на prod используется GitLab `services/assistant_max.git`.
+Текущая актуальная ветка для обновленной кодовой базы: `Main` (`origin/main` на GitHub). На prod используется GitLab remote `services/assistant_max.git`; перед обновлением сервера нужно сверить, что на него попадает тот же `HEAD`, что и в GitHub `origin/main`.
 
 ## Версия Python
 
