@@ -8,7 +8,8 @@ keys/*.json
 *-schedule*
 exports/*
 !exports/
-media/
+media/*
+!media/.gitkeep
 migrations/
 *.db
 services/google/secret.json

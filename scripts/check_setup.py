@@ -73,6 +73,7 @@ PROJECT_FILES = [
     "alembic.ini",
     "alembic/env.py",
     ".env.example",
+    "media",
     "deployment/systemd/i-tat-bot.service",
     "deployment/systemd/i-tat-celery-worker.service",
     "deployment/systemd/i-tat-celery-beat.service",
