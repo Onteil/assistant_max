@@ -66,7 +66,7 @@ Use this checklist to ensure all steps are completed during deployment.
 
 - [ ] Environment file configured:
   ```bash
-  cp .env.dist .env
+  cp .env.example .env
   nano .env
   ```
 
@@ -219,7 +219,7 @@ Use this checklist to ensure all steps are completed during deployment.
       compress
       delaycompress
       notifempty
-      create 0640 www-data www-data
+      create 0640 razrab razrab
       sharedscripts
       postrotate
           systemctl reload i-tat-celery-worker > /dev/null 2>&1 || true
@@ -259,8 +259,8 @@ Use this checklist to ensure all steps are completed during deployment.
 - [ ] Redis password set and configured
 - [ ] File permissions verified:
   ```bash
-  sudo chown -R www-data:www-data /opt/i-tat-bot/media
-  sudo chown -R www-data:www-data /opt/i-tat-bot/logs
+  sudo chown -R razrab:razrab /opt/i-tat-bot/media
+  sudo chown -R razrab:razrab /opt/i-tat-bot/logs
   sudo chmod 600 /opt/i-tat-bot/.env
   ```
 

@@ -223,7 +223,7 @@ async def check_celery_status():
             
     except Exception as e:
         print(f"❌ Celery connection failed: {e}")
-        print("💡 Make sure Celery worker is running: celery -A celery_app.celery_config worker --loglevel=info")
+        print("💡 Make sure Celery worker is running: celery -A celery_app.celery_config worker --loglevel=debug")
         return False
 
 

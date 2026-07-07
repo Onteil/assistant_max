@@ -14,10 +14,12 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api import api_router
-from bots.tg_bot.handlers import tg_bot_router as main_bot_router
 from constants import (
     ALLOWED_HOSTS,
+    BOT_MODE,
     COUNT_WORKERS,
+    ENABLE_MAX_BOT,
+    ENABLE_TG_BOT,
     IS_LOCAL_BOT,
     LOG_LEVEL,
     TG_BOT_TOKEN,
@@ -44,10 +46,11 @@ ROOT_PATH = "" if IS_LOCAL_BOT else ""
 from aiogram.types import ErrorEvent
 
 
-@main_dp.errors()
-async def error_handler(event: ErrorEvent):
-    logging.error(f"Update {event.update.update_id} caused error: {event.exception}", exc_info=True)
-    return True
+if main_dp:
+    @main_dp.errors()
+    async def error_handler(event: ErrorEvent):
+        logging.error(f"Update {event.update.update_id} caused error: {event.exception}", exc_info=True)
+        return True
 
 
 @asynccontextmanager
@@ -130,8 +133,12 @@ async def on_init():
     Requirements: 2.6, 2.7 - Initialize components and configure background task processing
     Requirements: 1.4 - Initialize default settings on application startup
     """
-    # Initialize Telegram bot (legacy)
-    main_dp.include_router(main_bot_router)
+    if ENABLE_TG_BOT and main_dp:
+        from bots.tg_bot.handlers import tg_bot_router as main_bot_router
+        main_dp.include_router(main_bot_router)
+        logging.info("Telegram bot router included")
+    else:
+        logging.info("Telegram bot router skipped: BOT_MODE=%s", BOT_MODE)
     
     # MAX bot initialization is already complete in loaders.py:
     # - MAX bot instance created
@@ -155,6 +162,9 @@ async def on_init():
 
 
 async def main_feed_update(token, update):
+    if not ENABLE_TG_BOT or not main_dp or not bot_session or not token:
+        logging.warning("Telegram update skipped: Telegram bot is not initialized")
+        return
     # print(f">>> Получено обновление: {update}")  # Дебаг
     async with Bot(token, bot_session, DefaultBotProperties(parse_mode="HTML")).context(auto_close=False) as bot_:
         await main_dp.feed_raw_update(bot_, update)
@@ -165,6 +175,13 @@ async def main_telegram_update(
     request: Request,  # <-- Принимаем Request
     background_tasks: BackgroundTasks,
 ) -> Response:
+    if not ENABLE_TG_BOT or not main_dp or not TG_BOT_TOKEN:
+        logging.error("Telegram bot not initialized")
+        return Response(
+            content="Telegram bot not configured",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
     # Получаем JSON из тела запроса
     update_data = await request.json()
 
@@ -193,7 +210,7 @@ async def max_feed_update(update_data: dict):
     Requirements: 2.6 - Background task processing for webhook handling
     Requirements: 2.4, 2.5 - MAX update parsing and routing
     """
-    if not max_bot or not max_dp:
+    if not ENABLE_MAX_BOT or not max_bot or not max_dp:
         logging.error("MAX bot not initialized, cannot process update")
         return
     
@@ -276,7 +293,7 @@ async def max_webhook_update(
     Requirements: 2.1, 2.2, 2.3 - MAX webhook endpoint with validation
     Requirements: 2.6, 2.7 - Background task processing configuration
     """
-    if not max_bot or not max_dp:
+    if not ENABLE_MAX_BOT or not max_bot or not max_dp:
         logging.error("MAX bot not initialized")
         return Response(
             content="MAX bot not configured",

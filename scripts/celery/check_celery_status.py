@@ -26,7 +26,7 @@ def check_celery_status():
             print("❌ Celery worker не запущен!")
             print()
             print("Запустите worker:")
-            print("  python start_celery_worker.py")
+            print("  celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries")
             print()
             return False
         

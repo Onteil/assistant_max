@@ -14,11 +14,8 @@ scripts/
 
 ## Celery Management (`celery/`)
 
-Scripts for managing Celery workers and tasks:
+Scripts for inspecting Celery workers and tasks. Worker and beat startup commands are documented in the root `README.md`; on the server they are managed by systemd.
 
-- `start_celery_beat.py` - Start Celery beat scheduler
-- `start_celery_worker.py` - Start Celery worker
-- `restart_celery_worker.py` - Restart Celery worker
 - `clear_celery_redis.py` - Clear Celery data from Redis
 - `check_celery_status.py` - Check Celery worker status
 - `check_celery_tasks.py` - List scheduled Celery tasks
@@ -64,6 +61,7 @@ Database and user management utilities:
 ## Shell Scripts
 
 - `generate_diagrams.ps1` / `.sh` - Generate all diagrams
+- `check_setup.py` - Check local project setup after installation
 - `lint.ps1` - Run linter (Ruff)
 - `migrate.ps1` - Run database migrations
 
@@ -78,8 +76,9 @@ All scripts should be run from the project root directory:
 source venv/bin/activate  # Linux/Mac
 
 # Run a script
+python scripts/check_setup.py
 python scripts/utils/add_staff_member.py
-python scripts/celery/start_celery_worker.py
+python scripts/celery/check_celery_status.py
 ```
 
 ## Notes

@@ -1,73 +1,42 @@
 # Systemd Services Deployment Instructions
 
-## Просмотр текущих systemd сервисов на сервере
+Эти unit-файлы соответствуют prod-конфигурации, проверенной 2026-07-07:
 
-Выполните эти команды на сервере, чтобы посмотреть текущую конфигурацию:
+- `i-tat-bot.service`
+- `i-tat-celery-worker.service`
+- `i-tat-celery-beat.service`
+
+В примерах используются пользователь `razrab`, группа `razrab` и рабочая директория `/home/razrab/i-tat-bot`. Если проект разворачивается в другой директории или под другим пользователем, замените эти значения перед копированием файлов в `/etc/systemd/system/`.
+
+## Установка
 
 ```bash
-# Celery Worker
-cat /etc/systemd/system/i-tat-celery-worker.service
+sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
+sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
+sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
 
-# Celery Beat
-cat /etc/systemd/system/i-tat-celery-beat.service
+sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
+sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 
-# FastAPI Bot (для справки)
-cat /etc/systemd/system/i-tat-bot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now i-tat-bot i-tat-celery-worker i-tat-celery-beat
 ```
 
-## После получения вывода
-
-Скопируйте вывод каждой команды и отправьте для анализа и редактирования.
-
----
-
-## Что будет исправлено
-
-1. **Worker**: Добавление очереди `work_mode_monitor` в список `--queues`
-2. **Worker**: Изменение loglevel с `debug` на `info`
-3. **Beat**: Изменение пользователя с `www-data` на `razrab`
-4. **Beat**: Добавление переменных окружения `PYTHONPATH` и `TZ`
-5. **Beat**: Добавление параметров `--scheduler` и `--schedule`
-6. **Beat**: Исправление `ProtectHome` для доступа к рабочей директории
-
-## Применение изменений
-
-После редактирования файлов выполните:
+## Проверка
 
 ```bash
-# Остановить сервисы
-sudo systemctl stop i-tat-celery-beat i-tat-celery-worker
-
-# Перезагрузить конфигурацию
-sudo systemctl daemon-reload
-
-# Создать необходимые директории
-sudo mkdir -p /var/run/celery /var/log/celery
-sudo chown razrab:razrab /var/run/celery /var/log/celery
-
-# Запустить сервисы
-sudo systemctl start i-tat-celery-worker
-sudo systemctl start i-tat-celery-beat
-
-# Проверить статус
+sudo systemctl status i-tat-bot
 sudo systemctl status i-tat-celery-worker
 sudo systemctl status i-tat-celery-beat
 
-# Включить автозапуск (если еще не включено)
-sudo systemctl enable i-tat-celery-worker
-sudo systemctl enable i-tat-celery-beat
+sudo journalctl -u i-tat-bot -f
+sudo journalctl -u i-tat-celery-worker -f
+sudo journalctl -u i-tat-celery-beat -f
 ```
 
-## Проверка логов
+## Обновление после изменения unit-файлов
 
 ```bash
-# Логи worker
-sudo journalctl -u i-tat-celery-worker -f
-
-# Логи beat
-sudo journalctl -u i-tat-celery-beat -f
-
-# Последние 100 строк
-sudo journalctl -u i-tat-celery-worker -n 100
-sudo journalctl -u i-tat-celery-beat -n 100
+sudo systemctl daemon-reload
+sudo systemctl restart i-tat-bot i-tat-celery-worker i-tat-celery-beat
 ```

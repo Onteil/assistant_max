@@ -10,6 +10,9 @@ from redis.asyncio.client import Redis
 
 from constants import (
     AIOGRAM_REDIS_DB_NUMBER,
+    BOT_MODE,
+    ENABLE_MAX_BOT,
+    ENABLE_TG_BOT,
     HOST,
     HTTP_PROXY,
     IS_LOCAL_BOT,
@@ -19,127 +22,104 @@ from constants import (
     WEBHOOK_PATH_MAIN,
     WEBHOOK_PATH_MAX,
 )
-from bots.tg_bot.filters.chat_filter import ChatTypeFilter
-from bots.tg_bot.middlewares.album_midleware import AlbumMiddleware
-from bots.tg_bot.middlewares.debug_middleware import DebugSpyMiddleware
-from bots.tg_bot.middlewares.bot_reconstruction import BotInReconstruction
-from bots.tg_bot.middlewares.clear_state_middleware import StateClearerMiddleware
-from bots.tg_bot.middlewares.database import DatabaseSessionMiddleware
-from bots.tg_bot.middlewares.error_handler import ErrorHandler
-from bots.tg_bot.middlewares.trottling import ThrottlingMiddleware
-from bots.tg_bot.middlewares.user_data import UserDataMiddleware
 
 redis: Redis | None = None
-storage: RedisStorage | MemoryStorage
-if not IS_LOCAL_BOT:
-    redis = Redis.from_url(url=REDIS, db=AIOGRAM_REDIS_DB_NUMBER)
-    storage = RedisStorage(redis=redis, key_builder=DefaultKeyBuilder(with_bot_id=True))
-else:
-    storage = MemoryStorage()
+storage: RedisStorage | MemoryStorage | None = None
+bot_session: AiohttpSession | None = None
+tg_bot: Bot | None = None
+main_dp: Dispatcher | None = None
 
-bot_session = AiohttpSession()
+if ENABLE_TG_BOT:
+    from bots.tg_bot.filters.chat_filter import ChatTypeFilter
+    from bots.tg_bot.middlewares.album_midleware import AlbumMiddleware
+    from bots.tg_bot.middlewares.bot_reconstruction import BotInReconstruction
+    from bots.tg_bot.middlewares.database import DatabaseSessionMiddleware
+    from bots.tg_bot.middlewares.debug_middleware import DebugSpyMiddleware
+    from bots.tg_bot.middlewares.error_handler import ErrorHandler
+    from bots.tg_bot.middlewares.trottling import ThrottlingMiddleware
+    from bots.tg_bot.middlewares.user_data import UserDataMiddleware
 
-tg_bot = Bot(TG_BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
+    if not IS_LOCAL_BOT:
+        redis = Redis.from_url(url=REDIS, db=AIOGRAM_REDIS_DB_NUMBER)
+        storage = RedisStorage(redis=redis, key_builder=DefaultKeyBuilder(with_bot_id=True))
+    else:
+        storage = MemoryStorage()
 
-main_dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.USER_IN_CHAT)
+    bot_session = AiohttpSession()
+    tg_bot = Bot(TG_BOT_TOKEN, session=bot_session, default=DefaultBotProperties(parse_mode="HTML"))
+    main_dp = Dispatcher(storage=storage, fsm_strategy=FSMStrategy.USER_IN_CHAT)
 
 # Глобальные фильтры для всех обработчиков (применяются к диспетчеру)
-main_dp.message.filter(ChatTypeFilter(chat_type=["private"]))
-main_dp.callback_query.filter(ChatTypeFilter(chat_type=["private"]))
+    main_dp.message.filter(ChatTypeFilter(chat_type=["private"]))
+    main_dp.callback_query.filter(ChatTypeFilter(chat_type=["private"]))
 
 # Регистрация middleware
-for middleware in [
-    DatabaseSessionMiddleware(),
-    ThrottlingMiddleware(),
-    BotInReconstruction(),
-    UserDataMiddleware(),
-    ErrorHandler(),
-    DebugSpyMiddleware()
-]:
-    main_dp.message.middleware(middleware)
-    main_dp.callback_query.middleware(middleware)
+    for middleware in [
+        DatabaseSessionMiddleware(),
+        ThrottlingMiddleware(),
+        BotInReconstruction(),
+        UserDataMiddleware(),
+        ErrorHandler(),
+        DebugSpyMiddleware(),
+    ]:
+        main_dp.message.middleware(middleware)
+        main_dp.callback_query.middleware(middleware)
 
 
 # main_dp.message.outer_middleware(StateClearerMiddleware())
-main_dp.message.middleware(AlbumMiddleware())
+    main_dp.message.middleware(AlbumMiddleware())
+    logging.info("Telegram bot initialized")
+else:
+    logging.info("Telegram bot disabled: BOT_MODE=%s, TG_BOT_TOKEN is set=%s", BOT_MODE, bool(TG_BOT_TOKEN))
 
 
 # ========== MAX Bot Setup ==========
 # Initialize MAX bot and dispatcher
 # Requirements: 10.1, 10.5 - Replace Aiogram Dispatcher with maxapi Dispatcher
 # Requirements: 12.1, 12.4 - Session management and connection pooling
-try:
-    from maxapi import Bot as MAXBot
-    from maxapi import Dispatcher as MAXDispatcher
-    from maxapi import Router as MAXRouter
-    from maxapi.context import MemoryContext
-    from maxapi.enums.parse_mode import ParseMode
-    from bots.max_bot.messenger_adapter import MAXMessengerAdapter
-    from bots.max_bot.handlers import register_max_handlers
-    from bots.max_bot.middlewares.database import DatabaseSessionMiddleware as MAXDatabaseSessionMiddleware
-    from bots.max_bot.middlewares.messenger_adapter import MessengerAdapterMiddleware
-    
-    # Initialize MAX bot with configuration
-    if MAX_BOT_TOKEN:
-        # Initialize MAX bot with session management and connection pooling
-        # The maxapi Bot handles connection pooling internally via aiohttp ClientSession
-        # Connection pooling enables concurrent request handling for better performance
-        # Requirements: 12.1, 12.4 - Initialize maxapi Bot with MAX_BOT_TOKEN and configure connection pooling
+max_bot = None
+max_dp = None
+max_bot_router = None
+max_messenger_adapter = None
+
+if ENABLE_MAX_BOT:
+    try:
+        from maxapi import Bot as MAXBot
+        from maxapi import Dispatcher as MAXDispatcher
+        from maxapi import Router as MAXRouter
+        from maxapi.enums.parse_mode import ParseMode
+        from bots.max_bot.handlers import register_max_handlers
+        from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+        from bots.max_bot.middlewares.database import DatabaseSessionMiddleware as MAXDatabaseSessionMiddleware
+        from bots.max_bot.middlewares.messenger_adapter import MessengerAdapterMiddleware
+
         max_bot = MAXBot(
             token=MAX_BOT_TOKEN,
-            parse_mode=ParseMode.HTML,  # Default parse mode for messages
+            parse_mode=ParseMode.HTML,
         )
-        
-        # Initialize MAX dispatcher using maxapi's built-in Dispatcher
-        # The dispatcher handles routing updates to appropriate handlers
-        # FSM storage is built-in to maxapi Dispatcher (uses in-memory storage by default)
-        # MemoryContext is automatically injected into handlers as a parameter
-        # Requirements: 6.1, 6.2, 6.3 - FSM state management with maxapi
-        # Note: maxapi Dispatcher doesn't accept storage parameter - FSM is built-in
         max_dp = MAXDispatcher()
-        
-        # Create router for organizing handlers into logical groups
-        # Router provides modular architecture for handler organization
         max_bot_router = MAXRouter(router_id="max_bot_main")
-        
-        # Initialize messenger adapter
         max_messenger_adapter = MAXMessengerAdapter(bot=max_bot)
-        
-        # Register middleware using maxapi pattern
-        # In maxapi, middleware is set via dp.middlewares list (not dp.middleware() method)
-        # Order matters: middleware executes in the order listed
-        # Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 10.7, 14.5
         max_dp.middlewares = [
-            MAXDatabaseSessionMiddleware(),      # Inject database session (first - creates session)
-            MessengerAdapterMiddleware(max_messenger_adapter),  # Inject messenger adapter (second - adds adapter)
+            MAXDatabaseSessionMiddleware(),
+            MessengerAdapterMiddleware(max_messenger_adapter),
         ]
-        
-        # Register all MAX bot handlers with the dispatcher
-        # Handlers are registered in priority order within feature-specific routers
-        # Routers are included directly in dispatcher (maxapi doesn't support nested routers)
-        # Messenger adapter is injected via MessengerAdapterMiddleware
         register_max_handlers(max_dp, max_bot_router)
-        
         logging.info("MAX bot initialized with handlers and middleware")
-    else:
+    except ImportError as e:
+        logging.warning(f"maxapi library not installed: {e}. MAX bot functionality will be unavailable.")
         max_bot = None
         max_dp = None
         max_bot_router = None
         max_messenger_adapter = None
-        logging.warning("MAX_BOT_TOKEN not found. MAX bot functionality will be unavailable.")
-        
-except ImportError as e:
-    logging.warning(f"maxapi library not installed: {e}. MAX bot functionality will be unavailable.")
-    max_bot = None
-    max_dp = None
-    max_bot_router = None
-    max_messenger_adapter = None
-except Exception as e:
-    logging.error(f"Failed to initialize MAX bot: {e}")
-    max_bot = None
-    max_dp = None
-    max_bot_router = None
-    max_messenger_adapter = None
+    except Exception as e:
+        logging.error(f"Failed to initialize MAX bot: {e}")
+        max_bot = None
+        max_dp = None
+        max_bot_router = None
+        max_messenger_adapter = None
+else:
+    logging.info("MAX bot disabled: BOT_MODE=%s, MAX_BOT_TOKEN is set=%s", BOT_MODE, bool(MAX_BOT_TOKEN))
 
 
 # Функции для управления жизненным циклом (для main.py) ---
@@ -148,9 +128,9 @@ async def set_all_webhooks():
     Устанавливает вебхуки для всех ботов.
     Requirements: 12.2, 12.6 - Use maxapi Bot.subscribe_webhook() for webhook lifecycle management
     """
-    # Set Telegram webhook
-    # await tg_bot.set_webhook(url=f"{HOST}{WEBHOOK_PATH_MAIN}")
-    logging.info(f"Telegram webhook set to {HOST}{WEBHOOK_PATH_MAIN}")
+    if tg_bot and WEBHOOK_PATH_MAIN:
+        # await tg_bot.set_webhook(url=f"{HOST}{WEBHOOK_PATH_MAIN}")
+        logging.info(f"Telegram webhook configured: {HOST}{WEBHOOK_PATH_MAIN}")
     
     # Set MAX webhook if MAX bot is initialized
     # Requirements: 12.2, 12.6 - Use maxapi Bot.subscribe_webhook() for webhook lifecycle management
@@ -284,9 +264,9 @@ async def delete_all_webhooks():
     Удаляет вебхуки для всех ботов.
     Requirements: 12.2, 12.6 - Webhook lifecycle management on shutdown
     """
-    # Delete Telegram webhook
-    # await tg_bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Telegram webhook deleted")
+    if tg_bot:
+        # await tg_bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Telegram webhook deleted")
     
     # Delete MAX webhook if MAX bot is initialized
     # Requirements: 12.2, 12.6 - Webhook lifecycle management on shutdown
@@ -308,14 +288,15 @@ async def close_bot_sessions():
     Requirements: 12.2, 12.6 - Close maxapi sessions on application shutdown
     Requirements: 12.3 - Preserve Redis connection management
     """
-    # Close Telegram bot session
-    # await bot_session.close()
+    if bot_session:
+        await bot_session.close()
+        logging.info("Telegram bot session closed")
     
     # Close Redis storage if not in local mode
     # Requirements: 12.3 - Preserve Redis connection management for FSM storage
     # This Redis connection is shared between Telegram bot and MAX bot (if using Redis)
-    if not IS_LOCAL_BOT:
-        await storage.redis.close()
+    if redis:
+        await redis.close()
         logging.info("Redis connection closed")
     
     # Close MAX bot session if initialized

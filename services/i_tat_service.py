@@ -84,7 +84,7 @@ class ITatAPIClient:
             "headers": {"Content-Type": "application/json"},
         }
         if LOCAL_DEV and ITAT_SSH_HOST:
-            socks5_url = f"socks5://{ITAT_SSH_HOST}:{ITAT_SSH_SOCKS5_PORT}"
+            socks5_url = f"socks5://127.0.0.1:{ITAT_SSH_SOCKS5_PORT}"
             client_kwargs["proxy"] = socks5_url
             logger.info(f"LOCAL_DEV: i-TAT requests routed via SOCKS5 proxy {socks5_url}")
 

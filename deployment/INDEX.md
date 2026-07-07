@@ -132,6 +132,7 @@ sudo bash install.sh
 - **[systemd/i-tat-bot.service](systemd/i-tat-bot.service)** - FastAPI приложение
 - **[systemd/i-tat-celery-worker.service](systemd/i-tat-celery-worker.service)** - Celery worker
 - **[systemd/i-tat-celery-beat.service](systemd/i-tat-celery-beat.service)** - Celery beat
+- **[nginx/i-tat-bot.conf](nginx/i-tat-bot.conf)** - Nginx site config с prod
 
 ## 🎯 Выбор документа по задаче
 
@@ -304,7 +305,7 @@ sudo journalctl -u i-tat-bot | grep webhook
 
 - **[../docs/](../docs/)** - Документация проекта
 - **[../README.md](../README.md)** - Основной README проекта
-- **[../.env.dist](../.env.dist)** - Шаблон конфигурации
+- **[../.env.example](../.env.example)** - Шаблон конфигурации без секретов
 
 ## 📞 Поддержка
 

@@ -1,237 +1,332 @@
-# i-TAT Bot Application
+# i-TAT Bot
 
-Multi-messenger bot application supporting Telegram and MAX messenger for i-TAT service management.
+FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и Celery-задачами для интеграции с i-TAT API.
 
-## Project Structure
+## Актуальный статус
 
-```
-i-tat-bot/
-├── alembic/              # Database migrations
-├── api/                  # FastAPI application and admin panel
-├── bots/                 # Bot implementations
-│   ├── max_bot/         # MAX messenger bot
-│   └── tg_bot/          # Telegram bot
-├── celery_app/          # Celery tasks and configuration
-├── database/            # Database models and session management
-├── docs/                # Project documentation
-├── scripts/             # Utility scripts and tools
-│   ├── celery/         # Celery management scripts
-│   └── utils/          # Database and user management utilities
-├── services/            # Business logic and external API clients
-├── tests/               # Test suite
-│   ├── manual/         # Manual test scripts
-│   ├── unit/           # Unit tests
-│   └── integration/    # Integration tests
-├── utils/               # Shared utilities
-├── constants.py         # Application constants and configuration
-├── loaders.py           # Bot and dispatcher initialization
-└── main.py              # Application entry point
-```
+Проверено 2026-07-07:
 
-## Core Files
+- prod VM: `/home/razrab/i-tat-bot`
+- prod branch: `main`
+- prod commit: `1b3edc619e5e6f5265135908a74504c390bef8a7` (`1b3edc6 04 05 consultation fix in extended mode`)
+- prod Python: `3.10.12`
+- prod services: `i-tat-bot`, `i-tat-celery-worker`, `i-tat-celery-beat` активны
 
-- `main.py` - FastAPI application entry point, webhook handlers
-- `loaders.py` - Bot instances and dispatcher initialization
-- `constants.py` - Environment variables and application constants
-- `alembic.ini` - Database migration configuration
-- `pyproject.toml` - Project metadata and dependencies
-- `requirements.txt` - Python dependencies
+Локальная ветка `Main` на этой машине указывает на тот же commit `origin/main`, но remote отличается: локально используется GitHub, на prod используется GitLab `services/assistant_max.git`.
 
-## Quick Start
+## Версия Python
 
-### Development Setup
+Используйте Python `3.10.x`.
 
-#### Prerequisites
+Причины:
 
-- Python 3.11+
-- PostgreSQL
-- Redis (optional, for production)
+- prod работает на Python `3.10.12`;
+- `pyproject.toml` задает `requires-python = ">=3.10"`;
+- Ruff настроен на `target-version = "py310"`.
 
-#### Installation
+README раньше указывал `Python 3.11+`, это было устаревшее требование. Python 3.11/3.12 может работать, но для воспроизводимого локального окружения под Windows/PyCharm используйте Python 3.10.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/aistrategiya/Aytat-bot.git
-   cd Aytat-bot
-   ```
+## Обязательные сервисы локально
 
-2. Create virtual environment:
-   ```bash
-   python -m venv venv
-   ```
+Минимум для запуска FastAPI/admin:
 
-3. Activate virtual environment:
-   ```bash
-   # Windows PowerShell
-   . .\venv\Scripts\Activate.ps1
-   
-   # Linux/Mac
-   source venv/bin/activate
-   ```
+- PostgreSQL: обязателен, приложение открывает соединение с БД при старте.
+- Redis: не обязателен для FastAPI, если `IS_LOCAL_BOT=True`, но переменные Redis все равно должны быть заполнены.
 
-4. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Для полного локального режима:
 
-5. Configure environment:
-   ```bash
-   cp .env.dist .env
-   # Edit .env with your configuration
-   ```
+- Redis: обязателен для Celery broker/backend.
+- Celery worker: нужен для фоновых задач, очередей уведомлений, эскалаций, рассылок, retry и renewal.
+- Celery beat: нужен только для периодических задач по расписанию.
 
-6. Run migrations:
-   ```bash
-   alembic upgrade head
-   ```
+На prod запущены все четыре компонента: PostgreSQL, Redis, FastAPI, Celery worker, Celery beat.
 
-### Production Deployment
+## Локальный запуск под Windows/PyCharm
 
-For production deployment on Ubuntu/Debian server:
+### 1. Открыть проект
 
-```bash
-# Quick automated installation
-wget https://raw.githubusercontent.com/aistrategiya/Aytat-bot/main/deployment/install.sh
-sudo bash install.sh
+Откройте корень проекта в PyCharm:
+
+```powershell
+C:\Users\admin\Desktop\i-tat-bot
 ```
 
-Or follow the detailed guide:
+В PyCharm выберите интерпретатор Python 3.10 и создайте venv в папке проекта.
 
-📖 **[Complete Deployment Guide](deployment/QUICK_START.md)** | 📖 **[Руководство на русском](DEPLOYMENT_RU.md)**
+То же самое из PowerShell:
 
-The deployment includes:
-- Automated installation script
-- systemd services for FastAPI, Celery worker, and Celery beat
-- Nginx configuration
-- SSL certificate setup
-- Security hardening
-
-See `deployment/` directory for:
-- `INDEX.md` - Documentation navigation
-- `QUICK_START.md` - Step-by-step deployment guide
-- `DEPLOYMENT_CHECKLIST.md` - Deployment verification checklist
-- `COMMANDS_CHEATSHEET.md` - Command reference
-- `README.md` - Complete deployment documentation
-
-### Running the Application
-
-```bash
-# Start FastAPI application
-python main.py
-
-# Start Celery worker (separate terminal)
-python scripts/celery/start_celery_worker.py
-
-# Start Celery beat (separate terminal)
-python scripts/celery/start_celery_beat.py
+```powershell
+py -3.10 -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-## Development
+### 2. Запустить PostgreSQL и Redis
 
-### Running Tests
+Можно использовать локальные сервисы Windows/WSL или Docker. Пример через Docker:
 
-```bash
-# Run all tests
-pytest
-
-# Run specific test categories
-pytest tests/unit/
-pytest tests/integration/
-
-# Run with coverage
-pytest --cov=. --cov-report=html
+```powershell
+docker run --name itat-postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=itat_bot -p 5432:5432 -d postgres:16
+docker run --name itat-redis -p 6379:6379 -d redis:7
 ```
 
-### Code Quality
+Если контейнеры уже созданы:
 
-```bash
-# Run linter
-.\scripts\lint.ps1
-
-# Or manually
-ruff check .
+```powershell
+docker start itat-postgres itat-redis
 ```
 
-### Database Migrations
+### 3. Создать `.env`
 
-```bash
-# Create new migration
-alembic revision --autogenerate -m "Description"
+```powershell
+Copy-Item .env.example .env
+```
 
-# Apply migrations
+Заполните значения в `.env`. Секреты в репозиторий не коммитятся.
+
+Для локального запуска без реальных вызовов i-TAT API оставьте:
+
+```dotenv
+IS_LOCAL_BOT=True
+USE_MOCK_ITAT_API=true
+LOCAL_DEV=false
+DB_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/itat_bot
+REDIS=redis://localhost:6379
+```
+
+Запуск ботов контролируется переменной `BOT_MODE`:
+
+- `BOT_MODE=max` - запускается только MAX-бот, `TG_BOT_TOKEN` можно оставить пустым.
+- `BOT_MODE=tg` - запускается только Telegram-бот, нужен `TG_BOT_TOKEN`.
+- `BOT_MODE=both` - запускаются оба бота, нужны оба токена.
+- `BOT_MODE=none` - боты не инициализируются, остается FastAPI/admin/API.
+
+Если `BOT_MODE` не задан, режим автоматически определяется по заполненным токенам. `BOT_TOKEN=${TG_BOT_TOKEN}` и `ACCESS_BOT_TOKEN=${TG_BOT_TOKEN}` больше не нужны для запуска проекта.
+
+### 4. Применить миграции
+
+`alembic.ini` должен находиться в корне проекта. Раньше он был локальным ignored-файлом, из-за чего свежий clone мог не содержать конфиг.
+
+```powershell
 alembic upgrade head
+```
 
-# Rollback migration
+Или:
+
+```powershell
+.\scripts\migrate.ps1 upgrade
+```
+
+### 5. Проверить настройку
+
+После заполнения `.env`, запуска PostgreSQL/Redis и применения миграций выполните:
+
+```powershell
+python scripts/check_setup.py
+```
+
+Скрипт ничего не изменяет в БД и не запускает ботов. Он проверяет `.env`, зависимости, подключение к PostgreSQL/Redis, Alembic current/head, ключевые Python-файлы и наличие prod-примеров systemd/nginx.
+
+Если Redis или Alembic временно не нужны, проверку можно сузить:
+
+```powershell
+python scripts/check_setup.py --skip-redis --skip-alembic
+```
+
+### 6. Запустить FastAPI
+
+В PowerShell:
+
+```powershell
+python main.py
+```
+
+Или через PyCharm Run Configuration:
+
+- Type: Python
+- Script path: `main.py`
+- Working directory: корень проекта
+- `.env` будет загружен автоматически через `python-dotenv`, если working directory установлен в корень проекта
+
+Админка: `http://127.0.0.1:8453/admin`
+
+### 7. Запустить Celery worker
+
+В отдельном терминале:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries
+```
+
+На Windows используется `--pool=solo`.
+
+### 8. Запустить Celery beat
+
+В отдельном терминале:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat:PersistentScheduler --schedule=celerybeat-schedule.db
+```
+
+Beat нужен только если проверяются периодические задачи.
+
+## Правильный порядок запуска
+
+Для полного локального запуска:
+
+1. PostgreSQL.
+2. Redis.
+3. Установка зависимостей и заполнение `.env`.
+4. `alembic upgrade head`.
+5. Проверка настройки: `python scripts/check_setup.py`.
+6. FastAPI: `python main.py`.
+7. Celery worker: `celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries`.
+8. Celery beat: `celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat:PersistentScheduler --schedule=celerybeat-schedule.db`.
+
+Для минимального запуска API/admin можно остановиться на пунктах 1-6.
+
+## i-TAT API, VPN и SSH tunnel
+
+VPN/SSH tunnel не нужен, если локально используется мок:
+
+```dotenv
+USE_MOCK_ITAT_API=true
+LOCAL_DEV=false
+```
+
+Для реальных вызовов i-TAT API из локальной разработки нужен доступ в корпоративную сеть:
+
+1. Подключите PPTP VPN.
+2. Укажите в `.env`:
+
+```dotenv
+USE_MOCK_ITAT_API=false
+LOCAL_DEV=true
+ITAT_SSH_HOST=<ssh_host_inside_vpn>
+ITAT_SSH_LOGIN=<ssh_login>
+ITAT_SSH_PASSWORD=<ssh_password>
+ITAT_SSH_SOCKS5_PORT=1080
+```
+
+При `LOCAL_DEV=true` приложение само поднимает локальный SOCKS5 tunnel через `services/ssh_tunnel.py`, а i-TAT HTTP-клиент отправляет запросы через `socks5://127.0.0.1:<ITAT_SSH_SOCKS5_PORT>`.
+
+На Windows можно использовать helper:
+
+```powershell
+.\scripts\vpn-connect.ps1 status
+.\scripts\vpn-connect.ps1 connect
+```
+
+Скрипт требует PowerShell от администратора и значения `ITAT_VPN_HOST`, `ITAT_VPN_LOGIN`, `ITAT_VPN_PASSWORD` в `.env`.
+
+Если используется отдельный сервер-переходник, сначала поднимите VPN на нем штатным скриптом, затем подключайтесь к VM по SSH через доступный маршрут. Не храните VPN/SSH-пароли в README.
+
+## Обязательные переменные `.env`
+
+Для импорта и запуска приложения должны быть заполнены:
+
+- `DB_URL`
+- `PROJECT_HOST`
+- `PROJECT_PORT`
+- `IS_LOCAL_BOT`
+- `COUNT_WORKERS`
+- `DEBUG`
+- `LOG_LEVEL`
+- `ALLOWED_HOSTS`
+- `HOST`
+- `WEBHOOK_PATH_MAIN`
+- `WEBHOOK_PATH_MAX`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `REDIS`
+- `CELERY_REDIS_DB_NUMBER`
+- `AIOGRAM_REDIS_DB_NUMBER`
+
+Для реальной работы ботов также нужны токены выбранного режима:
+
+- `TG_BOT_TOKEN`, если `BOT_MODE=tg` или `BOT_MODE=both`
+- `MAX_BOT_TOKEN`, если `BOT_MODE=max` или `BOT_MODE=both`
+
+Для интеграций также нужны:
+
+- `ITAT_API_BASE_URL`
+- `ITAT_API_USERNAME`
+- `ITAT_API_PASSWORD`
+- `USE_MOCK_ITAT_API`
+- `WEBHOOK_API_KEY`
+- `ADMIN_SECRET_KEY`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD`
+
+Актуальный и единственный шаблон без секретов: `.env.example`.
+
+## Alembic
+
+Конфиг миграций находится в корне проекта:
+
+```text
+alembic.ini
+```
+
+Команды:
+
+```powershell
+alembic current
+alembic upgrade head
+alembic revision --autogenerate -m "description"
 alembic downgrade -1
 ```
 
-## Scripts
+`alembic/env.py` берет URL БД из `constants.DB_URL`, то есть из `.env`.
 
-See `scripts/README.md` for detailed documentation on available utility scripts.
+## Prod systemd и nginx
 
-### Common Scripts
+Актуальные copy-paste примеры лежат в проекте:
+
+- `deployment/systemd/i-tat-bot.service`
+- `deployment/systemd/i-tat-celery-worker.service`
+- `deployment/systemd/i-tat-celery-beat.service`
+- `deployment/nginx/i-tat-bot.conf`
+
+Они сняты с prod 2026-07-07. В примерах зафиксированы prod-пути `/home/razrab/i-tat-bot`, пользователь `razrab`, домен `assistant.i-tat.ru` и порт приложения `8453`. Если сервер или пользователь другие, замените эти значения перед копированием в `/etc/systemd/system/` и `/etc/nginx/sites-available/`.
+
+Основные команды из systemd:
 
 ```bash
-# User management
-python scripts/utils/add_staff_member.py
-python scripts/utils/find_test_user.py
-
-# Celery management
-python scripts/celery/start_celery_worker.py
-python scripts/celery/check_celery_status.py
-
-# Diagram generation
-python scripts/generate_interactive_diagram.py
+uvicorn main:app --host 0.0.0.0 --port 8453 --workers 1 --timeout-keep-alive 30 --proxy-headers --forwarded-allow-ips "*"
+celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries --concurrency=4 --max-tasks-per-child=1000 --time-limit=300 --soft-time-limit=240
+celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat:PersistentScheduler --schedule=/home/razrab/i-tat-bot/celerybeat-schedule.db
 ```
 
-## Documentation
+Копирование на сервер:
 
-Comprehensive documentation is available in the `docs/` directory:
+```bash
+sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
+sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
+sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
+sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
+sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
+sudo systemctl daemon-reload
+sudo systemctl enable --now i-tat-bot i-tat-celery-worker i-tat-celery-beat
+```
 
-- `docs/api/` - External API references (i-TAT, MAX)
-- `docs/architecture/` - System design and structure
-- `docs/scenarios/` - Business logic and user flows
-- `docs/MAX-API/` - MAX API library documentation
+Nginx:
 
-See `docs/README.md` for the complete documentation index.
+```bash
+sudo cp deployment/nginx/i-tat-bot.conf /etc/nginx/sites-available/i-tat-bot
+sudo ln -sfn /etc/nginx/sites-available/i-tat-bot /etc/nginx/sites-enabled/i-tat-bot
+sudo nginx -t
+sudo systemctl reload nginx
+```
 
-## Tech Stack
+## Проверки
 
-- **Python 3.11+** - Primary language
-- **FastAPI** - Web framework
-- **PostgreSQL** - Database
-- **SQLAlchemy 2.0** - ORM
-- **Alembic** - Migrations
-- **Redis** - Caching and FSM storage
-- **Celery** - Background tasks
-- **Aiogram 3.24.0** - Telegram bot framework
-- **maxapi** - MAX messenger bot framework
-
-## Environment Variables
-
-Key environment variables (see `.env.dist` for complete list):
-
-- `DATABASE_URL` - PostgreSQL connection string
-- `REDIS_URL` - Redis connection string
-- `TELEGRAM_BOT_TOKEN` - Telegram bot token
-- `MAX_BOT_TOKEN` - MAX bot token
-- `WEBHOOK_PATH_TG` - Telegram webhook path
-- `WEBHOOK_PATH_MAX` - MAX webhook path
-- `ITAT_API_BASE_URL` - i-TAT API base URL
-- `ITAT_API_USERNAME` - i-TAT API username
-- `ITAT_API_PASSWORD` - i-TAT API password
-
-## Contributing
-
-1. Create a feature branch
-2. Make your changes
-3. Run tests and linter
-4. Submit a pull request
-
-## License
-
-[Add license information]
-
-## Support
-
-For issues and questions, please refer to the project documentation or contact the development team.
+```powershell
+python scripts/check_setup.py
+python -m py_compile constants.py main.py services/i_tat_service.py
+pytest
+ruff check .
+```

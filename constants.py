@@ -23,6 +23,34 @@ MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN")
 
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
+_raw_bot_mode = os.getenv("BOT_MODE", "").strip().lower()
+_bot_mode_aliases = {
+    "all": "both",
+    "both": "both",
+    "telegram": "tg",
+    "tg": "tg",
+    "max": "max",
+    "none": "none",
+    "off": "none",
+    "disabled": "none",
+}
+
+if _raw_bot_mode:
+    if _raw_bot_mode not in _bot_mode_aliases:
+        raise ValueError("BOT_MODE must be one of: tg, max, both, none")
+    BOT_MODE = _bot_mode_aliases[_raw_bot_mode]
+elif TG_BOT_TOKEN and MAX_BOT_TOKEN:
+    BOT_MODE = "both"
+elif MAX_BOT_TOKEN:
+    BOT_MODE = "max"
+elif TG_BOT_TOKEN:
+    BOT_MODE = "tg"
+else:
+    BOT_MODE = "none"
+
+ENABLE_TG_BOT = BOT_MODE in {"tg", "both"} and bool(TG_BOT_TOKEN)
+ENABLE_MAX_BOT = BOT_MODE in {"max", "both"} and bool(MAX_BOT_TOKEN)
+
 HOST = os.getenv("HOST")
 
 REDIS = os.getenv("REDIS")

@@ -37,6 +37,7 @@ sudo bash install.sh
 - **COMMANDS_CHEATSHEET.md** - Шпаргалка по командам управления
 - **README.md** (этот файл) - Полная документация по развертыванию
 - **systemd/** - Файлы systemd сервисов
+- **nginx/i-tat-bot.conf** - актуальный пример nginx site config с prod
 - **setup-services.sh** - Скрипт установки systemd сервисов
 
 ## Services
@@ -44,7 +45,7 @@ sudo bash install.sh
 The application consists of three systemd services:
 
 1. **i-tat-bot.service** - FastAPI application (main.py)
-   - Runs uvicorn with 4 workers
+   - Runs uvicorn with 1 worker on port 8453
    - Handles webhooks from Telegram and MAX messengers
    - Serves admin panel and API endpoints
 
@@ -52,7 +53,7 @@ The application consists of three systemd services:
    - Processes background tasks
    - Queues: nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications
    - Pool: solo (Windows-compatible)
-   - Concurrency: 4 workers
+   - Concurrency: 4
 
 3. **i-tat-celery-beat.service** - Celery beat scheduler
    - Schedules periodic tasks
@@ -102,7 +103,7 @@ Before deploying, ensure you have:
 
 6. **Environment variables configured:**
    ```bash
-   cp .env.dist .env
+   cp .env.example .env
    nano .env  # Edit with your configuration
    ```
 
@@ -138,7 +139,7 @@ sudo cp systemd/*.service /etc/systemd/system/
 
 # Create directories
 sudo mkdir -p /var/run/celery /var/log/celery
-sudo chown www-data:www-data /var/run/celery /var/log/celery
+sudo chown razrab:razrab /var/run/celery /var/log/celery
 
 # Reload systemd
 sudo systemctl daemon-reload
@@ -204,65 +205,47 @@ sudo journalctl -u i-tat-bot --since today
 
 ## Nginx Configuration
 
-Example nginx configuration for reverse proxy:
+Prod nginx example is stored in `deployment/nginx/i-tat-bot.conf`. Current prod config:
 
 ```nginx
 server {
     listen 80;
-    server_name your-domain.com;
+    server_name assistant.i-tat.ru;
 
-    # Redirect HTTP to HTTPS
-    return 301 https://$server_name$request_uri;
-}
+    proxy_connect_timeout 600;
+    proxy_send_timeout 600;
+    proxy_read_timeout 600;
+    send_timeout 600;
 
-server {
-    listen 443 ssl http2;
-    server_name your-domain.com;
-
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-
-    # Proxy settings
     location / {
         proxy_pass http://127.0.0.1:8453;
+        proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # Timeouts
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
+        # proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 
-    # Static files
     location /static/ {
-        alias /opt/i-tat-bot/api/static/;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
+        alias /home/razrab/i-tat-bot/api/static/;
+        expires 1d;
+        access_log off;
     }
 
+    # Медиа
     location /media/ {
-        alias /opt/i-tat-bot/media/;
-        expires 7d;
-        add_header Cache-Control "public";
+        alias /home/razrab/i-tat-bot/media/;
+        allow all;
     }
-
-    # Increase upload size for media files
-    client_max_body_size 50M;
 }
 ```
 
 Save to `/etc/nginx/sites-available/i-tat-bot` and enable:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/i-tat-bot /etc/nginx/sites-enabled/
+sudo cp deployment/nginx/i-tat-bot.conf /etc/nginx/sites-available/i-tat-bot
+sudo ln -sfn /etc/nginx/sites-available/i-tat-bot /etc/nginx/sites-enabled/i-tat-bot
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -326,10 +309,10 @@ sudo systemctl reload nginx
 
 ```bash
 # Fix ownership
-sudo chown -R www-data:www-data /opt/i-tat-bot/media
-sudo chown -R www-data:www-data /opt/i-tat-bot/logs
-sudo chown -R www-data:www-data /var/log/celery
-sudo chown -R www-data:www-data /var/run/celery
+sudo chown -R razrab:razrab /home/razrab/i-tat-bot/media
+sudo chown -R razrab:razrab /home/razrab/i-tat-bot/logs
+sudo chown -R razrab:razrab /var/log/celery
+sudo chown -R razrab:razrab /var/run/celery
 ```
 
 ## Monitoring

@@ -14,9 +14,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROJECT_DIR="i-tat-bot"
-SERVICE_USER="www-data"
-SERVICE_GROUP="www-data"
+PROJECT_DIR="/home/razrab/i-tat-bot"
+SERVICE_USER="razrab"
+SERVICE_GROUP="razrab"
 SYSTEMD_DIR="/etc/systemd/system"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -68,7 +68,7 @@ fi
 # Check if .env file exists
 if [ ! -f "$PROJECT_DIR/.env" ]; then
     print_error ".env file not found at $PROJECT_DIR/.env"
-    print_info "Please create .env file from .env.dist template"
+    print_info "Please create .env file from .env.example template"
     exit 1
 fi
 
@@ -90,7 +90,7 @@ chown -R $SERVICE_USER:$SERVICE_GROUP "$PROJECT_DIR/media"
 print_info "Updating service files with project directory..."
 for service_file in "$SCRIPT_DIR/systemd"/*.service; do
     if [ -f "$service_file" ]; then
-        sed -i "s|/opt/i-tat-bot|$PROJECT_DIR|g" "$service_file"
+        sed -i "s|/home/razrab/i-tat-bot|$PROJECT_DIR|g" "$service_file"
     fi
 done
 

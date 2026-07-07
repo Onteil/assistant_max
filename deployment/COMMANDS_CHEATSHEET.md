@@ -498,11 +498,11 @@ ls -la /opt/i-tat-bot/.env
 
 # Установить правильные права
 sudo chmod 600 /opt/i-tat-bot/.env
-sudo chown www-data:www-data /opt/i-tat-bot/.env
+sudo chown razrab:razrab /opt/i-tat-bot/.env
 
 # Права на директории
-sudo chown -R www-data:www-data /opt/i-tat-bot/media
-sudo chown -R www-data:www-data /opt/i-tat-bot/logs
+sudo chown -R razrab:razrab /opt/i-tat-bot/media
+sudo chown -R razrab:razrab /opt/i-tat-bot/logs
 ```
 
 ## 📊 Полезные скрипты

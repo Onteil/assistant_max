@@ -2,12 +2,12 @@ env/
 max_bot_template/
 __pycache__/
 .env
+.env.dist
 venv
 keys/*.json
 *-schedule*
 exports/*
 !exports/
-alembic.ini
 media/
 migrations/
 *.db
