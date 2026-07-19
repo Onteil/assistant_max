@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession        
 from bots.max_bot.keyboards.staff.manager_kb import get_manager_menu_keyboard
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from bots.max_bot.payloads import (
     ManagerMenuActionPayload,
     ManagerTicketSelectPayload,
@@ -705,7 +706,8 @@ async def handle_manager_menu_action(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -998,7 +1000,8 @@ async def handle_tickets_filter(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Delete old message
         if message_id:
@@ -1048,7 +1051,8 @@ async def handle_tickets_pagination(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Get current filter from context
         data = await context.get_data()
@@ -1102,7 +1106,8 @@ async def handle_ticket_select(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -1201,7 +1206,8 @@ async def handle_view_ticket_from_notification(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -1303,11 +1309,12 @@ async def handle_tickets_back(
     try:
         # Check for noop first
         if action == "noop":
-            await event.answer()
+            await answer_max_callback(event)
             return
         
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -1684,7 +1691,8 @@ async def handle_archive_filter(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Delete old message
         if message_id:
@@ -1764,7 +1772,8 @@ async def handle_archive_type_filter(
     logger.info(f"Archive type filter: max_user_id={max_user_id}, type={new_type_filter}")
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         data = await context.get_data()
         current_filter = data.get("manager_archive_filter", "day")
@@ -1816,7 +1825,8 @@ async def handle_archive_pagination(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Get current filter from context
         data = await context.get_data()
@@ -1872,7 +1882,8 @@ async def handle_archive_ticket_select(
 
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         # Get ticket from database
         from sqlalchemy.orm import selectinload
@@ -2034,11 +2045,12 @@ async def handle_archive_back(
     try:
         # Check for noop first
         if action == "noop":
-            await event.answer()
+            await answer_max_callback(event)
             return
         
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -2217,7 +2229,8 @@ async def handle_ticket_action(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -2745,7 +2758,8 @@ async def handle_toggle_focus(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -2860,7 +2874,8 @@ async def handle_employee_selection(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Verify user is staff member
         employee = await is_staff_member(session, max_user_id)
@@ -3434,7 +3449,8 @@ async def handle_take_from_message_notification(
     )
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         employee = await is_staff_member(session, max_user_id)
         if not employee:
@@ -3546,7 +3562,8 @@ async def handle_focus_from_message_notification(
     )
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         employee = await is_staff_member(session, max_user_id)
         if not employee:
@@ -3745,7 +3762,8 @@ async def handle_employee_menu_action(
     logger.info(f"Employee menu action: max_user_id={max_user_id}, action={action}")
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         employee = await is_staff_member(session, max_user_id)
         if not employee:
@@ -3911,7 +3929,8 @@ async def handle_employee_set_duty(
     )
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         employee = await is_staff_member(session, max_user_id)
         if not employee:
@@ -4079,7 +4098,8 @@ async def handle_employee_toggle_working(
     )
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
 
         employee = await is_staff_member(session, max_user_id)
         if not employee:

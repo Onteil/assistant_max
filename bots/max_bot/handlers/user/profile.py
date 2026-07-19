@@ -25,6 +25,7 @@ from bots.max_bot.keyboards.user.profile_kb import get_profile_keyboard
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.payloads import ProfileActionPayload
 from bots.max_bot.states import ProfileStates
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from bots.max_bot.texts import (
     ERROR_GENERAL,
     ERROR_VALIDATION_INN,
@@ -988,7 +989,8 @@ async def handle_profile_callback(
         is_noop = isinstance(payload, ProfileActionPayload) and payload.action == "noop"
         
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # If noop, just return without doing anything
         if is_noop:
@@ -1654,8 +1656,21 @@ async def process_add_key(
             # Notify administrators about key conflict
             try:
                 from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                await notify_admins_key_conflict(session, user.id, normalized_key)
-                logger.info(f"Key conflict notification sent for user_id={user.id}, key={normalized_key}")
+                notified_count = await notify_admins_key_conflict(
+                    session,
+                    user.id,
+                    normalized_key,
+                )
+                if notified_count:
+                    logger.info(
+                        f"Key conflict notification sent for user_id={user.id}, "
+                        f"key={normalized_key}, admins_notified={notified_count}"
+                    )
+                else:
+                    logger.warning(
+                        f"Key conflict notification was not delivered for "
+                        f"user_id={user.id}, key={normalized_key}"
+                    )
             except Exception as notify_error:
                 logger.error(
                     f"Failed to send key conflict notification for user_id={user.id}: {notify_error}",

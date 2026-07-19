@@ -22,6 +22,7 @@ from bots.max_bot.callback_datas import (
     ArchiveSearchCallback,
 )
 from bots.max_bot.states import EmployeeStates
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from bots.max_bot.texts import (
     BTN_ACTIVE_TICKETS,
     BTN_ARCHIVE_SEARCH,
@@ -318,7 +319,8 @@ async def handle_focus_ticket_callback(
     
     Requirements: Active Tickets Inline Keyboard
     """
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
     
     try:
         user_id = event.message.sender.user_id
@@ -342,7 +344,10 @@ async def handle_focus_ticket_callback(
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
         if not ticket:
-            await event.answer("❌ Заявка не найден", show_alert=True)
+            await answer_max_callback(
+                event,
+                notification="❌ Заявка не найдена",
+            )
             return
         
         # Check if already in focus mode on a different ticket
@@ -417,7 +422,8 @@ async def handle_ticket_actions_callback(
     
     Requirements: Active Tickets Inline Keyboard
     """
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
     
     try:
         user_id = event.message.sender.user_id
@@ -441,7 +447,10 @@ async def handle_ticket_actions_callback(
         result = await session.execute(stmt)
         ticket = result.scalar_one_or_none()
         if not ticket:
-            await event.answer("❌ Заявка не найден", show_alert=True)
+            await answer_max_callback(
+                event,
+                notification="❌ Заявка не найдена",
+            )
             return
         
         # Format ticket card
@@ -484,7 +493,8 @@ async def handle_back_to_list_callback(
     
     Requirements: Active Tickets Inline Keyboard
     """
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
     
     try:
         user_id = event.message.sender.user_id

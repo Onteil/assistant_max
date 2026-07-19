@@ -12,13 +12,13 @@ FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и 
 
 4. **VPN/SSH tunnel к i-TAT API для локальной разработки не нужен**, если включен мок: `USE_MOCK_ITAT_API=true` и `LOCAL_DEV=false`. Для реальных вызовов i-TAT API нужен доступ в корпоративную сеть и настройки `LOCAL_DEV=true`/SSH tunnel.
 
-5. **Правильный порядок запуска**: PostgreSQL → Redis → установка зависимостей и `.env` → `alembic upgrade head` → `python scripts/check_setup.py` → FastAPI → Celery worker → Celery beat.
+5. **Правильный порядок запуска**: PostgreSQL → Redis → установка зависимостей и `.env` → инициализация БД → `python scripts/check_setup.py` → FastAPI → Celery worker → Celery beat. Для пустой локальной БД инициализация выполняется через `alembic upgrade head`; при переносе проекта на новый сервер используется проверенный `structure.sql` и отдельная последовательность из раздела `Восстановление структуры БД`.
 
 6. **Обязательные переменные `.env` и примеры заполнения** описаны в разделе `Обязательные переменные .env`. Актуальный шаблон без секретов: `.env.example`. В нем подписано, какие значения являются секретами, где используются и какой формат ожидается.
 
-7. **Актуальный `alembic.ini` находится в корне проекта** и должен быть в git. Alembic берет `DB_URL` из `.env` через `constants.py`/`alembic/env.py`, поэтому команда `alembic upgrade head` запускается из корня проекта.
+7. **Актуальный `alembic.ini` находится в корне проекта** и должен быть в git. Alembic берет `DB_URL` из `.env` через `constants.py`/`alembic/env.py`, поэтому команды запускаются из корня проекта. `structure.sql` также находится в корне: это проверенный снимок рабочей структуры prod-БД без данных для переноса проекта на другой сервер.
 
-8. **Актуальная кодовая база синхронизирована в git в ветке `Main` (`origin/main`)**. Prod на момент проверки 2026-07-07 работал из `/home/razrab/i-tat-bot` на commit `1b3edc619e5e6f5265135908a74504c390bef8a7`; текущая git-версия содержит обновленные инструкции, `.env.example`, `alembic.ini`, prod-примеры systemd/nginx и проверочный скрипт. Для server deployment ориентируйтесь на раздел `Prod systemd и nginx`, `deployment/systemd/` и `deployment/nginx/i-tat-bot.conf`.
+8. **Актуальная кодовая база синхронизирована в GitHub в ветке `main` (`origin/main`)**. Это default-ветка проекта. Prod на момент проверки 2026-07-07 работал из `/home/razrab/i-tat-bot` на commit `1b3edc619e5e6f5265135908a74504c390bef8a7`; текущая git-версия содержит обновленные инструкции, `.env.example`, `alembic.ini`, prod-примеры systemd/nginx и проверочный скрипт. Для server deployment ориентируйтесь на раздел `Prod systemd и nginx`, `deployment/systemd/` и `deployment/nginx/i-tat-bot.conf`.
 
 ## Актуальный статус
 
@@ -30,7 +30,7 @@ FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и 
 - prod Python: `3.10.12`
 - prod services: `i-tat-bot`, `i-tat-celery-worker`, `i-tat-celery-beat` активны
 
-Текущая актуальная ветка для обновленной кодовой базы: `Main` (`origin/main` на GitHub). На prod используется GitLab remote `services/assistant_max.git`; перед обновлением сервера нужно сверить, что на него попадает тот же `HEAD`, что и в GitHub `origin/main`.
+Текущая актуальная и default-ветка: `main` (`origin/main` на GitHub). Для дальнейших обновлений prod должен использовать GitHub remote `https://github.com/aistrategiya/Aytat-bot.git`; старый GitLab remote не является источником актуальной кодовой базы.
 
 ## Версия Python
 
@@ -302,6 +302,33 @@ alembic downgrade -1
 
 `alembic/env.py` берет URL БД из `constants.DB_URL`, то есть из `.env`.
 
+## Восстановление структуры БД
+
+`structure.sql` — проверенный снимок рабочей структуры prod-БД без пользовательских и бизнес-данных. Используйте его при переносе проекта на новый сервер или при создании новой серверной БД, когда требуется воспроизвести именно проверенную структуру PostgreSQL, включая enum-типы, ограничения и индексы.
+
+Файл соответствует Alembic-ревизии `expand_escalation_lvl_3`. Таблица `alembic_version` в дампе намеренно пустая, поэтому после импорта нужно зафиксировать эту baseline-ревизию и затем применить более новые миграции:
+
+```bash
+# Выполнять только для заранее созданной пустой БД.
+psql -h localhost -U <db_user> -d <db_name> \
+  -v ON_ERROR_STOP=1 \
+  -f structure.sql
+
+source venv/bin/activate
+alembic stamp expand_escalation_lvl_3
+alembic upgrade head
+alembic current
+python scripts/check_setup.py
+```
+
+Не выполняйте `alembic stamp head` после импорта текущего `structure.sql`: так новые миграции, включая защиту NPS-ответов от дублей, будут помечены применёнными без фактического изменения БД.
+
+Для обычной пустой локальной БД без восстановления снимка используется только:
+
+```powershell
+alembic upgrade head
+```
+
 ## Prod systemd и nginx
 
 Актуальные copy-paste примеры лежат в проекте:
@@ -311,8 +338,20 @@ alembic downgrade -1
 - `deployment/systemd/i-tat-celery-beat.service`
 - `deployment/nginx/i-tat-bot.conf`
 - `deployment/logrotate/i-tat-celery`
+- `deployment/journald/10-i-tat-log-limits.conf`
 
 Они сняты с prod 2026-07-07. В примерах зафиксированы prod-пути `/home/razrab/i-tat-bot`, пользователь `razrab`, домен `assistant.i-tat.ru` и порт приложения `8453`. Если сервер или пользователь другие, замените эти значения перед копированием в `/etc/systemd/system/` и `/etc/nginx/sites-available/`.
+
+Перед серверным запуском используйте безопасные значения:
+
+```dotenv
+PROJECT_HOST="0.0.0.0"
+IS_LOCAL_BOT="False"
+DEBUG="False"
+LOG_LEVEL="info"
+```
+
+SQLAlchemy `echo` принудительно отключен в коде, потому что он выводит значения SQL-параметров с пользовательскими данными.
 
 Основные команды из systemd:
 
@@ -329,10 +368,25 @@ sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
 sudo cp deployment/logrotate/i-tat-celery /etc/logrotate.d/i-tat-celery
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo cp deployment/journald/10-i-tat-log-limits.conf /etc/systemd/journald.conf.d/
 sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
+sudo systemctl restart systemd-journald
 sudo systemctl daemon-reload
 sudo systemctl enable --now i-tat-bot i-tat-celery-worker i-tat-celery-beat
+```
+
+Конфигурация journald задаёт общий лимит журнала сервера, а не только сервисов i-TAT. Перед копированием при необходимости согласуйте значения с другими приложениями на сервере.
+
+Переключение существующего server checkout на GitHub:
+
+```bash
+cd /home/razrab/i-tat-bot
+git remote set-url origin https://github.com/aistrategiya/Aytat-bot.git
+git fetch origin
+git switch main
+git pull --ff-only origin main
 ```
 
 Nginx:

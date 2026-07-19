@@ -9,6 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from api.utils import messenger_utils
 from api.webhooks.ticket_status_webhooks import _select_notification_messenger
 from bots.max_bot.handlers.user.main_menu_callbacks import _is_stale_callback_error
+from bots.max_bot.utils import admin_notifications
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from celery_app.escalation_tasks import _is_max_chat_id
 from celery_app.nps_tasks import (
     NPS_PROCESSING_LOCK_TTL_SECONDS,
@@ -17,13 +19,15 @@ from celery_app.nps_tasks import (
     build_nps_delivery_key,
     build_nps_task_id,
 )
-from database.models import SurveyType
+from database.models import NPS_Response, SurveyType
 from services.i_tat_service import (
     ITatAPIClient,
     NonRetryableAPIError,
     RetryableAPIError,
     _is_1c_version_conflict_response,
 )
+from services.nps_handler import handle_rating_response
+from services.retry_service import _is_successful_api_response
 from services.user_service import _insert_gs_key_with_savepoint
 
 
@@ -190,6 +194,55 @@ def test_only_known_stale_max_callback_error_is_suppressed():
     assert not _is_stale_callback_error(RuntimeError("network timeout"))
 
 
+@pytest.mark.asyncio
+async def test_plain_max_callback_ack_does_not_edit_message():
+    bot = SimpleNamespace(send_callback=AsyncMock(return_value=SimpleNamespace()))
+    event = SimpleNamespace(
+        bot=bot,
+        callback=SimpleNamespace(callback_id="callback-1"),
+        answer=AsyncMock(),
+    )
+
+    assert await answer_max_callback(event) is True
+    bot.send_callback.assert_awaited_once_with(
+        callback_id="callback-1",
+        message=None,
+        notification=None,
+    )
+    event.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_max_callback_stops_business_handler():
+    bot = SimpleNamespace(
+        send_callback=AsyncMock(
+            side_effect=RuntimeError("error.edit.invalid.message")
+        )
+    )
+    event = SimpleNamespace(
+        bot=bot,
+        callback=SimpleNamespace(callback_id="callback-2"),
+        answer=AsyncMock(),
+    )
+
+    assert await answer_max_callback(event) is False
+
+
+@pytest.mark.asyncio
+async def test_unknown_max_callback_error_is_not_hidden():
+    bot = SimpleNamespace(
+        send_callback=AsyncMock(side_effect=RuntimeError("network timeout"))
+    )
+    event = SimpleNamespace(
+        bot=bot,
+        callback=SimpleNamespace(callback_id="callback-3"),
+        answer=AsyncMock(),
+    )
+
+    with pytest.raises(RuntimeError, match="network timeout"):
+        await answer_max_callback(event)
+
+
 @pytest.mark.parametrize(
     ("chat_id", "expected"),
     [
@@ -230,3 +283,247 @@ async def test_gs_key_insert_race_does_not_roll_back_outer_transaction():
 
     assert inserted is False
     session.rollback.assert_not_awaited()
+
+
+def test_nps_response_model_has_business_key_uniqueness():
+    unique_constraints = {
+        constraint.name: tuple(column.name for column in constraint.columns)
+        for constraint in NPS_Response.__table__.constraints
+        if constraint.name
+    }
+
+    assert unique_constraints["uq_nps_response_user_survey_trigger"] == (
+        "user_id",
+        "survey_type",
+        "trigger_event_id",
+    )
+
+
+@pytest.mark.asyncio
+async def test_nps_duplicate_callback_is_idempotent():
+    existing_result = Mock()
+    existing_result.scalar_one_or_none.return_value = 42
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=existing_result),
+        add=Mock(),
+        begin_nested=Mock(),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+
+    result = await handle_rating_response(
+        session=session,
+        user_id=10,
+        rating=7,
+        survey_type=SurveyType.SERVICE_QUALITY,
+        trigger_event_id=245,
+    )
+
+    assert result == (True, "already_recorded")
+    session.add.assert_not_called()
+    session.commit.assert_not_awaited()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nps_insert_race_does_not_roll_back_outer_transaction():
+    existing_result = Mock()
+    existing_result.scalar_one_or_none.return_value = None
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=existing_result),
+        add=Mock(),
+        begin_nested=Mock(return_value=_NestedTransaction()),
+        flush=AsyncMock(
+            side_effect=IntegrityError("INSERT", {}, RuntimeError("duplicate"))
+        ),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+
+    result = await handle_rating_response(
+        session=session,
+        user_id=10,
+        rating=7,
+        survey_type=SurveyType.SERVICE_QUALITY,
+        trigger_event_id=245,
+    )
+
+    assert result == (True, "already_recorded")
+    session.commit.assert_not_awaited()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        ({"status": "ok"}, True),
+        ({"status": "SUCCESS"}, True),
+        ({"status": "error"}, False),
+        ({"status": ""}, False),
+        ({"message": "missing status"}, False),
+        (True, False),
+        (None, False),
+    ],
+)
+def test_retry_api_response_requires_explicit_success_status(response, expected):
+    assert _is_successful_api_response(response) is expected
+
+
+@pytest.mark.asyncio
+async def test_retry_error_response_is_recorded_as_failure(monkeypatch):
+    from services import retry_service
+
+    retry_record = SimpleNamespace(
+        id=11,
+        operation="update_user_assets",
+        payload={},
+        attempt_count=0,
+    )
+    api_client = SimpleNamespace(
+        update_user_assets=AsyncMock(
+            return_value={"status": "error", "message": "rejected"}
+        )
+    )
+    mark_failed = AsyncMock(return_value=retry_record)
+    mark_success = AsyncMock()
+    monkeypatch.setattr(retry_service, "mark_retry_failed", mark_failed)
+    monkeypatch.setattr(retry_service, "mark_retry_success", mark_success)
+
+    succeeded = await retry_service.process_retry(
+        session=SimpleNamespace(),
+        retry_record=retry_record,
+        api_client=api_client,
+    )
+
+    assert succeeded is False
+    mark_failed.assert_awaited_once()
+    mark_success.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_retry_task_commits_each_processed_record(monkeypatch):
+    import constants
+    from celery_app import retry_tasks
+    from services import i_tat_service, retry_service
+
+    records = [
+        SimpleNamespace(id=1, operation="update_user_assets"),
+        SimpleNamespace(id=2, operation="update_staff"),
+    ]
+    session = SimpleNamespace(
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+        refresh=AsyncMock(),
+    )
+
+    class _SessionContext:
+        async def __aenter__(self):
+            return session
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    client = SimpleNamespace(close=AsyncMock())
+    get_next = AsyncMock(side_effect=[*records, None])
+    process = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(constants, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(i_tat_service, "ITatAPIClient", lambda: client)
+    monkeypatch.setattr(retry_service, "get_next_pending_retry", get_next)
+    monkeypatch.setattr(retry_service, "process_retry", process)
+
+    stats = await retry_tasks._process_api_retry_queue_async()
+
+    assert stats == {
+        "processed": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "exhausted": 0,
+    }
+    assert session.commit.await_count == 2
+    session.rollback.assert_not_awaited()
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_max_key_conflict_notification_uses_messenger_data_fallback(
+    monkeypatch,
+):
+    new_user = SimpleNamespace(
+        id=10,
+        full_name="Test User",
+        phone_number="+70000000000",
+        max_user_id=100,
+    )
+    admin = SimpleNamespace(id=20, max_chat_id=None, max_user_id=200)
+
+    def scalar_result(value):
+        result = Mock()
+        result.scalar_one_or_none.return_value = value
+        return result
+
+    admins_result = Mock()
+    admins_result.scalars.return_value.all.return_value = [admin]
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[
+                scalar_result(new_user),
+                scalar_result(None),
+                admins_result,
+                scalar_result(300),
+            ]
+        )
+    )
+    bot = SimpleNamespace(
+        send_message=AsyncMock(),
+        session=SimpleNamespace(close=AsyncMock()),
+    )
+    monkeypatch.setattr(admin_notifications, "MaxBot", lambda token: bot)
+
+    notified_count = await admin_notifications.notify_admins_key_conflict(
+        session=session,
+        new_user_id=new_user.id,
+        key_number="00001_00001",
+    )
+
+    assert notified_count == 1
+    bot.send_message.assert_awaited_once()
+    assert bot.send_message.await_args.kwargs["chat_id"] == 300
+    bot.session.close.assert_awaited_once()
+
+
+def test_timezone_migration_does_not_swallow_update_errors(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+
+    migration_path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic"
+        / "versions"
+        / "convert_utc_to_moscow_timezone.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "convert_utc_to_moscow_timezone_test",
+        migration_path,
+    )
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    preparer = SimpleNamespace(
+        quote_schema=lambda value: value,
+        quote=lambda value: value,
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(identifier_preparer=preparer),
+        execute=Mock(side_effect=RuntimeError("database update failed")),
+    )
+    inspector = SimpleNamespace(
+        get_table_names=Mock(return_value=["users"]),
+        get_columns=Mock(return_value=[{"name": "created_at"}]),
+    )
+    monkeypatch.setattr(migration.op, "get_bind", lambda: connection)
+    monkeypatch.setattr(migration.sa, "inspect", lambda _: inspector)
+
+    with pytest.raises(RuntimeError, match="database update failed"):
+        migration._shift_existing_timestamps(hours=3)

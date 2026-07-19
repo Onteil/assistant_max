@@ -218,6 +218,7 @@ async def handle_tickets_pagination_callback(
 
     Updates the message with tickets from the requested page, preserving active filter.
     Uses replace_message pattern (delete old + send new).
+    Uses event.callback.user.user_id to identify the MAX user.
     """
     chat_id = event.message.recipient.chat_id
     max_user_id = event.callback.user.user_id

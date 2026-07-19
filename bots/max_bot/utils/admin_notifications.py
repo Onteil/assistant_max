@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 from constants import MAX_BOT_TOKEN
 from database.models import (
     GS_Key,
-    KeyConflictStatus,
+    MAX_Messenger_Data,
     Staff_Member,
     StaffRole,
     User,
@@ -151,7 +151,7 @@ async def notify_admins_key_conflict(
     session: AsyncSession,
     new_user_id: int,
     key_number: str
-) -> None:
+) -> int:
     """
     Send key conflict notification to all MAX administrators.
     
@@ -164,7 +164,11 @@ async def notify_admins_key_conflict(
         session: Database session
         new_user_id: ID of new user with conflicting key
         key_number: The conflicting GS_Key number
+
+    Returns:
+        Number of administrators successfully notified.
     """
+    bot = None
     try:
         # Get new user details
         stmt = select(User).where(User.id == new_user_id).options(
@@ -175,7 +179,7 @@ async def notify_admins_key_conflict(
         
         if not new_user:
             logger.error(f"New user {new_user_id} not found for key conflict notification")
-            return
+            return 0
         
         # Find the current owner of the key (if exists in our DB)
         # Note: conflict_status may already be PENDING_REVIEW at this point,
@@ -197,7 +201,7 @@ async def notify_admins_key_conflict(
         
         if not admins:
             logger.warning("No active administrators found to send key conflict notification")
-            return
+            return 0
         
         # Format conflict date in Moscow timezone
         moscow_tz = timezone(timedelta(hours=3))
@@ -264,24 +268,27 @@ async def notify_admins_key_conflict(
                     exc_info=True
                 )
         
-        # Close bot session
-        try:
-            if hasattr(bot, 'session') and bot.session:
-                await bot.session.close()
-        except Exception as e:
-            logger.warning(f"Error closing MAX bot session: {e}")
-        
-        logger.info(
-            f"Key conflict notification sent: new_user_id={new_user_id}, "
+        log_method = logger.info if sent_count else logger.error
+        log_method(
+            f"Key conflict notification completed: new_user_id={new_user_id}, "
             f"key={key_number}, admins_notified={sent_count}/{len(admins)}"
         )
-        
+        return sent_count
+
     except Exception as e:
         logger.error(
             f"Error sending key conflict notification: new_user_id={new_user_id}, "
             f"key={key_number}, error={e}",
             exc_info=True
         )
+        raise
+    finally:
+        if bot is not None:
+            try:
+                if hasattr(bot, "session") and bot.session:
+                    await bot.session.close()
+            except Exception as e:
+                logger.warning(f"Error closing MAX bot session: {e}")
 
 
 async def notify_admins_new_registration(

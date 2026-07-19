@@ -1639,8 +1639,21 @@ async def process_new_key(
         if conflict_status == KeyConflictStatus.PENDING_REVIEW:
             try:
                 from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                await notify_admins_key_conflict(session, user_id, normalized_key)
-                logger.info(f"Key conflict notification sent for user_id={user_id}, key={normalized_key}")
+                notified_count = await notify_admins_key_conflict(
+                    session,
+                    user_id,
+                    normalized_key,
+                )
+                if notified_count:
+                    logger.info(
+                        f"Key conflict notification sent for user_id={user_id}, "
+                        f"key={normalized_key}, admins_notified={notified_count}"
+                    )
+                else:
+                    logger.warning(
+                        f"Key conflict notification was not delivered for "
+                        f"user_id={user_id}, key={normalized_key}"
+                    )
             except Exception as notify_error:
                 logger.error(
                     f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",

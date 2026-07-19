@@ -20,14 +20,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.payloads import MainMenuActionPayload, DonePayload
+from bots.max_bot.utils.callback_utils import (
+    answer_max_callback,
+    is_stale_max_callback_error,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _is_stale_callback_error(error: Exception) -> bool:
-    """MAX returns this when an already handled callback is answered again."""
-    error_text = str(error).lower()
-    return "error.edit.invalid.message" in error_text
+_is_stale_callback_error = is_stale_max_callback_error
 
 
 async def handle_main_menu_callback(
@@ -77,12 +78,11 @@ async def handle_main_menu_callback(
     
     # Answer callback to remove loading indicator
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
     except Exception as e:
-        if _is_stale_callback_error(e):
-            logger.debug(f"Stale MAX callback already answered: {e}")
-        else:
-            logger.warning(f"Failed to answer callback: {e}")
+        logger.warning(f"Failed to answer callback: {e}")
+        return
     
     # Delete the old message with buttons to avoid confusion
     if message_id:
@@ -262,9 +262,11 @@ async def handle_done_callback(
     logger.info(f"Done callback: user={event.callback.user.user_id}, message_id={message_id}")
 
     try:
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
     except Exception as e:
         logger.warning(f"Failed to answer done callback: {e}")
+        return
 
     # Delete old message with buttons (replace_message pattern)
     if message_id:

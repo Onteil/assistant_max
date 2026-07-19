@@ -30,6 +30,8 @@ RETRY_DELAYS = [
     timedelta(hours=2),     # 5th retry after 2 hours
 ]
 MAX_RETRY_ATTEMPTS = 5
+RETRY_BATCH_SIZE = 100
+SUCCESS_API_STATUSES = frozenset({"ok", "success"})
 
 
 async def queue_api_retry(
@@ -90,9 +92,12 @@ async def queue_api_retry(
         raise
 
 
-async def get_pending_retries(session: AsyncSession) -> list[API_Retry_Queue]:
+async def get_pending_retries(
+    session: AsyncSession,
+    limit: int = RETRY_BATCH_SIZE,
+) -> list[API_Retry_Queue]:
     """
-    Get all pending retry operations that are due for processing.
+    Get a bounded batch of pending retry operations that are due for processing.
 
     Args:
         session: Database session
@@ -111,6 +116,7 @@ async def get_pending_retries(session: AsyncSession) -> list[API_Retry_Queue]:
                 API_Retry_Queue.attempt_count < MAX_RETRY_ATTEMPTS,
             )
             .order_by(API_Retry_Queue.next_retry_at)
+            .limit(limit)
         )
 
         retries = list(result.scalars().all())
@@ -122,6 +128,41 @@ async def get_pending_retries(session: AsyncSession) -> list[API_Retry_Queue]:
         raise
 
 
+async def get_next_pending_retry(
+    session: AsyncSession,
+) -> API_Retry_Queue | None:
+    """Lock and return one due retry record for the current transaction."""
+    try:
+        now = datetime.utcnow()
+        result = await session.execute(
+            select(API_Retry_Queue)
+            .where(
+                API_Retry_Queue.status == RetryStatus.PENDING,
+                API_Retry_Queue.next_retry_at <= now,
+                API_Retry_Queue.attempt_count < MAX_RETRY_ATTEMPTS,
+            )
+            .order_by(API_Retry_Queue.next_retry_at, API_Retry_Queue.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        return result.scalar_one_or_none()
+    except SQLAlchemyError as e:
+        logger.error(f"Error fetching next pending retry: {e}", exc_info=True)
+        raise
+
+
+def _is_successful_api_response(result: Any) -> bool:
+    """Accept only the documented success statuses from mutating i-TAT calls."""
+    if not isinstance(result, dict):
+        return False
+
+    status = result.get("status")
+    if not isinstance(status, str):
+        return False
+
+    return status.strip().lower() in SUCCESS_API_STATUSES
+
+
 async def mark_retry_success(session: AsyncSession, retry_id: int) -> None:
     """Mark a retry record as successfully completed."""
     try:
@@ -131,13 +172,14 @@ async def mark_retry_success(session: AsyncSession, retry_id: int) -> None:
         retry_record = result.scalar_one_or_none()
 
         if retry_record:
+            retry_record.attempt_count += 1
             retry_record.status = RetryStatus.SUCCESS
             retry_record.completed_at = datetime.utcnow()
             await session.flush()
 
             logger.info(
                 f"Retry succeeded: id={retry_id}, operation={retry_record.operation}, "
-                f"total_attempts={retry_record.attempt_count + 1}"
+                f"total_attempts={retry_record.attempt_count}"
             )
 
     except SQLAlchemyError as e:
@@ -234,13 +276,11 @@ async def process_retry(
         api_method = getattr(api_client, retry_record.operation)
         result = await api_method(**retry_record.payload)
 
-        # Consider success if no exception raised and status is ok/success
-        status_val = result.get("status", "") if isinstance(result, dict) else ""
-        if status_val in ("ok", "success", "") or result:
+        if _is_successful_api_response(result):
             await mark_retry_success(session, retry_record.id)
             return True
 
-        error_msg = f"API returned unexpected status: {status_val}"
+        error_msg = f"API returned unsuccessful response: {result!r}"[:1000]
         await mark_retry_failed(session, retry_record.id, error_msg)
         return False
 
@@ -259,7 +299,7 @@ async def process_retry(
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {e}"
-        updated = await mark_retry_failed(session, retry_record.id, error_msg)
+        await mark_retry_failed(session, retry_record.id, error_msg)
         return False
 
 
@@ -288,7 +328,7 @@ async def _escalate_failed_retry(
         )
 
         # Also log to Action_Log for audit trail
-        from database.models import ActionType, Action_Log
+        from database.models import Action_Log, ActionType
 
         action_log = Action_Log(
             action_type=ActionType.API_RETRY_FAILED,

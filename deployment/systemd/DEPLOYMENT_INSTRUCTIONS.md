@@ -8,6 +8,8 @@
 
 В примерах используются пользователь `razrab`, группа `razrab` и рабочая директория `/home/razrab/i-tat-bot`. Если проект разворачивается в другой директории или под другим пользователем, замените эти значения перед копированием файлов в `/etc/systemd/system/`.
 
+Перед запуском задайте в `.env` серверные значения `IS_LOCAL_BOT="False"`, `DEBUG="False"` и `LOG_LEVEL="info"`.
+
 ## Установка
 
 ```bash
@@ -15,10 +17,13 @@ sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
 sudo cp deployment/logrotate/i-tat-celery /etc/logrotate.d/i-tat-celery
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo cp deployment/journald/10-i-tat-log-limits.conf /etc/systemd/journald.conf.d/
 
 sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 
+sudo systemctl restart systemd-journald
 sudo systemctl daemon-reload
 sudo systemctl enable --now i-tat-bot i-tat-celery-worker i-tat-celery-beat
 ```

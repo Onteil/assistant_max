@@ -25,6 +25,7 @@ from bots.max_bot.callback_datas import (
 )
 from bots.max_bot.keyboards.common.inline_kb import create_paginated_keyboard_async
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+from bots.max_bot.utils.callback_utils import answer_max_callback
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,11 @@ async def process_pagination(
     page = payload_dict.get("page", 0)
 
     # Answer callback with notification
-    await event.answer(new_text=f"Page {page + 1} selected")
+    if not await answer_max_callback(
+        event,
+        notification=f"Page {page + 1} selected",
+    ):
+        return
 
 
 @router.message_callback(ExampleItemCallback.filter(F.action == "select"))
@@ -77,7 +82,8 @@ async def process_item_selection(
     Requirements: 5.1, 5.2, 5.3, 5.4, 5.5
     """
     # Answer callback
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
 
     # Parse payload manually
     import json
@@ -109,7 +115,7 @@ async def process_item_selection(
         )
     except Exception as e:
         logger.warning(f"Failed to send message: {e}")
-        await event.answer(new_text=text)
+        await answer_max_callback(event, notification=text)
 
 
 @router.message_callback(ExampleItemCallback.filter(F.action == "cancel"))
@@ -129,7 +135,8 @@ async def process_cancel(
     Requirements: 5.1, 5.2, 5.3
     """
     # Answer callback
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
 
     # Clear FSM state
     await state.clear()
@@ -150,7 +157,7 @@ async def process_cancel(
         )
     except Exception as e:
         logger.warning(f"Failed to send message: {e}")
-        await event.answer(new_text=text)
+        await answer_max_callback(event, notification=text)
 
 
 @router.message_callback(ExampleNavigationCallback.filter(F.action == "back"))
@@ -168,7 +175,8 @@ async def process_back_navigation(
     Requirements: 5.1, 5.2, 5.3, 5.4
     """
     # Answer callback
-    await event.answer()
+    if not await answer_max_callback(event):
+        return
 
     # Parse payload manually
     import json
@@ -210,6 +218,9 @@ async def process_noop(event: MessageCallback):
     Requirements: 5.3, 5.6
     """
     # Answer callback with informational text
-    await event.answer(new_text="This is a page indicator")
+    await answer_max_callback(
+        event,
+        notification="This is a page indicator",
+    )
 
 

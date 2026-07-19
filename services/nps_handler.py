@@ -12,9 +12,17 @@ from datetime import datetime
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import NPS_Response, SurveyType, User, Staff_Member, StaffRole, MAX_Messenger_Data
+from database.models import (
+    MAX_Messenger_Data,
+    NPS_Response,
+    Staff_Member,
+    StaffRole,
+    SurveyType,
+    User,
+)
 from services.i_tat_service import get_itat_client
 
 logger = logging.getLogger(__name__)
@@ -62,8 +70,23 @@ async def handle_rating_response(
         
         # Get current timestamp
         current_time = datetime.utcnow()
-        
-        # Create NPS_Response record
+
+        business_key = (
+            NPS_Response.user_id == user_id,
+            NPS_Response.survey_type == survey_type,
+            NPS_Response.trigger_event_id == trigger_event_id,
+        )
+        existing_result = await session.execute(
+            select(NPS_Response.id).where(*business_key)
+        )
+        if existing_result.scalar_one_or_none() is not None:
+            logger.info(
+                f"NPS response already recorded: user_id={user_id}, "
+                f"survey_type={survey_type.value}, "
+                f"trigger_event_id={trigger_event_id}"
+            )
+            return (True, "already_recorded")
+
         nps_response = NPS_Response(
             user_id=user_id,
             survey_type=survey_type,
@@ -72,10 +95,22 @@ async def handle_rating_response(
             sent_at=current_time,
             responded_at=current_time
         )
-        session.add(nps_response)
-        
+
+        try:
+            async with session.begin_nested():
+                session.add(nps_response)
+                await session.flush()
+        except IntegrityError:
+            # A concurrent callback inserted the same business key first.
+            logger.info(
+                f"NPS response concurrently recorded: user_id={user_id}, "
+                f"survey_type={survey_type.value}, "
+                f"trigger_event_id={trigger_event_id}"
+            )
+            return (True, "already_recorded")
+
         # Update user's last_nps_sent_at timestamp
-        result = await session.execute(
+        await session.execute(
             User.__table__.update()
             .where(User.id == user_id)
             .values(last_nps_sent_at=current_time)

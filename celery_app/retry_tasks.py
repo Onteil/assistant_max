@@ -8,7 +8,6 @@ Requirements: 25.3, 34.1-34.5
 """
 
 import asyncio
-import logging
 import os
 import sys
 from typing import Any
@@ -85,28 +84,25 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
     from constants import AsyncSessionLocal
     from services.i_tat_service import ITatAPIClient
     from services.retry_service import (
-        MAX_RETRY_ATTEMPTS,
+        RETRY_BATCH_SIZE,
         RetryStatus,
         _escalate_failed_retry,
-        get_pending_retries,
+        get_next_pending_retry,
         process_retry,
     )
 
     stats = {"processed": 0, "succeeded": 0, "failed": 0, "exhausted": 0}
 
     async with AsyncSessionLocal() as session:
-        pending = await get_pending_retries(session)
-
-        if not pending:
-            logger.debug("No pending retries to process")
-            return stats
-
-        logger.info(f"Processing {len(pending)} pending retry records")
-
         api_client = ITatAPIClient()
-
         try:
-            for retry_record in pending:
+            for _ in range(RETRY_BATCH_SIZE):
+                retry_record = await get_next_pending_retry(session)
+                if retry_record is None:
+                    if stats["processed"] == 0:
+                        logger.debug("No pending retries to process")
+                    break
+
                 stats["processed"] += 1
                 try:
                     success = await process_retry(session, retry_record, api_client)
@@ -126,14 +122,17 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
                             stats["exhausted"] += 1
                             await _escalate_failed_retry(session, retry_record)
 
+                    # Persist each external operation independently. A later task
+                    # timeout cannot roll back records already processed.
+                    await session.commit()
+
                 except Exception as e:
-                    stats["failed"] += 1
+                    await session.rollback()
                     logger.error(
                         f"Unexpected error processing retry id={retry_record.id}: {e}",
                         exc_info=True,
                     )
-
-            await session.commit()
+                    raise
 
         finally:
             await api_client.close()

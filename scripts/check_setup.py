@@ -72,12 +72,15 @@ PROJECT_FILES = [
     "pyproject.toml",
     "alembic.ini",
     "alembic/env.py",
+    "structure.sql",
     ".env.example",
     "media",
     "deployment/systemd/i-tat-bot.service",
     "deployment/systemd/i-tat-celery-worker.service",
     "deployment/systemd/i-tat-celery-beat.service",
     "deployment/nginx/i-tat-bot.conf",
+    "deployment/logrotate/i-tat-celery",
+    "deployment/journald/10-i-tat-log-limits.conf",
 ]
 
 PYTHON_FILES_TO_COMPILE = [
@@ -422,6 +425,8 @@ def check_deployment_examples(reporter: Reporter) -> None:
     nginx_config = ROOT_DIR / "deployment/nginx/i-tat-bot.conf"
     worker_service = ROOT_DIR / "deployment/systemd/i-tat-celery-worker.service"
     beat_service = ROOT_DIR / "deployment/systemd/i-tat-celery-beat.service"
+    logrotate_config = ROOT_DIR / "deployment/logrotate/i-tat-celery"
+    journald_config = ROOT_DIR / "deployment/journald/10-i-tat-log-limits.conf"
 
     if nginx_config.exists() and "assistant.i-tat.ru" in nginx_config.read_text(encoding="utf-8"):
         reporter.ok("Nginx example содержит prod-домен")
@@ -431,15 +436,41 @@ def check_deployment_examples(reporter: Reporter) -> None:
     worker_text = worker_service.read_text(encoding="utf-8") if worker_service.exists() else ""
     beat_text = beat_service.read_text(encoding="utf-8") if beat_service.exists() else ""
 
-    if "api_retries" in worker_text and "--loglevel=debug" in worker_text:
+    if (
+        "api_retries" in worker_text
+        and "ticket_notifications" in worker_text
+        and "--loglevel=info" in worker_text
+        and "--concurrency=1" in worker_text
+    ):
         reporter.ok("Celery worker systemd example похож на prod")
     else:
         reporter.fail("Celery worker systemd example не совпадает с ожидаемой prod-конфигурацией")
 
-    if "celerybeat-schedule.db" in beat_text and "--loglevel=debug" in beat_text:
+    if "celerybeat-schedule.db" in beat_text and "--loglevel=info" in beat_text:
         reporter.ok("Celery beat systemd example похож на prod")
     else:
         reporter.fail("Celery beat systemd example не совпадает с ожидаемой prod-конфигурацией")
+
+
+    logrotate_text = (
+        logrotate_config.read_text(encoding="utf-8")
+        if logrotate_config.exists()
+        else ""
+    )
+    if "daily" in logrotate_text and "rotate 14" in logrotate_text:
+        reporter.ok("Celery logrotate example настроен")
+    else:
+        reporter.fail("Celery logrotate example отсутствует или некорректен")
+
+    journald_text = (
+        journald_config.read_text(encoding="utf-8")
+        if journald_config.exists()
+        else ""
+    )
+    if "SystemMaxUse=" in journald_text and "MaxRetentionSec=" in journald_text:
+        reporter.ok("Journald limits example настроен")
+    else:
+        reporter.fail("Journald limits example отсутствует или некорректен")
 
 
 async def main() -> int:

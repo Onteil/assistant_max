@@ -37,6 +37,7 @@ from bots.max_bot.keyboards.user.registration_kb import (
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import RegistrationStates
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from bots.max_bot.texts import (
     ERROR_GENERAL,
     ERROR_VALIDATION_EMAIL,
@@ -1195,7 +1196,8 @@ async def show_key_help(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Send help text with explanation
         await messenger_adapter.send_message(
@@ -1319,8 +1321,21 @@ async def process_key_conflict_choice(
             # Notify administrators about key conflict
             try:
                 from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                await notify_admins_key_conflict(session, user_id, key_number)
-                logger.info(f"Key conflict notification sent for user_id={user_id}, key={key_number}")
+                notified_count = await notify_admins_key_conflict(
+                    session,
+                    user_id,
+                    key_number,
+                )
+                if notified_count:
+                    logger.info(
+                        f"Key conflict notification sent for user_id={user_id}, "
+                        f"key={key_number}, admins_notified={notified_count}"
+                    )
+                else:
+                    logger.warning(
+                        f"Key conflict notification was not delivered for "
+                        f"user_id={user_id}, key={key_number}"
+                    )
             except Exception as notify_error:
                 logger.error(
                     f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",

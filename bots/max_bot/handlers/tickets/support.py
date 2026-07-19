@@ -37,6 +37,7 @@ from bots.max_bot.payloads import (
     SupportOrgActionPayload,
 )
 from bots.max_bot.states import SupportStates
+from bots.max_bot.utils.callback_utils import answer_max_callback
 from bots.max_bot.texts import (
     ERROR_GENERAL,
     ERROR_TEXT_TOO_LONG,
@@ -502,11 +503,15 @@ async def process_new_inn_for_support(
         # Try to look up organization name via i-TAT API
         organization_name = None
         try:
-            itat_client = await get_itat_client(session)
-            if itat_client:
-                org_info = await call_itat_with_retry(itat_client.get_organization_by_inn, inn)
-                if org_info:
-                    organization_name = org_info.get("name") or org_info.get("short_name")
+            user = await get_user_by_id(session, user_id)
+            itat_client = get_itat_client()
+            org_info = await itat_client.check_inn(
+                messenger="max",
+                user_id=user.max_user_id if user else None,
+                inn=inn,
+            )
+            if org_info.get("status") == "ok":
+                organization_name = org_info.get("name") or org_info.get("short_name")
         except Exception as e:
             logger.warning(f"i-TAT lookup failed for INN {inn}: {e}")
 
@@ -758,7 +763,8 @@ async def handle_renewal_callback(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Delete old message with buttons (replace_message pattern)
         if message_id:
@@ -1695,7 +1701,8 @@ async def handle_key_context_callback(
     
     try:
         # Answer callback
-        await event.answer()
+        if not await answer_max_callback(event):
+            return
         
         # Delete old message with buttons (replace_message pattern)
         if message_id:
@@ -1741,9 +1748,9 @@ async def handle_key_context_callback(
             # Prevent selection of PENDING_REVIEW keys
             if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
                 logger.warning(f"Attempted to select PENDING_REVIEW key: key_id={key_id}")
-                await event.answer(
-                    text="⚠️ Этот ключ находится на проверке и не может быть выбран",
-                    show_alert=True
+                await answer_max_callback(
+                    event,
+                    notification="⚠️ Этот ключ находится на проверке и не может быть выбран",
                 )
                 return
             
@@ -1994,8 +2001,21 @@ async def process_new_key_for_support(
         if conflict_status == KeyConflictStatus.PENDING_REVIEW:
             try:
                 from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                await notify_admins_key_conflict(session, user_id, normalized_key)
-                logger.info(f"Key conflict notification sent for user_id={user_id}, key={normalized_key}")
+                notified_count = await notify_admins_key_conflict(
+                    session,
+                    user_id,
+                    normalized_key,
+                )
+                if notified_count:
+                    logger.info(
+                        f"Key conflict notification sent for user_id={user_id}, "
+                        f"key={normalized_key}, admins_notified={notified_count}"
+                    )
+                else:
+                    logger.warning(
+                        f"Key conflict notification was not delivered for "
+                        f"user_id={user_id}, key={normalized_key}"
+                    )
             except Exception as notify_error:
                 logger.error(
                     f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",

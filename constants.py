@@ -64,7 +64,9 @@ COUNT_WORKERS = int(os.getenv("COUNT_WORKERS"))
 
 
 DEBUG = literal_eval(os.getenv("DEBUG"))
-SQL_ECHO = DEBUG and IS_LOCAL_BOT
+# SQLAlchemy echo includes bound parameter values and can expose user data.
+# Keep it disabled in every environment; use targeted local logging if needed.
+SQL_ECHO = False
 
 # Webhook paths - MAX webhook is the primary webhook after migration
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")

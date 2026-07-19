@@ -1226,6 +1226,12 @@ class NPS_Response(Base, TimestampMixin):
     
     # Composite indexes for analytics queries
     __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "survey_type",
+            "trigger_event_id",
+            name="uq_nps_response_user_survey_trigger",
+        ),
         Index("idx_nps_user_responded", "user_id", "responded_at"),
         Index("idx_nps_type_responded", "survey_type", "responded_at"),
     )

@@ -182,17 +182,30 @@ async def handle_nps_rating_callback(
             logger.error(f"Failed to store NPS response: {message}")
             return
 
-        logger.info(
-            f"NPS response stored: user_id={user.id}, rating={rating}, "
-            f"survey_type={survey_type.value}"
-        )
-
         # Delete old message with buttons (replace_message pattern)
         if message_id:
             try:
                 await messenger_adapter.delete_message(chat_id=chat_id, message_id=message_id)
             except Exception as e:
                 logger.warning(f"Failed to delete old NPS message: {e}")
+
+        if message == "already_recorded":
+            logger.info(
+                f"Ignored duplicate NPS callback: user_id={user.id}, "
+                f"survey_type={survey_type.value}, "
+                f"trigger_event_id={trigger_event_id}"
+            )
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="Ваш ответ на этот опрос уже учтён.",
+                parse_mode="HTML",
+            )
+            return
+
+        logger.info(
+            f"NPS response stored: user_id={user.id}, rating={rating}, "
+            f"survey_type={survey_type.value}"
+        )
 
         if rating <= 7:
             # Low rating: ask for feedback
@@ -317,16 +330,23 @@ async def handle_nps_feedback(
             await context.clear()
             return
         
-        # Update NPS response with feedback comment
+        try:
+            survey_type = SurveyType(survey_type_str)
+        except ValueError:
+            logger.error(f"Invalid survey type in NPS context: {survey_type_str}")
+            await context.clear()
+            return
+
+        # Update the exact NPS response with the feedback comment.
         from database.models import NPS_Response
         from sqlalchemy import update
-        
-        # For test surveys, trigger_event_id might be 0
-        # Find the most recent response for this user with matching rating
+
         stmt = (
             update(NPS_Response)
             .where(
                 NPS_Response.user_id == user.id,
+                NPS_Response.survey_type == survey_type,
+                NPS_Response.trigger_event_id == trigger_event_id,
                 NPS_Response.rating == rating,
                 NPS_Response.feedback_comment.is_(None)
             )
@@ -347,14 +367,12 @@ async def handle_nps_feedback(
             )
             
             # Send notification to staff about low rating
-            # Convert survey_type string back to enum
             try:
-                survey_type_enum = SurveyType(survey_type_str)
                 await notify_staff_about_low_rating(
                     session=session,
                     user=user,
                     rating=rating,
-                    survey_type=survey_type_enum,
+                    survey_type=survey_type,
                     feedback_comment=feedback_text,
                     trigger_event_id=trigger_event_id
                 )
