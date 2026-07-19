@@ -113,4 +113,30 @@ async def call_itat_with_retry(
 
         return None
 
-    # NOTE: Do NOT close the singleton client here — it is reused across requests.
+
+async def call_itat_with_managed_retry(
+    operation: str,
+    payload: dict[str, Any],
+    user_id: int | None = None,
+) -> dict[str, Any] | None:
+    """
+    Persist retry records independently from the caller's business transaction.
+
+    Use this for best-effort audit and logging side effects that must survive a
+    later rollback in the request which triggered them.
+    """
+    from constants import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        try:
+            result = await call_itat_with_retry(
+                session=session,
+                operation=operation,
+                payload=payload,
+                user_id=user_id,
+            )
+            await session.commit()
+            return result
+        except Exception:
+            await session.rollback()
+            raise

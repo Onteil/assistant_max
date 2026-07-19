@@ -65,10 +65,10 @@ async def _process_pending_tickets_async() -> dict:
     Process INVOICE and RENEWAL tickets created during non-working/extended hours.
     """
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-    from constants import DB_URL, DEBUG
+    from constants import DB_URL, SQL_ECHO
 
     # Create a fresh engine bound to the current event loop (required for asyncpg + solo pool)
-    task_engine = create_async_engine(DB_URL, echo=DEBUG, pool_pre_ping=True)
+    task_engine = create_async_engine(DB_URL, echo=SQL_ECHO, pool_pre_ping=True)
     TaskSession = async_sessionmaker(bind=task_engine, class_=AsyncSession, expire_on_commit=False)
 
     logger.info("Starting process_pending_tickets_task")

@@ -552,15 +552,17 @@ async def add_user_organization(
         organization = result.scalar_one_or_none()
         
         if not organization:
-            organization = Organization(inn=inn, organization_name=organization_name)
-            session.add(organization)
             try:
-                await session.flush()
+                async with session.begin_nested():
+                    organization = Organization(
+                        inn=inn,
+                        organization_name=organization_name,
+                    )
+                    session.add(organization)
+                    await session.flush()
                 logger.info(f"Organization created: inn={inn}, name={organization_name}")
-            except IntegrityError as integrity_err:
+            except IntegrityError:
                 # Race condition: organization was created by another transaction (e.g., webhook)
-                # Rollback this flush and re-fetch the organization
-                await session.rollback()
                 logger.warning(
                     f"Organization {inn} was created by another transaction (likely webhook). "
                     f"Re-fetching from database."
@@ -595,14 +597,31 @@ async def add_user_organization(
             return organization
         
         # Create association
-        await session.execute(
-            user_organizations.insert().values(
-                user_id=user_id,
-                organization_inn=inn,
-                added_at=get_moscow_now_naive()
+        try:
+            async with session.begin_nested():
+                await session.execute(
+                    user_organizations.insert().values(
+                        user_id=user_id,
+                        organization_inn=inn,
+                        added_at=get_moscow_now_naive()
+                    )
+                )
+                await session.flush()
+        except IntegrityError:
+            # A concurrent request linked the same organization first.
+            result = await session.execute(
+                select(user_organizations).where(
+                    user_organizations.c.user_id == user_id,
+                    user_organizations.c.organization_inn == inn,
+                )
             )
-        )
-        await session.flush()
+            if result.first():
+                logger.info(
+                    f"Organization association created concurrently: "
+                    f"user_id={user_id}, inn={inn}"
+                )
+                return organization
+            raise
         
         logger.info(
             f"Organization association created: user_id={user_id}, inn={inn}"
@@ -628,6 +647,20 @@ async def add_user_organization(
 
 
 # ========== GS_Key Management ==========
+
+
+async def _insert_gs_key_with_savepoint(
+    session: AsyncSession,
+    gs_key: GS_Key,
+) -> bool:
+    """Insert a key without invalidating the caller transaction on a race."""
+    try:
+        async with session.begin_nested():
+            session.add(gs_key)
+            await session.flush()
+        return True
+    except IntegrityError:
+        return False
 
 
 async def get_user_keys(session: AsyncSession, user_id: int) -> list[GS_Key]:
@@ -746,8 +779,19 @@ async def add_user_key(
                 conflict_status=conflict_status,
                 conflict_reported_at=get_moscow_now_naive(),
             )
-            session.add(gs_key)
-            await session.flush()
+            inserted = await _insert_gs_key_with_savepoint(session, gs_key)
+            if not inserted:
+                result = await session.execute(
+                    select(GS_Key).where(GS_Key.key_number == key_number)
+                )
+                gs_key = result.scalar_one_or_none()
+                if gs_key is None:
+                    raise RuntimeError(
+                        f"GS_Key {key_number} was not found after concurrent insert"
+                    )
+                gs_key.conflict_status = KeyConflictStatus.PENDING_REVIEW
+                gs_key.conflict_reported_at = get_moscow_now_naive()
+                await session.flush()
 
             action_details_dict = {
                 "key_number": key_number,
@@ -819,8 +863,45 @@ async def add_user_key(
             user_id=user_id,
             conflict_status=KeyConflictStatus.NONE,
         )
-        session.add(gs_key)
-        await session.flush()
+        inserted = await _insert_gs_key_with_savepoint(session, gs_key)
+        if not inserted:
+            result = await session.execute(
+                select(GS_Key).where(GS_Key.key_number == key_number)
+            )
+            existing_key = result.scalar_one_or_none()
+            if existing_key is None:
+                raise RuntimeError(
+                    f"GS_Key {key_number} was not found after concurrent insert"
+                )
+
+            if existing_key.user_id == user_id:
+                raise KeyAlreadyOwnedByUserError(
+                    key_number=key_number,
+                    user_id=user_id,
+                    gs_key=existing_key,
+                )
+
+            existing_key.conflict_status = KeyConflictStatus.PENDING_REVIEW
+            existing_key.conflict_reported_at = get_moscow_now_naive()
+            await session.flush()
+            await _log_action(
+                session=session,
+                action_type=ActionType.KEY_CONFLICT_DETECTED,
+                user_id=user_id,
+                action_details={
+                    "key_number": key_number,
+                    "conflict_status": KeyConflictStatus.PENDING_REVIEW.value,
+                    "conflict_reported_at": existing_key.conflict_reported_at.isoformat(),
+                    "new_user_id": user_id,
+                    "existing_user_id": existing_key.user_id,
+                    "source": "concurrent_insert",
+                },
+            )
+            raise KeyConflictError(
+                key_number=key_number,
+                existing_user_id=existing_key.user_id,
+                gs_key=existing_key,
+            )
 
         logger.info(f"GS_Key created: user_id={user_id}, key_number={key_number}")
         return gs_key

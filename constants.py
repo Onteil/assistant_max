@@ -64,6 +64,7 @@ COUNT_WORKERS = int(os.getenv("COUNT_WORKERS"))
 
 
 DEBUG = literal_eval(os.getenv("DEBUG"))
+SQL_ECHO = DEBUG and IS_LOCAL_BOT
 
 # Webhook paths - MAX webhook is the primary webhook after migration
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH")
@@ -120,7 +121,7 @@ CONFIGS = {
 # Create async engine with connection pooling
 engine = create_async_engine(
     DB_URL,
-    echo=DEBUG,  # Log SQL queries in debug mode
+    echo=SQL_ECHO,
     pool_size=10,  # Connection pool size
     max_overflow=20,  # Maximum overflow connections
     pool_pre_ping=True,  # Verify connections before using
@@ -183,7 +184,7 @@ ALL_BOT_COMMANDS = [
 
 
 # Определяем, работаем ли мы на сервере
-SERVER_MODE = os.getenv("IS_LOCAL_BOT") == False
+SERVER_MODE = not IS_LOCAL_BOT
 
 # ============================================================================
 # ГЛАВНЫЕ НАСТРОЙКИ ПРОИЗВОДИТЕЛЬНОСТИ

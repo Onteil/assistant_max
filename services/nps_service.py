@@ -164,12 +164,18 @@ async def schedule_survey(
         delivery_time = event_date + timedelta(days=delay_days)
         
         # Import Celery task (lazy import to avoid circular dependencies)
-        from celery_app.nps_tasks import send_nps_survey_task
-        
+        from celery_app.nps_tasks import build_nps_task_id, send_nps_survey_task
+
         # Create Celery task with scheduled execution time
+        task_id = build_nps_task_id(
+            user_id=user_id,
+            survey_type=survey_type.value,
+            trigger_event_id=trigger_event_id,
+        )
         task = send_nps_survey_task.apply_async(
             args=[user_id, survey_type.value, trigger_event_id, event_date.isoformat()],
-            eta=delivery_time
+            eta=delivery_time,
+            task_id=task_id,
         )
         
         logger.info(

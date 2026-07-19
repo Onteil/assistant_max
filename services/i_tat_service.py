@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 USE_MOCK_API = os.getenv("USE_MOCK_ITAT_API", "false").lower() == "true"
 
 
+def _is_1c_version_conflict_response(response_text: str) -> bool:
+    """Detect the transient 1C web-extension/server version mismatch."""
+    normalized = response_text.lower()
+    return (
+        "различаются версии клиента и сервера" in normalized
+        or "client and server versions differ" in normalized
+    )
+
+
 class RetryableAPIError(Exception):
     """
     Transient i-TAT API error that should be retried.
@@ -356,15 +365,30 @@ class ITatAPIClient:
 
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code
-            logger.error(
+            is_version_conflict = (
+                status_code == 409
+                and _is_1c_version_conflict_response(e.response.text)
+            )
+            log_http_error = (
+                logger.error
+                if status_code >= 500 or is_version_conflict
+                else logger.warning
+            )
+            log_http_error(
                 f"API HTTP error: endpoint={endpoint}, method={method}, "
-                f"status={status_code}, response={e.response.text}",
-                exc_info=True
+                f"status={status_code}",
+                exc_info=status_code >= 500,
             )
             # 5xx — server-side, transient → retryable
-            if status_code >= 500:
+            if status_code >= 500 or is_version_conflict:
+                reason = (
+                    "1C client/server version mismatch"
+                    if is_version_conflict
+                    else "Server error"
+                )
                 raise RetryableAPIError(
-                    f"Server error {status_code}: {endpoint}", original_error=e
+                    f"{reason} {status_code}: {endpoint}",
+                    original_error=e,
                 ) from e
             # 4xx — client-side, permanent → non-retryable
             raise NonRetryableAPIError(

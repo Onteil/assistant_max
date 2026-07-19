@@ -14,7 +14,7 @@ Environment="TZ=Europe/Moscow"
 ExecStart=/home/razrab/i-tat-bot/venv/bin/celery \
     -A celery_app.celery_config \
     beat \
-    --loglevel=debug \
+    --loglevel=info \
     --scheduler=celery.beat:PersistentScheduler \
     --schedule=/home/razrab/i-tat-bot/celerybeat-schedule.db \
     --pidfile=/var/run/celery/i-tat-beat.pid \

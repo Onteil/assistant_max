@@ -33,6 +33,47 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _select_notification_messenger(
+    preferred_messenger: str,
+    telegram_user_id: int | None,
+    max_chat_id: int | None,
+) -> tuple[str | None, int | None]:
+    """Select the requested messenger, falling back to the other registered one."""
+    available = {
+        "telegram": telegram_user_id,
+        "max": max_chat_id,
+    }
+    if available.get(preferred_messenger):
+        return preferred_messenger, available[preferred_messenger]
+
+    fallback = "max" if preferred_messenger == "telegram" else "telegram"
+    if available.get(fallback):
+        return fallback, available[fallback]
+
+    return None, None
+
+
+async def _find_staff_by_messenger_id(
+    session: AsyncSession,
+    preferred_messenger: str,
+    messenger_user_id: int,
+) -> Staff_Member | None:
+    """Resolve staff by the indicated messenger, then try the other ID field."""
+    fields = (
+        (Staff_Member.tg_user_id, Staff_Member.max_user_id)
+        if preferred_messenger == "telegram"
+        else (Staff_Member.max_user_id, Staff_Member.tg_user_id)
+    )
+    for field in fields:
+        result = await session.execute(
+            select(Staff_Member).where(field == messenger_user_id)
+        )
+        staff = result.scalar_one_or_none()
+        if staff is not None:
+            return staff
+    return None
+
+
 async def verify_webhook_api_key(
     x_api_key: Annotated[str | None, Header()] = None
 ) -> str:
@@ -228,18 +269,11 @@ async def ticket_status_update_webhook(
             ticket.closed_at = datetime.now()
             
             # Requirement 4.3: Set closed_by_staff_id
-            # Query staff member by messenger-specific ID
-            if payload.messenger == "telegram":
-                stmt_staff = select(Staff_Member).where(
-                    Staff_Member.tg_user_id == payload.closed_by_staff_id
-                )
-            else:
-                stmt_staff = select(Staff_Member).where(
-                    Staff_Member.max_user_id == payload.closed_by_staff_id
-                )
-            
-            result_staff = await session.execute(stmt_staff)
-            staff = result_staff.scalar_one_or_none()
+            staff = await _find_staff_by_messenger_id(
+                session=session,
+                preferred_messenger=payload.messenger,
+                messenger_user_id=payload.closed_by_staff_id,
+            )
             
             if staff:
                 ticket.closed_by_staff_id = staff.id
@@ -257,17 +291,19 @@ async def ticket_status_update_webhook(
         # Get user's messenger-specific ID
         user = ticket.user
         
-        # For MAX messenger, check if chat_id exists in max_messenger_data
-        if payload.messenger == "max":
-            from api.utils.messenger_utils import get_max_chat_id
-            user_messenger_id = await get_max_chat_id(session, user.id)
-        else:
-            user_messenger_id = user.tg_user_id
+        from api.utils.messenger_utils import get_max_chat_id
+
+        max_chat_id = await get_max_chat_id(session, user.id)
+        notification_messenger, user_messenger_id = _select_notification_messenger(
+            preferred_messenger=payload.messenger,
+            telegram_user_id=user.tg_user_id,
+            max_chat_id=max_chat_id,
+        )
         
         if user_messenger_id and new_status_enum in (TicketStatus.CLOSED, TicketStatus.CANCELLED):
             # Build notification text for closed/cancelled statuses only
             if new_status_enum == TicketStatus.CLOSED:
-                if payload.messenger == "telegram":
+                if notification_messenger == "telegram":
                     from bots.tg_bot.texts import SUPPORT_TICKET_CLOSED
                 else:
                     from bots.max_bot.texts import SUPPORT_TICKET_CLOSED
@@ -277,7 +313,7 @@ async def ticket_status_update_webhook(
                     comment=comment,
                 )
             else:  # CANCELLED
-                if payload.messenger == "telegram":
+                if notification_messenger == "telegram":
                     from bots.tg_bot.texts import SUPPORT_TICKET_CANCELLED
                 else:
                     from bots.max_bot.texts import SUPPORT_TICKET_CANCELLED
@@ -288,7 +324,7 @@ async def ticket_status_update_webhook(
             try:
                 from api.utils.messenger_utils import send_message_to_user
                 result = await send_message_to_user(
-                    messenger=payload.messenger,
+                    messenger=notification_messenger,
                     user_id=user.id,
                     text=notification_text,
                     session=session,
@@ -297,7 +333,7 @@ async def ticket_status_update_webhook(
                 if result["success"]:
                     logger.info(
                         f"Ticket {new_status_enum.value} notification sent to "
-                        f"{payload.messenger} user {user.id}"
+                        f"{notification_messenger} user {user.id}"
                     )
                 else:
                     logger.warning(
@@ -311,9 +347,8 @@ async def ticket_status_update_webhook(
                 )
         elif not user_messenger_id:
             logger.warning(
-                f"User {user.id} has no MAX chat_id in max_messenger_data, cannot send notification"
-                if payload.messenger == "max"
-                else f"User {user.id} has no telegram user ID, cannot send notification"
+                f"User {user.id} has neither Telegram ID nor MAX chat_id, "
+                f"cannot send ticket notification"
             )
         
         # Requirement 4.5: Log status change in Action_Log
@@ -327,6 +362,7 @@ async def ticket_status_update_webhook(
                 "old_status": old_status.value if old_status else None,
                 "new_status": new_status_enum.value,
                 "messenger": payload.messenger,
+                "notification_messenger": notification_messenger,
                 "closed_by_staff_messenger_id": payload.closed_by_staff_id if new_status_enum == TicketStatus.CLOSED else None,
             },
             action_timestamp=datetime.now()

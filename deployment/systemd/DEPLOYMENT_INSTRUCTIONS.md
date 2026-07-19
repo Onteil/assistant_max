@@ -14,6 +14,7 @@
 sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
+sudo cp deployment/logrotate/i-tat-celery /etc/logrotate.d/i-tat-celery
 
 sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media

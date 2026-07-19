@@ -24,6 +24,12 @@ from bots.max_bot.payloads import MainMenuActionPayload, DonePayload
 logger = logging.getLogger(__name__)
 
 
+def _is_stale_callback_error(error: Exception) -> bool:
+    """MAX returns this when an already handled callback is answered again."""
+    error_text = str(error).lower()
+    return "error.edit.invalid.message" in error_text
+
+
 async def handle_main_menu_callback(
     event: MessageCallback,
     payload: MainMenuActionPayload,
@@ -73,7 +79,10 @@ async def handle_main_menu_callback(
     try:
         await event.answer()
     except Exception as e:
-        logger.warning(f"Failed to answer callback: {e}")
+        if _is_stale_callback_error(e):
+            logger.debug(f"Stale MAX callback already answered: {e}")
+        else:
+            logger.warning(f"Failed to answer callback: {e}")
     
     # Delete the old message with buttons to avoid confusion
     if message_id:

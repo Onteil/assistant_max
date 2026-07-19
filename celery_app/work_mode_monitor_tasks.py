@@ -28,8 +28,8 @@ redis_client = redis.from_url(REDIS)
 def _make_session():
     """Create a fresh engine + session factory bound to the current event loop."""
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-    from constants import DB_URL, DEBUG
-    engine = create_async_engine(DB_URL, echo=DEBUG, pool_pre_ping=True)
+    from constants import DB_URL, SQL_ECHO
+    engine = create_async_engine(DB_URL, echo=SQL_ECHO, pool_pre_ping=True)
     Session = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     return engine, Session
 

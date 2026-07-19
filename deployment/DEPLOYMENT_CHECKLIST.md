@@ -210,22 +210,8 @@ Use this checklist to ensure all steps are completed during deployment.
 
 - [ ] Log rotation configured:
   ```bash
-  sudo nano /etc/logrotate.d/i-tat-bot
-  ```
-  ```
-  /var/log/celery/*.log {
-      daily
-      rotate 14
-      compress
-      delaycompress
-      notifempty
-      create 0640 razrab razrab
-      sharedscripts
-      postrotate
-          systemctl reload i-tat-celery-worker > /dev/null 2>&1 || true
-          systemctl reload i-tat-celery-beat > /dev/null 2>&1 || true
-      endscript
-  }
+  sudo cp deployment/logrotate/i-tat-celery /etc/logrotate.d/i-tat-celery
+  sudo logrotate --debug /etc/logrotate.d/i-tat-celery
   ```
 
 - [ ] Monitoring tools installed (optional):

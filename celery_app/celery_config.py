@@ -21,6 +21,8 @@ from constants import CELERY_REDIS_DB_NUMBER, REDIS
 
 logger = logging.getLogger(__name__)
 
+CELERY_VISIBILITY_TIMEOUT_SECONDS = 7 * 24 * 60 * 60
+
 # Создаем экземпляр Celery приложения
 app = Celery(
     "celery_app",
@@ -42,6 +44,9 @@ app.conf.update(
     # Настройки брокера
     broker_connection_retry=True,
     broker_connection_retry_on_startup=True,
+    broker_transport_options={
+        "visibility_timeout": CELERY_VISIBILITY_TIMEOUT_SECONDS,
+    },
     # Настройки времени
     timezone="Europe/Moscow",
     enable_utc=False,
@@ -54,7 +59,11 @@ app.conf.update(
     task_soft_time_limit=25 * 60,  # 25 минут
     # Настройки результатов
     result_expires=3600,  # Результаты хранятся 1 час
-    result_backend_transport_options={"master_name": "mymaster"},
+    result_backend_transport_options={
+        "master_name": "mymaster",
+        "visibility_timeout": CELERY_VISIBILITY_TIMEOUT_SECONDS,
+    },
+    visibility_timeout=CELERY_VISIBILITY_TIMEOUT_SECONDS,
 )
 
 # Настройка периодических задач (Celery Beat)

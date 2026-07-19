@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_managed_retry
 
 logger = logging.getLogger(__name__)
 
@@ -37,23 +37,28 @@ async def log_audit_event(
         bool: True if logging was successful, False otherwise
     """
     try:
-        itat_client = get_itat_client()
-        
         # Use current timestamp if not provided
         if not action_timestamp:
             action_timestamp = datetime.utcnow().isoformat()
         
-        await itat_client.audit_log(
-            messenger="max",
-            action_type=action_type,
-            action_timestamp=action_timestamp,
+        api_result = await call_itat_with_managed_retry(
+            operation="audit_log",
+            payload={
+                "messenger": "max",
+                "action_type": action_type,
+                "action_timestamp": action_timestamp,
+                "user_id": user_id,
+                "staff_id": staff_id,
+                "ticket_id": ticket_id,
+                "action_details": action_details,
+            },
             user_id=user_id,
-            staff_id=staff_id,
-            ticket_id=ticket_id,
-            action_details=action_details
         )
-        
-        logger.info(f"Audit event logged: {action_type}")
+
+        if api_result is None:
+            logger.warning(f"Audit event queued for retry: {action_type}")
+        else:
+            logger.info(f"Audit event logged: {action_type}")
         return True
         
     except Exception as e:

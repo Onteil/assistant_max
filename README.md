@@ -175,7 +175,7 @@ python main.py
 
 ```powershell
 .\venv\Scripts\Activate.ps1
-celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries
+celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=celery,nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries
 ```
 
 На Windows используется `--pool=solo`.
@@ -201,7 +201,7 @@ Beat нужен только если проверяются периодиче�
 4. `alembic upgrade head`.
 5. Проверка настройки: `python scripts/check_setup.py`.
 6. FastAPI: `python main.py`.
-7. Celery worker: `celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries`.
+7. Celery worker: `celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=celery,nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries`.
 8. Celery beat: `celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat:PersistentScheduler --schedule=celerybeat-schedule.db`.
 
 Для минимального запуска API/admin можно остановиться на пунктах 1-6.
@@ -241,6 +241,8 @@ ITAT_SSH_SOCKS5_PORT=1080
 Скрипт требует PowerShell от администратора и значения `ITAT_VPN_HOST`, `ITAT_VPN_LOGIN`, `ITAT_VPN_PASSWORD` в `.env`.
 
 Если используется отдельный сервер-переходник, сначала поднимите VPN на нем штатным скриптом, затем подключайтесь к VM по SSH через доступный маршрут. Не храните VPN/SSH-пароли в README.
+
+Если i-TAT отвечает `409 Conflict` с текстом `Различаются версии клиента и сервера`, это инфраструктурная ошибка 1С, а не конфликт данных. Нужно синхронизировать версии сервера 1С и модуля расширения веб-сервера. Код считает такой ответ временным; операции журналирования заявок и аудита сохраняются в `api_retry_queue` и повторяются Celery.
 
 ## Обязательные переменные `.env`
 
@@ -308,6 +310,7 @@ alembic downgrade -1
 - `deployment/systemd/i-tat-celery-worker.service`
 - `deployment/systemd/i-tat-celery-beat.service`
 - `deployment/nginx/i-tat-bot.conf`
+- `deployment/logrotate/i-tat-celery`
 
 Они сняты с prod 2026-07-07. В примерах зафиксированы prod-пути `/home/razrab/i-tat-bot`, пользователь `razrab`, домен `assistant.i-tat.ru` и порт приложения `8453`. Если сервер или пользователь другие, замените эти значения перед копированием в `/etc/systemd/system/` и `/etc/nginx/sites-available/`.
 
@@ -315,8 +318,8 @@ alembic downgrade -1
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 8453 --workers 1 --timeout-keep-alive 30 --proxy-headers --forwarded-allow-ips "*"
-celery -A celery_app.celery_config worker --loglevel=debug --pool=solo --queues=nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries --concurrency=4 --max-tasks-per-child=1000 --time-limit=300 --soft-time-limit=240
-celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat:PersistentScheduler --schedule=/home/razrab/i-tat-bot/celerybeat-schedule.db
+celery -A celery_app.celery_config worker --loglevel=info --pool=solo --queues=celery,nps_surveys,renewal_reminders,escalations,broadcasts,ticket_notifications,work_mode_monitor,api_retries --concurrency=1 --max-tasks-per-child=1000 --time-limit=300 --soft-time-limit=240
+celery -A celery_app.celery_config beat --loglevel=info --scheduler=celery.beat:PersistentScheduler --schedule=/home/razrab/i-tat-bot/celerybeat-schedule.db
 ```
 
 Копирование на сервер:
@@ -325,6 +328,7 @@ celery -A celery_app.celery_config beat --loglevel=debug --scheduler=celery.beat
 sudo cp deployment/systemd/i-tat-bot.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-worker.service /etc/systemd/system/
 sudo cp deployment/systemd/i-tat-celery-beat.service /etc/systemd/system/
+sudo cp deployment/logrotate/i-tat-celery /etc/logrotate.d/i-tat-celery
 sudo mkdir -p /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 sudo chown -R razrab:razrab /var/run/celery /var/log/celery /home/razrab/i-tat-bot/logs /home/razrab/i-tat-bot/media
 sudo systemctl daemon-reload

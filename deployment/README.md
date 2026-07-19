@@ -51,7 +51,7 @@ The application consists of three systemd services:
 
 2. **i-tat-celery-worker.service** - Celery worker
    - Processes background tasks
-   - Queues: nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications
+   - Queues: celery, nps_surveys, renewal_reminders, escalations, broadcasts, ticket_notifications, work_mode_monitor, api_retries
    - Pool: solo (Windows-compatible)
    - Concurrency: 4
 

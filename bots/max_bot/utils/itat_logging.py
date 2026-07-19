@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 
 from database.models import Ticket, TicketType, TicketStatus, User
-from services.i_tat_service import get_itat_client
+from services.itat_retry_helper import call_itat_with_managed_retry
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -40,9 +40,6 @@ async def log_ticket_to_itat(
     Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 7.1
     """
     try:
-        # Get I-TAT API client
-        api_client = get_itat_client()
-        
         # Get user with MAX messenger data (eager load to avoid lazy-load in async context)
         result = await session.execute(
             select(User)
@@ -91,13 +88,23 @@ async def log_ticket_to_itat(
         else:
             api_params["staff_id"] = 0
         
-        # Call I-TAT API
-        await api_client.log_ticket(**api_params)
-        
-        logger.info(
-            f"Ticket logged to I-TAT API: ticket_id={ticket.id}, "
-            f"status={status}, messenger=max"
+        # Keep a transient API failure even if the ticket transaction rolls back later.
+        api_result = await call_itat_with_managed_retry(
+            operation="log_ticket",
+            payload=api_params,
+            user_id=user.id,
         )
+
+        if api_result is None:
+            logger.warning(
+                f"Ticket log queued for i-TAT retry: ticket_id={ticket.id}, "
+                f"status={status}, messenger=max"
+            )
+        else:
+            logger.info(
+                f"Ticket logged to I-TAT API: ticket_id={ticket.id}, "
+                f"status={status}, messenger=max"
+            )
         return True
         
     except Exception as e:

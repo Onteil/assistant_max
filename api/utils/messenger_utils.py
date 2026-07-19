@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from constants import TG_BOT_TOKEN, MAX_BOT_TOKEN
-from database.models import MAX_Messenger_Data
+from database.models import MAX_Messenger_Data, User
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,28 @@ async def send_message_to_user(
     """
     try:
         if messenger == "telegram":
-            return await _send_telegram_message(user_id, text, keyboard, parse_mode)
+            telegram_user_id = user_id
+            if session is not None:
+                result = await session.execute(
+                    select(User.tg_user_id).where(User.id == user_id)
+                )
+                telegram_user_id = result.scalar_one_or_none()
+                if telegram_user_id is None:
+                    logger.warning(
+                        f"No Telegram user ID found for internal user {user_id}"
+                    )
+                    return {
+                        "success": False,
+                        "status": "no_chat_id",
+                        "message": "Telegram user ID not found",
+                        "error": None,
+                    }
+            return await _send_telegram_message(
+                telegram_user_id,
+                text,
+                keyboard,
+                parse_mode,
+            )
         elif messenger == "max":
             if session is None:
                 logger.error("Database session required for MAX messenger")

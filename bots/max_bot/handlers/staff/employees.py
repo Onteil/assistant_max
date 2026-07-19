@@ -36,8 +36,11 @@ from bots.max_bot.payloads import (
     ManagerMenuActionPayload,
 )
 from database.models import Staff_Member, StaffRole, Action_Log, ActionType
-from services.itat_retry_helper import call_itat_with_retry
-from services.i_tat_service import get_itat_client, NonRetryableAPIError
+from services.itat_retry_helper import (
+    call_itat_with_managed_retry,
+    call_itat_with_retry,
+)
+from services.i_tat_service import NonRetryableAPIError
 
 logger = logging.getLogger(__name__)
 
@@ -1565,22 +1568,27 @@ async def handle_employee_name_edit_input(
         
         # Log action to i-TAT API
         try:
-            itat_client = get_itat_client()
-            await itat_client.audit_log(
-                messenger="max",
-                action_type="staff_updated",
-                action_timestamp=datetime.utcnow().isoformat(),
-                staff_id=admin.id,
-                action_details={
-                    "field": "name",
-                    "old_value": old_name,
-                    "new_value": new_name,
-                    "admin_name": admin.full_name,
-                    "admin_max_id": max_user_id,
-                    "target_staff_id": employee.id
-                }
+            audit_result = await call_itat_with_managed_retry(
+                operation="audit_log",
+                payload={
+                    "messenger": "max",
+                    "action_type": "staff_updated",
+                    "action_timestamp": datetime.utcnow().isoformat(),
+                    "staff_id": admin.id,
+                    "action_details": {
+                        "field": "name",
+                        "old_value": old_name,
+                        "new_value": new_name,
+                        "admin_name": admin.full_name,
+                        "admin_max_id": max_user_id,
+                        "target_staff_id": employee.id,
+                    },
+                },
             )
-            logger.info(f"i-TAT API audit log successful for staff name update")
+            if audit_result is None:
+                logger.warning("i-TAT audit log queued for staff name update")
+            else:
+                logger.info("i-TAT API audit log successful for staff name update")
         except Exception as audit_error:
             logger.error(f"i-TAT API audit log error: {audit_error}")
             # Continue even if audit logging fails
@@ -1853,22 +1861,27 @@ async def handle_employee_role_change(
         
         # Log action to i-TAT API
         try:
-            itat_client = get_itat_client()
-            await itat_client.audit_log(
-                messenger="max",
-                action_type="staff_updated",
-                action_timestamp=datetime.utcnow().isoformat(),
-                staff_id=admin.id,
-                action_details={
-                    "field": "role",
-                    "old_value": old_role.value,
-                    "new_value": new_role.value,
-                    "admin_name": admin.full_name,
-                    "admin_max_id": max_user_id,
-                    "target_staff_id": employee.id
-                }
+            audit_result = await call_itat_with_managed_retry(
+                operation="audit_log",
+                payload={
+                    "messenger": "max",
+                    "action_type": "staff_updated",
+                    "action_timestamp": datetime.utcnow().isoformat(),
+                    "staff_id": admin.id,
+                    "action_details": {
+                        "field": "role",
+                        "old_value": old_role.value,
+                        "new_value": new_role.value,
+                        "admin_name": admin.full_name,
+                        "admin_max_id": max_user_id,
+                        "target_staff_id": employee.id,
+                    },
+                },
             )
-            logger.info(f"i-TAT API audit log successful for staff role update")
+            if audit_result is None:
+                logger.warning("i-TAT audit log queued for staff role update")
+            else:
+                logger.info("i-TAT API audit log successful for staff role update")
         except Exception as audit_error:
             logger.error(f"i-TAT API audit log error: {audit_error}")
             # Continue even if audit logging fails

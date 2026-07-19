@@ -9,10 +9,11 @@ Requirements: 1.3, 2.3, 9.4, 13.1, 13.2
 """
 
 import asyncio
-import logging
-import sys
+import hashlib
 import os
+import sys
 from datetime import datetime, timedelta
+from typing import Any
 
 # Add project root to Python path for imports
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -23,14 +24,84 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from sqlalchemy import select
 
-from constants import AsyncSessionLocal, MAX_BOT_TOKEN, TG_BOT_TOKEN
+from constants import (
+    CELERY_REDIS_DB_NUMBER,
+    MAX_BOT_TOKEN,
+    REDIS,
+    TG_BOT_TOKEN,
+    AsyncSessionLocal,
+)
 from database.models import SurveyType, User
 
 # Use Celery-specific logger
 logger = get_task_logger(__name__)
 
+NPS_PROCESSING_LOCK_TTL_SECONDS = 30 * 60
+NPS_SUCCESS_RECEIPT_TTL_SECONDS = 90 * 24 * 60 * 60
+NPS_TERMINAL_FAILURE_TTL_SECONDS = 24 * 60 * 60
+
 
 # ========== Helper Functions ==========
+
+
+def build_nps_delivery_key(
+    user_id: int,
+    survey_type: str,
+    trigger_event_id: int,
+) -> str:
+    """Build a stable Redis key for one business-level NPS delivery."""
+    raw_key = f"{user_id}:{survey_type}:{trigger_event_id}"
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    return f"nps:delivery:{digest}"
+
+
+def build_nps_task_id(
+    user_id: int,
+    survey_type: str,
+    trigger_event_id: int,
+) -> str:
+    """Build a stable Celery task id for duplicate scheduling attempts."""
+    digest = build_nps_delivery_key(
+        user_id=user_id,
+        survey_type=survey_type,
+        trigger_event_id=trigger_event_id,
+    ).rsplit(":", maxsplit=1)[-1]
+    return f"nps-{digest}"
+
+
+def _claim_nps_delivery(redis_client: Any, key: str, owner: str) -> bool:
+    """Atomically claim delivery while allowing recovery after a worker crash."""
+    return bool(
+        redis_client.set(
+            key,
+            f"processing:{owner}",
+            nx=True,
+            ex=NPS_PROCESSING_LOCK_TTL_SECONDS,
+        )
+    )
+
+
+def _mark_nps_delivery_complete(
+    redis_client: Any,
+    key: str,
+    ttl_seconds: int,
+) -> None:
+    redis_client.set(key, "completed", ex=ttl_seconds)
+
+
+def _release_nps_delivery(redis_client: Any, key: str, owner: str) -> None:
+    """Release only the lock owned by this task, without deleting another claim."""
+    redis_client.eval(
+        """
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+        end
+        return 0
+        """,
+        1,
+        key,
+        f"processing:{owner}",
+    )
 
 
 async def _send_survey_async(
@@ -54,70 +125,71 @@ async def _send_survey_async(
     Returns:
         Dict with delivery status
     """
-    try:
-        # Get database session
-        async with AsyncSessionLocal() as session:
-            # Query user from database
-            stmt = select(User).where(User.id == user_id)
-            result = await session.execute(stmt)
-            user = result.scalar_one_or_none()
-            
-            if user is None:
-                logger.error(f"User not found: user_id={user_id}")
-                return {
-                    "status": "error",
-                    "reason": "user_not_found",
-                    "user_id": user_id
-                }
-            
-            # Determine which messenger to use (MAX only)
-            messenger_type = None
-            messenger_id = None
-            
-            if user.max_user_id:
-                messenger_type = "max"
-                messenger_id = user.max_user_id
-            else:
-                logger.error(
-                    f"User has no MAX messenger ID: user_id={user_id}"
-                )
-                return {
-                    "status": "error",
-                    "reason": "no_max_messenger_id",
-                    "user_id": user_id
-                }
-            
+    # Get database session
+    async with AsyncSessionLocal() as session:
+        # Query user from database
+        stmt = select(User).where(User.id == user_id)
+        result = await session.execute(stmt)
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            logger.error(f"User not found: user_id={user_id}")
+            return {
+                "status": "error",
+                "reason": "user_not_found",
+                "user_id": user_id,
+            }
+
+        # Re-check at delivery time because another survey may have been sent
+        # after this ETA task was originally scheduled.
+        from services.nps_service import check_frequency_limit
+
+        can_send, last_sent_at = await check_frequency_limit(session, user_id)
+        if not can_send:
             logger.info(
-                f"Sending survey via {messenger_type}: "
-                f"user_id={user_id}, messenger_id={messenger_id}"
+                f"Survey suppressed at delivery time: user_id={user_id}, "
+                f"last_sent_at={last_sent_at}"
             )
-            
-            # Parse event_date
-            event_datetime = datetime.fromisoformat(event_date)
-            
-            # Convert survey_type string to enum
-            survey_type_enum = SurveyType(survey_type)
-            
-            # Send survey via MAX messenger
-            result = await _send_max_survey(
-                messenger_id=messenger_id,
-                survey_type=survey_type_enum,
-                trigger_event_id=trigger_event_id,
-                event_date=event_datetime
+            return {
+                "status": "frequency_limited",
+                "user_id": user_id,
+                "last_sent_at": last_sent_at.isoformat() if last_sent_at else None,
+            }
+
+        # Determine which messenger to use (MAX only)
+        if user.max_user_id:
+            messenger_type = "max"
+            messenger_id = user.max_user_id
+        else:
+            logger.error(
+                f"User has no MAX messenger ID: user_id={user_id}"
             )
-            
-            return result
-    
-    except Exception as e:
-        logger.error(
-            f"Error in _send_survey_async: user_id={user_id}, error={e}",
-            exc_info=True
+            return {
+                "status": "error",
+                "reason": "no_max_messenger_id",
+                "user_id": user_id,
+            }
+
+        logger.info(
+            f"Sending survey via {messenger_type}: "
+            f"user_id={user_id}, messenger_id={messenger_id}"
         )
-        return {
-            "status": "error",
-            "reason": str(e),
-            "user_id": user_id
-        }
+
+        event_datetime = datetime.fromisoformat(event_date)
+        survey_type_enum = SurveyType(survey_type)
+
+        result = await _send_max_survey(
+            messenger_id=messenger_id,
+            survey_type=survey_type_enum,
+            trigger_event_id=trigger_event_id,
+            event_date=event_datetime,
+        )
+
+        if result["status"] == "success":
+            user.last_nps_sent_at = datetime.utcnow()
+            await session.commit()
+
+        return result
 
 
 async def _send_telegram_survey(
@@ -373,13 +445,7 @@ async def _send_max_survey(
                 f"survey_type={survey_type.value}, error={e}",
                 exc_info=True
             )
-            
-            return {
-                "status": "api_error",
-                "messenger": "max",
-                "messenger_id": messenger_id,
-                "error": str(e)
-            }
+            raise
         
         finally:
             # Close bot session
@@ -452,12 +518,49 @@ def send_nps_survey_task(
         f"survey_type={survey_type}, trigger_event_id={trigger_event_id}, "
         f"task_id={self.request.id}, attempt={self.request.retries + 1}"
     )
-    
+
+    import redis
+
+    delivery_key = build_nps_delivery_key(
+        user_id=user_id,
+        survey_type=survey_type,
+        trigger_event_id=trigger_event_id,
+    )
+    lock_owner = self.request.id or build_nps_task_id(
+        user_id=user_id,
+        survey_type=survey_type,
+        trigger_event_id=trigger_event_id,
+    )
+    redis_client = redis.Redis.from_url(
+        REDIS,
+        db=CELERY_REDIS_DB_NUMBER,
+        decode_responses=True,
+    )
+    delivery_claimed = False
+
     try:
+        delivery_claimed = _claim_nps_delivery(
+            redis_client=redis_client,
+            key=delivery_key,
+            owner=lock_owner,
+        )
+        if not delivery_claimed:
+            logger.warning(
+                f"Duplicate NPS delivery skipped: user_id={user_id}, "
+                f"survey_type={survey_type}, trigger_event_id={trigger_event_id}, "
+                f"task_id={self.request.id}"
+            )
+            return {
+                "status": "duplicate_skipped",
+                "user_id": user_id,
+                "survey_type": survey_type,
+                "trigger_event_id": trigger_event_id,
+            }
+
         # Create new event loop for async execution
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         try:
             # Execute async survey delivery
             result = loop.run_until_complete(
@@ -471,51 +574,57 @@ def send_nps_survey_task(
             
             # Check result status
             if result["status"] == "success":
+                _mark_nps_delivery_complete(
+                    redis_client=redis_client,
+                    key=delivery_key,
+                    ttl_seconds=NPS_SUCCESS_RECEIPT_TTL_SECONDS,
+                )
                 logger.info(
                     f"Survey delivered successfully: user_id={user_id}, "
                     f"messenger={result.get('messenger')}, "
                     f"task_id={self.request.id}"
                 )
                 return result
-            
-            elif result["status"] == "bot_blocked":
-                # Don't retry if bot is blocked
+
+            if result["status"] in {
+                "bot_blocked",
+                "not_implemented",
+                "error",
+                "frequency_limited",
+            }:
+                _mark_nps_delivery_complete(
+                    redis_client=redis_client,
+                    key=delivery_key,
+                    ttl_seconds=NPS_TERMINAL_FAILURE_TTL_SECONDS,
+                )
                 logger.warning(
-                    f"Survey not delivered - bot blocked: user_id={user_id}, "
-                    f"task_id={self.request.id}"
+                    f"Survey not delivered with terminal status: user_id={user_id}, "
+                    f"status={result['status']}, task_id={self.request.id}"
                 )
                 return result
-            
-            elif result["status"] == "not_implemented":
-                # Handler not yet implemented - don't retry
-                logger.warning(
-                    f"Survey not delivered - handler not implemented: "
-                    f"user_id={user_id}, task_id={self.request.id}"
-                )
-                return result
-            
-            elif result["status"] == "error":
-                # Log error and return (don't retry for user_not_found, etc.)
-                logger.error(
-                    f"Survey delivery error: user_id={user_id}, "
-                    f"reason={result.get('reason')}, task_id={self.request.id}"
-                )
-                return result
-            
-            else:
-                logger.error(
-                    f"Unknown result status: {result['status']}, "
-                    f"user_id={user_id}, task_id={self.request.id}"
-                )
-                return result
-        
+
+            raise RuntimeError(
+                f"Retryable NPS delivery status: {result['status']}"
+            )
+
         finally:
             # Dispose engine connections before closing loop (Windows asyncpg fix)
             from constants import engine
             loop.run_until_complete(engine.dispose())
             loop.close()
-    
+
     except Exception as exc:
+        if delivery_claimed:
+            try:
+                _release_nps_delivery(
+                    redis_client=redis_client,
+                    key=delivery_key,
+                    owner=lock_owner,
+                )
+            except Exception:
+                logger.exception(
+                    f"Failed to release NPS delivery lock: key={delivery_key}"
+                )
         logger.error(
             f"Task execution failed: user_id={user_id}, "
             f"task_id={self.request.id}, attempt={self.request.retries + 1}, "
@@ -526,6 +635,8 @@ def send_nps_survey_task(
         # Retry with exponential backoff (handled by autoretry_for)
         # Max retries: 3, backoff: 60s, 120s, 240s (with jitter)
         raise
+    finally:
+        redis_client.close()
 
 
 @shared_task(

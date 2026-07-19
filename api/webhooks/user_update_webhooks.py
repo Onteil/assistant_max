@@ -321,6 +321,8 @@ async def user_update_webhook(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"User with {payload.messenger.upper()} ID {payload.user_id} not found",
             )
+
+        user_id_cached = user.id
         
         # Verify phone number matches (log warning but continue)
         if user.phone_number != payload.phone:
@@ -464,8 +466,6 @@ async def user_update_webhook(
         
         # Process Organizations updates
         if payload.organizations:
-            # Cache user.id before any potential rollback that would expire the user object
-            user_id_cached = user.id
             for org_update in payload.organizations:
                 if org_update.action == "add":
                     # Check if organization exists
@@ -475,23 +475,21 @@ async def user_update_webhook(
                     
                     if not organization:
                         # Create organization if it doesn't exist (name will be fetched from i-TAT API later)
-                        organization = Organization(
-                            inn=org_update.inn,
-                            organization_name=None,  # Will be populated by bot when user requests organization data
-                        )
-                        session.add(organization)
                         try:
-                            await session.flush()  # Get organization into session
+                            async with session.begin_nested():
+                                organization = Organization(
+                                    inn=org_update.inn,
+                                    organization_name=None,
+                                )
+                                session.add(organization)
+                                await session.flush()
                             logger.info(f"Created organization {org_update.inn} without name (will be fetched later)")
-                        except IntegrityError as integrity_err:
+                        except IntegrityError:
                             # Race condition: organization was created by another transaction
-                            # Don't rollback - just re-fetch the organization and continue
                             logger.warning(
                                 f"Organization {org_update.inn} was created by another transaction. "
                                 f"Re-fetching from database."
                             )
-                            # Expire the failed organization object from session
-                            await session.rollback()  # Rollback only the flush, not the entire transaction
                             # Re-fetch organization
                             result_org = await session.execute(stmt_org)
                             organization = result_org.scalar_one_or_none()
@@ -514,9 +512,21 @@ async def user_update_webhook(
                             user_id=user_id_cached,
                             organization_inn=org_update.inn
                         )
-                        await session.execute(stmt_insert)
-                        updates_applied["organizations_added"] += 1
-                        logger.info(f"Linked organization {org_update.inn} to user {user_id_cached}")
+                        try:
+                            async with session.begin_nested():
+                                await session.execute(stmt_insert)
+                                await session.flush()
+                            updates_applied["organizations_added"] += 1
+                            logger.info(f"Linked organization {org_update.inn} to user {user_id_cached}")
+                        except IntegrityError:
+                            # Another webhook linked the same organization first.
+                            result_link = await session.execute(stmt_link)
+                            if not result_link.first():
+                                raise
+                            logger.info(
+                                f"Organization {org_update.inn} was linked concurrently "
+                                f"to user {user_id_cached}"
+                            )
                     else:
                         logger.info(
                             f"Organization {org_update.inn} already linked to user {user_id_cached}"
@@ -555,7 +565,7 @@ async def user_update_webhook(
         # If nothing changed, skip notification and action log
         if not has_updates:
             logger.info(
-                f"No actual changes detected for user {user.id}. "
+                f"No actual changes detected for user {user_id_cached}. "
                 f"Skipping notification and action log (likely duplicate webhook from 1C CRM)."
             )
             return UserUpdateWebhookResponse(
@@ -569,7 +579,7 @@ async def user_update_webhook(
         # Log action in Action_Log
         action_log = Action_Log(
             action_type=ActionType.SETTING_CHANGED,  # Using existing enum, could add USER_DATA_UPDATED
-            user_id=user.id,
+            user_id=user_id_cached,
             action_details={
                 "action": "user_data_updated_via_crm",
                 "messenger": payload.messenger,
@@ -596,7 +606,7 @@ async def user_update_webhook(
             try:
                 await _send_user_update_notification(
                     messenger=payload.messenger,
-                    user_id=user.id,  # Internal user ID
+                    user_id=user_id_cached,
                     updates_applied=updates_applied,
                     session=session  # Required for MAX
                 )

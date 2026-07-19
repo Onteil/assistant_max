@@ -59,6 +59,19 @@ from bots.tg_bot.utils.escalation_notifications import (
 logger = get_task_logger(__name__)
 
 
+def _is_max_chat_id(chat_id: str | int | None) -> bool:
+    """
+    Validate a configured MAX chat id.
+
+    MAX chat IDs in production are not guaranteed to be 14+ digits. Telegram
+    group IDs are negative, while configured MAX chat IDs are positive.
+    """
+    try:
+        return int(chat_id) > 0
+    except (ValueError, TypeError):
+        return False
+
+
 async def _get_admin_max_chat_id(session: AsyncSession, admin: "Staff_Member") -> int | None:
     """
     Resolve MAX chat_id for a staff member using two fallback sources:
@@ -1502,14 +1515,6 @@ async def _escalate_to_admins_impl(ticket: Ticket, session: AsyncSession) -> dic
     # Send to escalation channels based on ticket type (MAX only)
     channels_notified = []
 
-    def is_max_chat_id(chat_id: str) -> bool:
-        """Determine if chat_id is for MAX messenger."""
-        try:
-            chat_id_int = int(chat_id)
-            return abs(chat_id_int) > 10000000000000
-        except (ValueError, TypeError):
-            return False
-
     max_bot = None
     try:
         from constants import MAX_BOT_TOKEN
@@ -1524,7 +1529,7 @@ async def _escalate_to_admins_impl(ticket: Ticket, session: AsyncSession) -> dic
         if ticket.ticket_type.value in ["invoice", "renewal"]:
             manager_channels = await get_escalation_channels(session, "escalation_manager_channel")
             for manager_channel in manager_channels:
-                if is_max_chat_id(manager_channel) and max_bot:
+                if _is_max_chat_id(manager_channel) and max_bot:
                     try:
                         await max_bot.send_message(
                             chat_id=int(manager_channel), text=notification_text
@@ -1547,7 +1552,7 @@ async def _escalate_to_admins_impl(ticket: Ticket, session: AsyncSession) -> dic
         elif ticket.ticket_type.value == "technical_support":
             duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
             for duty_channel in duty_channels:
-                if is_max_chat_id(duty_channel) and max_bot:
+                if _is_max_chat_id(duty_channel) and max_bot:
                     try:
                         await max_bot.send_message(
                             chat_id=int(duty_channel), text=notification_text
@@ -1570,7 +1575,7 @@ async def _escalate_to_admins_impl(ticket: Ticket, session: AsyncSession) -> dic
         elif ticket.ticket_type.value == "consultation":
             consultant_channels = await get_escalation_channels(session, "escalation_consultant_channel")
             for consultant_channel in consultant_channels:
-                if is_max_chat_id(consultant_channel) and max_bot:
+                if _is_max_chat_id(consultant_channel) and max_bot:
                     try:
                         await max_bot.send_message(
                             chat_id=int(consultant_channel), text=notification_text
@@ -2570,13 +2575,6 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
     # Send to escalation duty channel
     channels_notified = []
     
-    def is_max_chat_id(chat_id: str) -> bool:
-        try:
-            chat_id_int = int(chat_id)
-            return abs(chat_id_int) > 10000000000000
-        except (ValueError, TypeError):
-            return False
-    
     max_bot = None
     try:
         if MAX_BOT_TOKEN:
@@ -2586,7 +2584,7 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
         
         duty_channels = await get_escalation_channels(session, "escalation_duty_channel")
         for duty_channel in duty_channels:
-            if is_max_chat_id(duty_channel) and max_bot:
+            if _is_max_chat_id(duty_channel) and max_bot:
                 try:
                     await max_bot.send_message(
                         chat_id=int(duty_channel),
