@@ -10,7 +10,10 @@ from api.utils import messenger_utils
 from api.webhooks.ticket_status_webhooks import _select_notification_messenger
 from bots.max_bot.handlers.user.main_menu_callbacks import _is_stale_callback_error
 from bots.max_bot.utils import admin_notifications
-from bots.max_bot.utils.callback_utils import answer_max_callback
+from bots.max_bot.utils.callback_utils import (
+    DEFAULT_CALLBACK_NOTIFICATION,
+    answer_max_callback,
+)
 from celery_app.escalation_tasks import _is_max_chat_id
 from celery_app.nps_tasks import (
     NPS_PROCESSING_LOCK_TTL_SECONDS,
@@ -196,7 +199,12 @@ def test_only_known_stale_max_callback_error_is_suppressed():
 
 @pytest.mark.asyncio
 async def test_plain_max_callback_ack_does_not_edit_message():
-    bot = SimpleNamespace(send_callback=AsyncMock(return_value=SimpleNamespace()))
+    async def reject_empty_callback(*, callback_id, message, notification):
+        assert callback_id == "callback-1"
+        assert message is not None or notification
+        return SimpleNamespace()
+
+    bot = SimpleNamespace(send_callback=AsyncMock(side_effect=reject_empty_callback))
     event = SimpleNamespace(
         bot=bot,
         callback=SimpleNamespace(callback_id="callback-1"),
@@ -207,7 +215,26 @@ async def test_plain_max_callback_ack_does_not_edit_message():
     bot.send_callback.assert_awaited_once_with(
         callback_id="callback-1",
         message=None,
-        notification=None,
+        notification=DEFAULT_CALLBACK_NOTIFICATION,
+    )
+    event.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_plain_max_callback_ack_preserves_explicit_notification():
+    bot = SimpleNamespace(send_callback=AsyncMock(return_value=SimpleNamespace()))
+    event = SimpleNamespace(
+        bot=bot,
+        callback=SimpleNamespace(callback_id="callback-1"),
+        answer=AsyncMock(),
+    )
+
+    assert await answer_max_callback(event, notification="Выполнено") is True
+
+    bot.send_callback.assert_awaited_once_with(
+        callback_id="callback-1",
+        message=None,
+        notification="Выполнено",
     )
     event.answer.assert_not_awaited()
 

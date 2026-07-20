@@ -8,6 +8,7 @@ from maxapi.types import MessageCallback
 logger = logging.getLogger(__name__)
 
 STALE_CALLBACK_ERROR = "error.edit.invalid.message"
+DEFAULT_CALLBACK_NOTIFICATION = "Принято"
 
 
 def is_stale_max_callback_error(error: Exception) -> bool:
@@ -35,10 +36,13 @@ async def answer_max_callback(
         if new_text is None and link is None and format is None:
             if event.bot is None:
                 raise RuntimeError("MAX bot is not initialized")
+            # MAX rejects callback answers when both message and notification
+            # are empty. A short notification acknowledges the click without
+            # attempting to edit the original message.
             await event.bot.send_callback(
                 callback_id=event.callback.callback_id,
                 message=None,
-                notification=notification,
+                notification=notification or DEFAULT_CALLBACK_NOTIFICATION,
             )
         else:
             await event.answer(
