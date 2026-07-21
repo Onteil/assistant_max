@@ -73,10 +73,10 @@ async def get_active_tickets_keyboard(
         Inline keyboard with filter, ticket buttons, pagination, and back button
     """
     from bots.max_bot.payloads import (
+        MainMenuActionPayload,
         TicketSelectPayload,
-        TicketsPaginationPayload,
         TicketsFilterPayload,
-        ActiveTicketsClosePayload,
+        TicketsPaginationPayload,
     )
 
     buttons = []
@@ -205,7 +205,7 @@ async def get_active_tickets_keyboard(
     buttons.append([
         KeyboardButton(
             text="🏠 В меню",
-            payload=ActiveTicketsClosePayload().pack()
+            payload=MainMenuActionPayload(action="main_menu").pack()
         )
     ])
 

@@ -8,7 +8,16 @@ from sqlalchemy.exc import IntegrityError
 
 from api.utils import messenger_utils
 from api.webhooks.ticket_status_webhooks import _select_notification_messenger
-from bots.max_bot.handlers.user.main_menu_callbacks import _is_stale_callback_error
+from bots.max_bot.handlers.user.main_menu_callbacks import (
+    _is_stale_callback_error,
+    handle_main_menu_callback,
+)
+from bots.max_bot.keyboards.user import main_menu_kb
+from bots.max_bot.keyboards.user.active_tickets_kb import (
+    get_active_tickets_keyboard,
+)
+from bots.max_bot.payloads import MainMenuActionPayload
+from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
 from bots.max_bot.utils import admin_notifications
 from bots.max_bot.utils.callback_utils import (
     DEFAULT_CALLBACK_NOTIFICATION,
@@ -23,6 +32,7 @@ from celery_app.nps_tasks import (
     build_nps_task_id,
 )
 from database.models import NPS_Response, SurveyType
+from services import ticket_service, user_service
 from services.i_tat_service import (
     ITatAPIClient,
     NonRetryableAPIError,
@@ -237,6 +247,70 @@ async def test_plain_max_callback_ack_preserves_explicit_notification():
         notification="Выполнено",
     )
     event.answer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_active_tickets_menu_button_routes_to_client_main_menu():
+    keyboard = await get_active_tickets_keyboard([])
+
+    menu_button = keyboard.buttons[-1][0]
+    payload = MainMenuActionPayload.unpack(menu_button.payload)
+
+    assert payload.action == "main_menu"
+
+
+@pytest.mark.asyncio
+async def test_main_menu_action_restores_client_actions_menu(monkeypatch):
+    user = SimpleNamespace(id=42)
+    expected_keyboard = SimpleNamespace()
+    get_user = AsyncMock(return_value=user)
+    get_count = AsyncMock(return_value=3)
+    get_keyboard = AsyncMock(return_value=expected_keyboard)
+    monkeypatch.setattr(user_service, "get_user_by_max_id", get_user)
+    monkeypatch.setattr(
+        ticket_service,
+        "get_user_active_tickets_count",
+        get_count,
+    )
+    monkeypatch.setattr(
+        main_menu_kb,
+        "get_main_menu_inline_keyboard",
+        get_keyboard,
+    )
+
+    event = SimpleNamespace(
+        bot=SimpleNamespace(send_callback=AsyncMock(return_value=SimpleNamespace())),
+        callback=SimpleNamespace(
+            callback_id="callback-menu",
+            user=SimpleNamespace(user_id=123456),
+        ),
+        message=SimpleNamespace(
+            recipient=SimpleNamespace(chat_id=789012),
+            body=SimpleNamespace(mid=None),
+        ),
+    )
+    context = SimpleNamespace(clear=AsyncMock())
+    session = SimpleNamespace()
+    messenger_adapter = SimpleNamespace(send_message=AsyncMock())
+
+    await handle_main_menu_callback(
+        event=event,
+        payload=MainMenuActionPayload(action="main_menu"),
+        context=context,
+        session=session,
+        messenger_adapter=messenger_adapter,
+    )
+
+    get_user.assert_awaited_once_with(session, 123456)
+    context.clear.assert_awaited_once_with()
+    get_count.assert_awaited_once_with(session, 42)
+    get_keyboard.assert_awaited_once_with(3)
+    messenger_adapter.send_message.assert_awaited_once_with(
+        chat_id=789012,
+        text=MAIN_MENU_WELCOME_TEXT,
+        keyboard=expected_keyboard,
+        parse_mode="HTML",
+    )
 
 
 @pytest.mark.asyncio

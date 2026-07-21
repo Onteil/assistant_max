@@ -8,6 +8,7 @@ Handles callback queries from inline main menu keyboard:
 - Archive button
 - Profile button
 - Active tickets button
+- Return to main menu
 
 Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, AC-1.3, TR-2
 """
@@ -48,6 +49,7 @@ async def handle_main_menu_callback(
     - archive → Archive handler
     - profile → Profile handler
     - active_tickets → Active tickets list
+    - main_menu → Client main menu
     
     maxapi Pattern Notes:
     - Uses event.callback.user.user_id for user identification in callbacks
@@ -127,6 +129,40 @@ async def handle_main_menu_callback(
         elif action == "active_tickets":
             # Show active tickets list
             await show_active_tickets_list(event, session, messenger_adapter)
+
+        elif action == "main_menu":
+            from bots.max_bot.keyboards.user.main_menu_kb import (
+                get_main_menu_inline_keyboard,
+            )
+            from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
+            from services.ticket_service import get_user_active_tickets_count
+            from services.user_service import get_user_by_max_id
+
+            user = await get_user_by_max_id(session, max_user_id)
+            if not user:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Пользователь не найден. Используйте /start.",
+                    parse_mode="HTML",
+                )
+                return
+
+            await context.clear()
+            active_tickets_count = await get_user_active_tickets_count(
+                session,
+                user.id,
+            )
+            keyboard = await get_main_menu_inline_keyboard(active_tickets_count)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=MAIN_MENU_WELCOME_TEXT,
+                keyboard=keyboard,
+                parse_mode="HTML",
+            )
+            logger.info(
+                f"Client returned to main menu: user={max_user_id}, "
+                f"active_tickets={active_tickets_count}"
+            )
         
         else:
             logger.warning(f"Unknown main menu action: {action}")

@@ -206,7 +206,8 @@ class MainMenuActionPayload(CallbackPayload, prefix='menu'):
     Routes to different flows based on action type.
     
     Fields:
-        action: Action type - "invoice", "support", "renewal", "archive", "profile", or "active_tickets"
+        action: Action type - "invoice", "support", "renewal", "archive",
+            "profile", "active_tickets", or "main_menu"
     """
     action: str
 

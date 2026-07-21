@@ -19,6 +19,7 @@ from bots.max_bot.keyboards.user.active_tickets_kb import (
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter, Keyboard, KeyboardButton
 from bots.max_bot.payloads import (
+    MainMenuActionPayload,
     ReplyToManagerPayload,
     TicketSelectPayload,
     TicketsPaginationPayload,
@@ -168,7 +169,7 @@ async def handle_select_ticket_callback(
                 [
                     KeyboardButton(
                         text="🏠 В меню",
-                        payload=ActiveTicketsClosePayload().pack()
+                        payload=MainMenuActionPayload(action="main_menu").pack()
                     )
                 ]
             ],
@@ -383,11 +384,9 @@ async def handle_close_active_tickets(
                 logger.warning(f"Failed to delete old message: {e}")
         
         # Show active tickets list
-        from services.user_service import get_user_by_max_id
-        from services.ticket_service import get_user_active_tickets
         from bots.max_bot.keyboards.user.active_tickets_kb import get_active_tickets_keyboard
-        from bots.max_bot.payloads import ActiveTicketsClosePayload
-        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
+        from services.ticket_service import get_user_active_tickets
+        from services.user_service import get_user_by_max_id
         
         user = await get_user_by_max_id(session, max_user_id)
         if not user:
@@ -785,7 +784,7 @@ async def handle_ticket_history_back(
                 [
                     KeyboardButton(
                         text="🏠 В меню",
-                        payload=ActiveTicketsClosePayload().pack()
+                        payload=MainMenuActionPayload(action="main_menu").pack()
                     )
                 ]
             ],
