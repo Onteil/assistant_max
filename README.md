@@ -408,6 +408,155 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
+## Диагностика на prod: логи и очереди
+
+Команды ниже предназначены для первичной диагностики на сервере и не изменяют
+состояние приложения, БД или очередей. Выполняйте их с пользователем, имеющим
+`sudo`. Перед передачей логов третьим лицам удаляйте токены, заголовки
+авторизации, персональные данные и содержимое `payload`.
+
+### 1. Зафиксировать время, версию и состояние сервисов
+
+Указывайте время инцидента в московском часовом поясе. Это позволяет сопоставить
+записи бота с логами i-TAT API.
+
+```bash
+date --iso-8601=seconds
+timedatectl
+cd /home/razrab/i-tat-bot
+git rev-parse --short HEAD
+git status --short
+sudo systemctl --no-pager --full status i-tat-bot i-tat-celery-worker i-tat-celery-beat nginx
+sudo systemctl show i-tat-bot i-tat-celery-worker i-tat-celery-beat \
+  -p ActiveState -p SubState -p NRestarts -p ExecMainStatus
+```
+
+### 2. Посмотреть журналы FastAPI и Celery
+
+Для наблюдения за одним сервисом в реальном времени используйте привычный
+формат `journalctl -u <service> -f`. Остановить просмотр можно сочетанием
+`Ctrl+C`:
+
+```bash
+sudo journalctl -u i-tat-bot -f
+sudo journalctl -u i-tat-celery-worker -f
+sudo journalctl -u i-tat-celery-beat -f
+sudo journalctl -u nginx -f
+```
+
+Последние два часа по всем сервисам:
+
+```bash
+sudo journalctl --no-pager -o short-iso --since "2 hours ago" \
+  -u i-tat-bot \
+  -u i-tat-celery-worker \
+  -u i-tat-celery-beat
+```
+
+Одновременное наблюдение за FastAPI и Celery с датой в каждой записи:
+
+```bash
+sudo journalctl -f -o short-iso \
+  -u i-tat-bot \
+  -u i-tat-celery-worker \
+  -u i-tat-celery-beat
+```
+
+Ошибки за конкретный интервал. Замените даты на время инцидента:
+
+```bash
+sudo journalctl --no-pager -o short-iso \
+  --since "2026-07-21 11:30:00" \
+  --until "2026-07-21 12:00:00" \
+  -u i-tat-bot -u i-tat-celery-worker -u i-tat-celery-beat \
+  | grep -Ei "error|exception|traceback|timeout|readtimeout|missinggreenlet|uniqueviolation|409"
+```
+
+Для проблем интеграции с i-TAT и очередью повторов:
+
+```bash
+sudo journalctl --no-pager -o short-iso --since "2 hours ago" \
+  -u i-tat-bot -u i-tat-celery-worker \
+  | grep -Ei "i-tat|api_retry|request timeout|readtimeout|tickets/log|audit_log|409"
+```
+
+Celery также пишет отдельные файлы. `tail -F` продолжит чтение после logrotate:
+
+```bash
+sudo tail -n 300 /var/log/celery/i-tat-worker.log
+sudo tail -F /var/log/celery/i-tat-worker.log
+sudo tail -n 300 /var/log/celery/i-tat-beat.log
+sudo tail -F /var/log/celery/i-tat-beat.log
+```
+
+### 3. Проверить Nginx
+
+```bash
+sudo nginx -t
+sudo journalctl --no-pager -o short-iso -u nginx --since "2 hours ago"
+sudo tail -n 200 /var/log/nginx/error.log
+sudo grep -E " (4|5)[0-9]{2} " /var/log/nginx/access.log | tail -n 100
+```
+
+### 4. Проверить задачи и очереди Celery
+
+Команды только запрашивают состояние worker. Если ответ пустой, сначала
+проверьте, что `i-tat-celery-worker` запущен и слушает нужную очередь.
+
+```bash
+cd /home/razrab/i-tat-bot
+./venv/bin/celery -A celery_app.celery_config inspect ping
+./venv/bin/celery -A celery_app.celery_config inspect active
+./venv/bin/celery -A celery_app.celery_config inspect scheduled
+./venv/bin/celery -A celery_app.celery_config inspect reserved
+./venv/bin/celery -A celery_app.celery_config inspect active_queues
+```
+
+В текущей конфигурации задачи повторов i-TAT обрабатываются очередью
+`api_retries`, а Celery Beat запускает их обработку каждые пять минут.
+
+### 5. Посмотреть записи очереди повторов i-TAT в PostgreSQL
+
+Замените `<DB_NAME>` на имя рабочей базы из `DB_URL`. Запрос не показывает
+`payload`, чтобы не вывести персональные данные в терминал или экспорт логов.
+
+```bash
+sudo -u postgres psql -d <DB_NAME> -P pager=off -c "
+SELECT id,
+       operation,
+       status,
+       attempt_count,
+       next_retry_at,
+       completed_at,
+       left(last_error, 300) AS last_error,
+       created_at
+FROM api_retry_queue
+ORDER BY created_at DESC
+LIMIT 30;"
+```
+
+Сводка по статусам очереди:
+
+```bash
+sudo -u postgres psql -d <DB_NAME> -P pager=off -c "
+SELECT status, count(*)
+FROM api_retry_queue
+GROUP BY status
+ORDER BY status;"
+```
+
+### 6. Проверить объём журналов
+
+```bash
+sudo journalctl --disk-usage
+sudo du -sh /var/log/celery /var/log/nginx
+sudo logrotate -d /etc/logrotate.d/i-tat-celery
+```
+
+`logrotate -d` работает в режиме проверки и не выполняет ротацию. Не используйте
+на рабочем Redis команды вида `KEYS *`, `FLUSHDB`, `FLUSHALL` и не удаляйте
+записи `api_retry_queue` во время расследования инцидента.
+
 ## Проверки
 
 ```powershell
