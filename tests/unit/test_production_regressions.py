@@ -6,7 +6,9 @@ import httpx
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from api.schemas.ticket_status_schemas import TicketStatusWebhookPayload
 from api.utils import messenger_utils
+from api.webhooks import ticket_status_webhooks
 from api.webhooks.ticket_status_webhooks import _select_notification_messenger
 from bots.max_bot.handlers.user.main_menu_callbacks import (
     _is_stale_callback_error,
@@ -31,8 +33,8 @@ from celery_app.nps_tasks import (
     build_nps_delivery_key,
     build_nps_task_id,
 )
-from database.models import NPS_Response, SurveyType
-from services import ticket_service, user_service
+from database.models import NPS_Response, SurveyType, TicketStatus, TicketType
+from services import itat_retry_helper, ticket_service, user_service
 from services.i_tat_service import (
     ITatAPIClient,
     NonRetryableAPIError,
@@ -628,3 +630,162 @@ def test_timezone_migration_does_not_swallow_update_errors(monkeypatch):
 
     with pytest.raises(RuntimeError, match="database update failed"):
         migration._shift_existing_timestamps(hours=3)
+
+
+@pytest.mark.asyncio
+async def test_max_closure_commits_before_client_message_and_itat(monkeypatch):
+    events = []
+    final_comment = "Работы завершены"
+    user = SimpleNamespace(id=42, max_messenger_data=SimpleNamespace(max_user_id=1001))
+    ticket = SimpleNamespace(
+        id=285,
+        user=user,
+        user_id=user.id,
+        ticket_status=TicketStatus.IN_PROGRESS,
+        ticket_type=TicketType.INVOICE,
+        closed_at=None,
+        updated_at=None,
+        resolution_comment=None,
+    )
+    ticket_result = Mock()
+    ticket_result.scalar_one_or_none.return_value = ticket
+    survey_result = Mock()
+    survey_result.scalar_one_or_none.return_value = None
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[ticket_result, survey_result]),
+        rollback=AsyncMock(),
+    )
+
+    async def commit():
+        events.append("commit")
+
+    async def send_client_message(**_kwargs):
+        assert ticket.ticket_status is TicketStatus.CLOSED
+        assert ticket.resolution_comment == final_comment
+        assert events == ["commit"]
+        events.append("max")
+
+    async def log_to_itat(**_kwargs):
+        assert events == ["commit", "max", "commit"]
+        events.append("itat")
+
+    session.commit = AsyncMock(side_effect=commit)
+    add_ticket_message = AsyncMock()
+    monkeypatch.setattr(ticket_service, "_get_staff_internal_id", AsyncMock(return_value=7))
+    monkeypatch.setattr(ticket_service, "_log_action", AsyncMock())
+    monkeypatch.setattr(ticket_service, "schedule_survey", AsyncMock(return_value=(False, "test")))
+    monkeypatch.setattr(ticket_service, "send_message_to_client_max", send_client_message)
+    monkeypatch.setattr(ticket_service, "add_ticket_message", add_ticket_message)
+    monkeypatch.setattr(
+        "bots.max_bot.utils.itat_logging.log_ticket_status_change_to_itat",
+        log_to_itat,
+    )
+
+    result = await ticket_service.close_ticket_with_notification(
+        session=session,
+        ticket_id=ticket.id,
+        employee_id=1002,
+        final_comment=final_comment,
+        messenger_adapter=Mock(),
+    )
+
+    assert result is ticket
+    assert events == ["commit", "max", "commit", "itat"]
+    add_ticket_message.assert_not_awaited()
+    session.rollback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_external_closed_webhook_persists_its_comment(monkeypatch):
+    user = SimpleNamespace(id=42, tg_user_id=None)
+    ticket = SimpleNamespace(
+        id=285,
+        user=user,
+        user_id=user.id,
+        ticket_status=TicketStatus.IN_PROGRESS,
+        closed_at=None,
+        closed_by_staff_id=None,
+        resolution_comment=None,
+    )
+    ticket_result = Mock()
+    ticket_result.scalar_one_or_none.return_value = ticket
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=ticket_result),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+        add=Mock(),
+    )
+    monkeypatch.setattr(
+        ticket_status_webhooks,
+        "_find_staff_by_messenger_id",
+        AsyncMock(return_value=SimpleNamespace(id=7)),
+    )
+    monkeypatch.setattr(
+        ticket_status_webhooks,
+        "_select_notification_messenger",
+        lambda **_kwargs: ("max", None),
+    )
+    monkeypatch.setattr(
+        "api.utils.messenger_utils.get_max_chat_id",
+        AsyncMock(return_value=None),
+    )
+
+    payload = TicketStatusWebhookPayload(
+        ticket_id="285",
+        status="closed",
+        closed_by_staff_id=1002,
+        messenger="max",
+        comment="Закрыто специалистом",
+    )
+
+    await ticket_status_webhooks.ticket_status_update_webhook(
+        payload=payload,
+        session=session,
+        api_key="test",
+    )
+
+    assert ticket.ticket_status is TicketStatus.CLOSED
+    assert ticket.resolution_comment == "Закрыто специалистом"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostics_enabled", [False, True])
+async def test_retry_queue_diagnostics_require_explicit_flag(
+    monkeypatch,
+    diagnostics_enabled,
+):
+    session = SimpleNamespace(flush=AsyncMock())
+    retry_record = SimpleNamespace(id=30)
+    api_client = SimpleNamespace(
+        log_ticket=AsyncMock(side_effect=RetryableAPIError("Request timeout")),
+    )
+    queued_notification = AsyncMock()
+
+    async def queue_retry(**_kwargs):
+        return retry_record
+
+    monkeypatch.setattr(
+        itat_retry_helper,
+        "ENABLE_API_RETRY_DIAGNOSTICS",
+        diagnostics_enabled,
+    )
+    monkeypatch.setattr(itat_retry_helper, "get_itat_client", lambda: api_client)
+    monkeypatch.setattr("services.retry_service.queue_api_retry", queue_retry)
+    monkeypatch.setattr(
+        "bots.max_bot.utils.admin_notifications.notify_admins_api_retry_queued",
+        queued_notification,
+    )
+
+    result = await itat_retry_helper.call_itat_with_retry(
+        session=session,
+        operation="log_ticket",
+        payload={"ticket_id": "TKT_285"},
+        user_id=42,
+    )
+
+    assert result is None
+    session.flush.assert_awaited_once()
+    if diagnostics_enabled:
+        queued_notification.assert_awaited_once()
+    else:
+        queued_notification.assert_not_awaited()

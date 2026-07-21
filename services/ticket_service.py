@@ -1497,7 +1497,7 @@ async def close_ticket(
                     f"user_id={ticket.user_id}, error={e}",
                     exc_info=True
                 )
-        
+
         return ticket
     
     except ValueError as e:
@@ -1528,7 +1528,8 @@ async def close_ticket_with_notification(
     Close ticket with final comment and send notification to client.
     
     This function combines ticket closure with client notification.
-    It sends the final comment to the client first, then closes the ticket.
+    It commits the local closure before contacting MAX or i-TAT so a concurrent
+    CRM webhook observes the ticket as already closed.
     
     Args:
         session: Database session
@@ -1570,57 +1571,10 @@ async def close_ticket_with_notification(
         # Get internal staff ID
         staff_id = await _get_staff_internal_id(session, employee_id, messenger)
         
-        # Send final comment to client with closure notification
-        if ticket.user.max_messenger_data:
-            try:
-                # Format closure notification message
-                closure_message = f"✅ <b>Заявка #{ticket_id} закрыта</b>\n\n{final_comment}"
-                
-                # Send final comment to client via MAX
-                await send_message_to_client_max(
-                    messenger_adapter=messenger_adapter,
-                    session=session,
-                    ticket_id=ticket_id,
-                    employee_id=staff_id,  # Use internal staff ID
-                    message_text=closure_message,
-                    file_id=file_id,
-                    file_type=file_type,
-                    max_media_type=max_media_type,
-                    messenger=messenger,
-                    include_reply_button=False  # No reply button for final comments
-                )
-                
-                logger.info(
-                    f"Final comment sent to client: ticket_id={ticket_id}, "
-                    f"employee_id={employee_id}, has_file={bool(file_id)}"
-                )
-            
-            except Exception as e:
-                logger.error(
-                    f"Failed to send final comment to client: ticket_id={ticket_id}, "
-                    f"employee_id={employee_id}, error={e}",
-                    exc_info=True
-                )
-                # Continue with ticket closure even if notification fails
-        else:
-            logger.warning(
-                f"Client has no MAX messenger data, skipping notification: "
-                f"ticket_id={ticket_id}, user_id={ticket.user.id}"
-            )
-        
-        # Store final comment as message in database
-        await add_ticket_message(
-            session=session,
-            ticket_id=ticket_id,
-            sender_type=SenderType.STAFF,
-            sender_id=employee_id,
-            message_text=final_comment,
-            message_type=MessageType.DOCUMENT if file_id else MessageType.TEXT
-        )
-        
         # Update ticket status and set closed_at
         old_status = ticket.ticket_status
         ticket.ticket_status = TicketStatus.CLOSED
+        ticket.resolution_comment = final_comment
         ticket.closed_at = datetime.utcnow()
         ticket.updated_at = datetime.utcnow()
         
@@ -1634,31 +1588,8 @@ async def close_ticket_with_notification(
                 "old_status": old_status.value,
                 "final_comment_length": len(final_comment),
                 "has_attachment": bool(file_id),
-                "notification_sent": bool(ticket.user.max_messenger_data)
+                "notification_eligible": bool(ticket.user.max_messenger_data)
             }
-        )
-        
-        # Log status change to I-TAT API
-        try:
-            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
-            await log_ticket_status_change_to_itat(
-                session=session,
-                ticket=ticket,
-                old_status=old_status,
-                new_status=TicketStatus.CLOSED,
-                staff_id=staff_id,
-                comment=f"Заявка закрыта с уведомлением клиента. Финальный комментарий: {final_comment[:100]}{'...' if len(final_comment) > 100 else ''}"
-            )
-        except Exception as e:
-            # Log error but don't fail the operation
-            logger.error(
-                f"Failed to log ticket closure to I-TAT API: ticket_id={ticket_id}, error={e}",
-                exc_info=True
-            )
-        
-        logger.info(
-            f"Ticket closed with notification: ticket_id={ticket_id}, "
-            f"employee_id={employee_id}, old_status={old_status.value}"
         )
         
         # Trigger NPS survey for all ticket types except KEY_CONFLICT
@@ -1707,6 +1638,69 @@ async def close_ticket_with_notification(
                     exc_info=True
                 )
         
+        # Persist the state before an i-TAT call can trigger a CRM webhook.
+        await session.commit()
+
+        # A MAX-initiated closure has exactly one client-facing message: the
+        # final comment sent below. A CRM callback now observes CLOSED and exits
+        # through its idempotency check without producing a second message.
+        if ticket.user.max_messenger_data:
+            try:
+                closure_message = f"✅ <b>Заявка #{ticket_id} закрыта</b>\n\n{final_comment}"
+                await send_message_to_client_max(
+                    messenger_adapter=messenger_adapter,
+                    session=session,
+                    ticket_id=ticket_id,
+                    employee_id=staff_id,
+                    message_text=closure_message,
+                    file_id=file_id,
+                    file_type=file_type,
+                    max_media_type=max_media_type,
+                    messenger=messenger,
+                    include_reply_button=False,
+                )
+                await session.commit()
+                logger.info(
+                    f"Final comment sent to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}, has_file={bool(file_id)}"
+                )
+            except Exception as e:
+                # The closure is already committed; only discard failed
+                # message-recording changes from this second transaction.
+                await session.rollback()
+                logger.error(
+                    f"Failed to send final comment to client: ticket_id={ticket_id}, "
+                    f"employee_id={employee_id}, error={e}",
+                    exc_info=True,
+                )
+        else:
+            logger.warning(
+                f"Client has no MAX messenger data, skipping notification: "
+                f"ticket_id={ticket_id}, user_id={ticket.user.id}"
+            )
+
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.CLOSED,
+                staff_id=staff_id,
+                comment=f"Заявка закрыта с уведомлением клиента. Финальный комментарий: {final_comment[:100]}{'...' if len(final_comment) > 100 else ''}",
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to log ticket closure to I-TAT API: ticket_id={ticket_id}, error={e}",
+                exc_info=True,
+            )
+
+        logger.info(
+            f"Ticket closed with notification: ticket_id={ticket_id}, "
+            f"employee_id={employee_id}, old_status={old_status.value}"
+        )
+
         return ticket
     
     except ValueError as e:

@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from constants import ENABLE_API_RETRY_DIAGNOSTICS
 from services.i_tat_service import NonRetryableAPIError, RetryableAPIError, get_itat_client
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,6 @@ async def call_itat_with_retry(
         AttributeError: If `operation` is not a valid ITatAPIClient method.
     """
     from services.retry_service import queue_api_retry
-    from bots.max_bot.utils.admin_notifications import notify_admins_api_retry_queued
 
     api_client = get_itat_client()
     try:
@@ -92,18 +92,20 @@ async def call_itat_with_retry(
             )
             await session.flush()
 
-            # Notify admins (temporary — remove after production stabilises)
-            try:
-                await notify_admins_api_retry_queued(
-                    session=session,
-                    operation=operation,
-                    payload=payload,
-                    error_message=error_message,
-                    retry_id=retry_record.id,
-                    user_id=user_id,
-                )
-            except Exception as notify_err:
-                logger.warning(f"Failed to send retry_queued admin notification: {notify_err}")
+            if ENABLE_API_RETRY_DIAGNOSTICS:
+                from bots.max_bot.utils.admin_notifications import notify_admins_api_retry_queued
+
+                try:
+                    await notify_admins_api_retry_queued(
+                        session=session,
+                        operation=operation,
+                        payload=payload,
+                        error_message=error_message,
+                        retry_id=retry_record.id,
+                        user_id=user_id,
+                    )
+                except Exception as notify_err:
+                    logger.warning(f"Failed to send retry_queued diagnostic notification: {notify_err}")
 
         except Exception as queue_err:
             logger.error(

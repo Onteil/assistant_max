@@ -283,7 +283,10 @@ async def ticket_status_update_webhook(
                     f"{payload.closed_by_staff_id} not found, setting closed_by_staff_id to None"
                 )
                 ticket.closed_by_staff_id = None
-        
+
+            if payload.comment and payload.comment.strip():
+                ticket.resolution_comment = payload.comment.strip()
+
         # Commit database changes
         await session.commit()
         

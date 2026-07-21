@@ -79,6 +79,10 @@ ALLOWED_HOSTS = literal_eval(os.getenv("ALLOWED_HOSTS"))
 CELERY_REDIS_DB_NUMBER = int(os.getenv("CELERY_REDIS_DB_NUMBER"))
 AIOGRAM_REDIS_DB_NUMBER = int(os.getenv("AIOGRAM_REDIS_DB_NUMBER"))
 
+# Detailed retry notifications contain request payloads and are therefore opt-in.
+# Keep disabled in production; retry records and regular application logs remain available.
+ENABLE_API_RETRY_DIAGNOSTICS = os.getenv("ENABLE_API_RETRY_DIAGNOSTICS", "false").lower() == "true"
+
 AIOGRAM_SECRET = os.getenv("AIOGRAM_SECRET")
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 REDIS_HOST = os.getenv("REDIS_HOST")

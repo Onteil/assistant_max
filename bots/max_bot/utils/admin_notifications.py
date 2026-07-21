@@ -440,8 +440,8 @@ async def notify_admins_api_retry_queued(
     """
     Notify admins when a failed i-TAT API call is queued for retry.
 
-    TEMPORARY: Used during testing phase to monitor retry queue activity.
-    Remove this call once the system is stable in production.
+    This diagnostic notification is disabled by default and is only called when
+    ENABLE_API_RETRY_DIAGNOSTICS=true.
     
     Uses fallback mechanism: Staff_Member.max_chat_id → MAX_Messenger_Data.max_chat_id
 
@@ -470,7 +470,7 @@ async def notify_admins_api_retry_queued(
         moscow_tz = timezone(timedelta(hours=3))
         now_moscow = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M:%S")
 
-        # Truncate payload for display
+        # Truncate payload for display in an explicitly enabled diagnostic message.
         payload_str = str(payload)
         if len(payload_str) > 300:
             payload_str = payload_str[:300] + "..."
@@ -564,7 +564,7 @@ async def notify_admins_api_retry_exhausted(
         session: Database session
         retry_id: ID of the exhausted retry record
         operation: ITatAPIClient method name
-        payload: Request payload that was being retried
+        payload: Request payload retained in the retry queue but not sent to chat
         attempt_count: Total number of attempts made
         last_error: Last error message
         user_id: Internal user DB id (optional)
@@ -586,17 +586,12 @@ async def notify_admins_api_retry_exhausted(
         moscow_tz = timezone(timedelta(hours=3))
         now_moscow = datetime.now(moscow_tz).strftime("%d.%m.%Y %H:%M:%S")
 
-        payload_str = str(payload)
-        if len(payload_str) > 300:
-            payload_str = payload_str[:300] + "..."
-
         message_text = (
             f"🚨 Запрос к i-TAT НЕ ДОСТАВЛЕН — все попытки исчерпаны\n\n"
             f"🆔 ID записи: {retry_id}\n"
             f"⚙️ Метод: {operation}\n"
             f"🔁 Попыток: {attempt_count}\n"
             f"❌ Последняя ошибка: {last_error[:400]}\n"
-            f"📦 Данные: {payload_str}\n"
         )
         if user_id:
             message_text += f"👤 User ID: {user_id}\n"
