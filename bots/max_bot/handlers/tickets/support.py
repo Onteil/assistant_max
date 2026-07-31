@@ -99,9 +99,10 @@ async def cmd_support(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Handle /support command or callback - initiate support flow without subscription check.
+    Handle /support command or callback and validate the support subscription.
 
-    All registered users can access technical support regardless of subscription status.
+    Users without an active subscription are offered the existing renewal flow,
+    which creates both RENEWAL and TECHNICAL_SUPPORT tickets.
 
     Args:
         event: Message or callback event from MAX
@@ -131,6 +132,34 @@ async def cmd_support(
                 chat_id=chat_id,
                 text="❌ Пользователь не найден. Пожалуйста, пройдите регистрацию командой /start",
                 parse_mode="HTML"
+            )
+            return
+
+        if user.subscription_status != SubscriptionStatus.ACTIVE:
+            await context.clear()
+
+            if user.subscription_status == SubscriptionStatus.EXPIRED:
+                expiry_date = (
+                    user.subscription_end_date.strftime("%d.%m.%Y")
+                    if user.subscription_end_date
+                    else "неизвестно"
+                )
+                message_text = SUPPORT_SUBSCRIPTION_EXPIRED.format(
+                    expiry_date=expiry_date
+                )
+            else:
+                message_text = SUPPORT_NO_SUBSCRIPTION
+
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                keyboard=get_renewal_keyboard(),
+                parse_mode="HTML",
+            )
+            logger.info(
+                "Support request redirected to renewal: user_id=%s, status=%s",
+                user.id,
+                user.subscription_status.value,
             )
             return
 
@@ -823,7 +852,7 @@ async def handle_renewal_callback(
                 parse_mode="HTML"
             )
             return
-        
+
         # Check for existing active RENEWAL tickets
         from sqlalchemy import and_, select
         from database.models import Ticket
@@ -833,7 +862,13 @@ async def handle_renewal_callback(
                 and_(
                     Ticket.user_id == user.id,
                     Ticket.ticket_type == TicketType.RENEWAL,
-                    Ticket.ticket_status.in_([TicketStatus.NEW, TicketStatus.IN_PROGRESS])
+                    Ticket.ticket_status.in_(
+                        [
+                            TicketStatus.NEW,
+                            TicketStatus.IN_PROGRESS,
+                            TicketStatus.WAITING_CLIENT,
+                        ]
+                    )
                 )
             )
         )

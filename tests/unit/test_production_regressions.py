@@ -745,6 +745,68 @@ async def test_legacy_key_conflict_resolution_closes_only_selected_tickets():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("subscription_status", "expected_text"),
+    [
+        ("expired", "истекла"),
+        ("none", "нет активной подписки"),
+    ],
+)
+async def test_support_without_active_subscription_offers_renewal(
+    monkeypatch,
+    subscription_status,
+    expected_text,
+):
+    from bots.max_bot.handlers.tickets import support as support_handler
+    from database.models import SubscriptionStatus
+
+    user = SimpleNamespace(
+        id=27,
+        subscription_status=SubscriptionStatus(subscription_status),
+        subscription_end_date=datetime(2026, 7, 31),
+    )
+    monkeypatch.setattr(
+        support_handler,
+        "get_user_by_max_id",
+        AsyncMock(return_value=user),
+    )
+    show_organizations = AsyncMock()
+    monkeypatch.setattr(
+        support_handler,
+        "show_support_organization_selection",
+        show_organizations,
+    )
+
+    event = SimpleNamespace(
+        message=SimpleNamespace(
+            recipient=SimpleNamespace(chat_id=10027),
+            sender=SimpleNamespace(user_id=9027),
+        )
+    )
+    context = SimpleNamespace(
+        clear=AsyncMock(),
+        update_data=AsyncMock(),
+        set_state=AsyncMock(),
+    )
+    adapter = SimpleNamespace(send_message=AsyncMock())
+
+    await support_handler.cmd_support(
+        event=event,
+        context=context,
+        session=SimpleNamespace(),
+        messenger_adapter=adapter,
+    )
+
+    context.clear.assert_awaited_once()
+    context.update_data.assert_not_awaited()
+    context.set_state.assert_not_awaited()
+    show_organizations.assert_not_awaited()
+    sent = adapter.send_message.await_args.kwargs
+    assert expected_text in sent["text"].lower()
+    assert sent["keyboard"] is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("processor_name", "duty_selector_name", "round_robin_name", "ticket_type"),
     [
         (
@@ -781,7 +843,7 @@ async def test_extended_queue_uses_duty_staff_without_round_robin(
         organization_inn=None,
         organization=None,
         gs_keys=[],
-        file_attachments=[],
+        file_attachments=[SimpleNamespace(file_name="queued.txt")],
         assigned_staff_id=None,
     )
     duty = SimpleNamespace(id=15, max_chat_id=5015, max_user_id=1500)
@@ -789,6 +851,7 @@ async def test_extended_queue_uses_duty_staff_without_round_robin(
     bot = SimpleNamespace(send_message=AsyncMock())
     duty_selector = AsyncMock(return_value=duty)
     round_robin = AsyncMock()
+    forward_attachments = AsyncMock()
 
     monkeypatch.setattr(ticket_service, duty_selector_name, duty_selector)
     monkeypatch.setattr(round_robin_service, round_robin_name, round_robin)
@@ -796,6 +859,11 @@ async def test_extended_queue_uses_duty_staff_without_round_robin(
         escalation_tasks,
         "schedule_technical_support_monitoring",
         AsyncMock(),
+    )
+    monkeypatch.setattr(
+        ticket_notification_tasks,
+        "_forward_ticket_attachments",
+        forward_attachments,
     )
 
     processor = getattr(ticket_notification_tasks, processor_name)
@@ -813,6 +881,12 @@ async def test_extended_queue_uses_duty_staff_without_round_robin(
     assert stats["notifications_sent"] == 1
     duty_selector.assert_awaited_once_with(session)
     round_robin.assert_not_awaited()
+    forward_attachments.assert_awaited_once_with(
+        ticket,
+        duty.max_chat_id,
+        bot,
+        session,
+    )
 
 
 @pytest.mark.asyncio
@@ -831,11 +905,13 @@ async def test_invoice_queue_refreshes_manager_before_notification(monkeypatch):
         user=user,
         assigned_staff_id=5,
         created_at=datetime.now(),
-        file_attachments=[],
+        file_attachments=[SimpleNamespace(file_name="queued.txt")],
     )
     session = SimpleNamespace(commit=AsyncMock())
     determine_manager = AsyncMock(return_value=(8, True))
     send_notification = AsyncMock(return_value=True)
+    forward_attachments = AsyncMock()
+    bot = SimpleNamespace()
 
     monkeypatch.setattr(
         ticket_service,
@@ -852,10 +928,23 @@ async def test_invoice_queue_refreshes_manager_before_notification(monkeypatch):
         "schedule_escalation_monitoring",
         AsyncMock(),
     )
+    from bots.max_bot.utils import staff_chat_resolver
+
+    get_staff_chat_id = AsyncMock(return_value=7008)
+    monkeypatch.setattr(
+        staff_chat_resolver,
+        "get_staff_chat_id",
+        get_staff_chat_id,
+    )
+    monkeypatch.setattr(
+        ticket_notification_tasks,
+        "_forward_ticket_attachments",
+        forward_attachments,
+    )
 
     sent = await ticket_notification_tasks._process_invoice_ticket(
         ticket=ticket,
-        max_bot=SimpleNamespace(),
+        max_bot=bot,
         messenger_type="max",
         messenger_id=user.max_user_id,
         session=session,
@@ -870,6 +959,80 @@ async def test_invoice_queue_refreshes_manager_before_notification(monkeypatch):
         assign_admin_if_no_manager=True,
     )
     assert send_notification.await_args.kwargs["staff_id"] == 8
+    forward_attachments.assert_awaited_once_with(
+        ticket,
+        7008,
+        bot,
+        session,
+    )
+
+
+@pytest.mark.asyncio
+async def test_renewal_queue_forwards_attachments_to_refreshed_manager(monkeypatch):
+    from bots.max_bot.utils import staff_chat_resolver
+    from celery_app import escalation_tasks, ticket_notification_tasks
+
+    manager = SimpleNamespace(id=8, is_active=True, is_working_today=True)
+    query_result = Mock()
+    query_result.scalar_one_or_none.return_value = manager
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=query_result),
+        commit=AsyncMock(),
+    )
+    ticket = SimpleNamespace(
+        id=294,
+        user_id=10,
+        user=SimpleNamespace(
+            full_name="Test User",
+            phone_number="+70000000000",
+        ),
+        assigned_staff_id=manager.id,
+        created_at=datetime.now(),
+        file_attachments=[SimpleNamespace(file_name="queued.txt")],
+    )
+    bot = SimpleNamespace()
+    send_notification = AsyncMock(return_value=True)
+    forward_attachments = AsyncMock()
+    get_staff_chat_id = AsyncMock(return_value=7008)
+
+    monkeypatch.setattr(
+        ticket_notification_tasks,
+        "send_staff_notification",
+        send_notification,
+    )
+    monkeypatch.setattr(
+        ticket_notification_tasks,
+        "_forward_ticket_attachments",
+        forward_attachments,
+    )
+    monkeypatch.setattr(
+        staff_chat_resolver,
+        "get_staff_chat_id",
+        get_staff_chat_id,
+    )
+    monkeypatch.setattr(
+        escalation_tasks,
+        "schedule_escalation_monitoring",
+        AsyncMock(),
+    )
+
+    sent = await ticket_notification_tasks._process_renewal_ticket(
+        ticket=ticket,
+        max_bot=bot,
+        messenger_type="max",
+        messenger_id=100,
+        session=session,
+        stats={"notifications_sent": 0},
+    )
+
+    assert sent is True
+    get_staff_chat_id.assert_awaited_once_with(session, manager.id)
+    forward_attachments.assert_awaited_once_with(
+        ticket,
+        7008,
+        bot,
+        session,
+    )
 
 
 def test_timezone_migration_does_not_swallow_update_errors(monkeypatch):

@@ -477,6 +477,7 @@ async def _process_invoice_ticket(
         
         admins = await get_active_admins(session)
         any_sent = False
+        notified_chat_ids = []
         
         if admins:
             admin_message = (
@@ -575,6 +576,7 @@ async def _process_invoice_ticket(
                         )
                         stats["notifications_sent"] += 1
                         any_sent = True
+                        notified_chat_ids.append(chat_id)
                         logger.info(
                             f"Admin notification sent via MAX for ticket {ticket.id}, "
                             f"admin_id={admin.id}"
@@ -586,6 +588,25 @@ async def _process_invoice_ticket(
                         f"admin_id={admin.id}: {e}",
                         exc_info=True
                     )
+        if ticket.file_attachments and notified_chat_ids:
+            for chat_id in notified_chat_ids:
+                try:
+                    await _forward_ticket_attachments(
+                        ticket,
+                        chat_id,
+                        max_bot,
+                        session,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to forward attachments to admin chat %s "
+                        "for invoice ticket %s: %s",
+                        chat_id,
+                        ticket.id,
+                        e,
+                        exc_info=True,
+                    )
+
         return any_sent
 
 
@@ -664,6 +685,7 @@ async def _process_renewal_ticket(
             return False
         
         any_sent = False
+        notified_chat_ids = []
         admin_message = (
             f"⚠️ <b>Заявка на продление без назначенного менеджера</b>\n\n"
             f"<b>Заявка:</b> #{ticket.id}\n"
@@ -716,6 +738,7 @@ async def _process_renewal_ticket(
                         )
                         stats["notifications_sent"] += 1
                         any_sent = True
+                        notified_chat_ids.append(chat_id)
                         logger.info(
                             f"Admin notified for unassigned renewal ticket {ticket.id}, "
                             f"admin_id={admin.id}"
@@ -726,6 +749,25 @@ async def _process_renewal_ticket(
                     f"admin_id={admin.id}: {e}",
                     exc_info=True
                 )
+        if ticket.file_attachments and notified_chat_ids:
+            for chat_id in notified_chat_ids:
+                try:
+                    await _forward_ticket_attachments(
+                        ticket,
+                        chat_id,
+                        max_bot,
+                        session,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Failed to forward attachments to admin chat %s "
+                        "for renewal ticket %s: %s",
+                        chat_id,
+                        ticket.id,
+                        e,
+                        exc_info=True,
+                    )
+
         return any_sent
 
     notification_sent = await send_staff_notification(
@@ -746,6 +788,29 @@ async def _process_renewal_ticket(
             f"Manager notification sent for renewal ticket {ticket.id}, "
             f"staff_id={ticket.assigned_staff_id}, messenger={messenger_type}"
         )
+
+        if ticket.file_attachments:
+            try:
+                from bots.max_bot.utils.staff_chat_resolver import get_staff_chat_id
+
+                staff_chat_id = await get_staff_chat_id(
+                    session,
+                    ticket.assigned_staff_id,
+                )
+                if staff_chat_id:
+                    await _forward_ticket_attachments(
+                        ticket,
+                        staff_chat_id,
+                        max_bot,
+                        session,
+                    )
+            except Exception as e:
+                logger.error(
+                    "Failed to forward attachments for renewal ticket %s: %s",
+                    ticket.id,
+                    e,
+                    exc_info=True,
+                )
         
         # Schedule escalation monitoring now that working hours have started
         try:
