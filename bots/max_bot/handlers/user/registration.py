@@ -54,12 +54,10 @@ from bots.max_bot.texts import (
     REGISTRATION_START,
     REGISTRATION_SUBMITTED,
 )
-from database.models import KeyConflictStatus, RegistrationStatus
-from services.i_tat_service import NonRetryableAPIError, get_itat_client
+from database.models import RegistrationStatus, User
+from services.i_tat_service import NonRetryableAPIError
 from services.itat_retry_helper import call_itat_with_retry
 from services.user_service import (
-    KeyConflictError,
-    add_user_key,
     add_user_organization,
     create_user,
     get_user_by_id,
@@ -1076,82 +1074,66 @@ async def process_gs_key(
             )
             return
         
-        # Check for key conflicts via i-TAT API
-        from services.i_tat_service import get_itat_client
-        itat_client = get_itat_client()
-        conflict_response = await itat_client.check_key_conflict(
-            grand_key=normalized_key
+        from services.key_conflict_service import (
+            add_key_with_conflict_handling,
+            check_key_conflict,
         )
-        
-        logger.info(f"Key conflict check result: {conflict_response}")
-        
-        if conflict_response.get("status") == "conflict":
-            # Conflict detected - offer resolution options
-            owner_info = conflict_response.get("owner", "Неизвестный владелец")
-            
-            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
-            
-            # Store conflict info in context
+
+        user = await session.get(User, user_id)
+        if not user:
+            raise ValueError(f"User {user_id} not found")
+
+        conflict_check = await check_key_conflict(session, user, normalized_key)
+        if conflict_check.has_conflict:
+            owner_info = conflict_check.owner or "Неизвестный владелец"
             await context.update_data(
                 key_number=normalized_key,
                 has_conflict=True,
-                conflict_owner=owner_info
+                conflict_owner=owner_info,
+                conflict_recorded=False,
             )
-            
-            # Display conflict resolution keyboard
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=REGISTRATION_KEY_CONFLICT.format(owner=owner_info),
                 keyboard=get_key_conflict_keyboard(),
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
-        
-        else:
-            # No conflict - add key and proceed to submission
-            await add_user_key(
-                session,
-                user_id,
-                normalized_key,
-                KeyConflictStatus.NONE
-            )
-            await session.commit()
-            
-            logger.info(f"GS_Key added without conflict: user_id={user_id}, key={normalized_key}")
-            
-            # Store key in context
+            return
+
+        key_result = await add_key_with_conflict_handling(
+            session=session,
+            user=user,
+            key_number=normalized_key,
+            prechecked=conflict_check,
+        )
+        if key_result.has_conflict:
+            owner_info = key_result.owner or "Другой пользователь"
             await context.update_data(
                 key_number=normalized_key,
-                has_conflict=False
+                has_conflict=True,
+                conflict_owner=owner_info,
+                conflict_recorded=True,
             )
-            
-            # Submit registration
-        await submit_registration(context, session, messenger_adapter, chat_id, user_id)
-    
-    except KeyConflictError as e:
-        logger.warning(
-            f"Key conflict (DB fallback) in registration: user_id={user_id}, "
-            f"key={normalized_key}, owner_user_id={e.existing_user_id}"
-        )
-        await session.commit()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=REGISTRATION_KEY_CONFLICT.format(owner=owner_info),
+                keyboard=get_key_conflict_keyboard(),
+                parse_mode="HTML",
+            )
+            return
 
-        try:
-            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-            await notify_admins_key_conflict(session, user_id, normalized_key)
-        except Exception as notify_error:
-            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
-
-        # Store conflict info and show conflict resolution keyboard (same as i-TAT conflict flow)
         await context.update_data(
             key_number=normalized_key,
-            has_conflict=True,
-            conflict_owner="Другой пользователь",
+            has_conflict=False,
         )
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=REGISTRATION_KEY_CONFLICT.format(owner="Другой пользователь"),
-            keyboard=get_key_conflict_keyboard(),
-            parse_mode="HTML"
+        await submit_registration(
+            context,
+            session,
+            messenger_adapter,
+            chat_id,
+            user_id,
         )
+
 
     except Exception as e:
         logger.error(
@@ -1305,43 +1287,22 @@ async def process_key_conflict_choice(
             )
         
         elif payload.action == "continue":
-            # Add key with PENDING_REVIEW status and proceed
             logger.info(f"User chose to continue with conflict: user_id={user_id}, key={key_number}")
-            
-            await add_user_key(
-                session,
-                user_id,
-                key_number,
-                KeyConflictStatus.PENDING_REVIEW
-            )
-            await session.commit()
-            
-            logger.info(f"GS_Key added with PENDING_REVIEW: user_id={user_id}, key={key_number}")
-            
-            # Notify administrators about key conflict
-            try:
-                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                notified_count = await notify_admins_key_conflict(
-                    session,
-                    user_id,
-                    key_number,
+
+            if not data.get("conflict_recorded", False):
+                from services.key_conflict_service import add_key_with_conflict_handling
+
+                user = await session.get(User, user_id)
+                if not user:
+                    raise ValueError(f"User {user_id} not found")
+
+                await add_key_with_conflict_handling(
+                    session=session,
+                    user=user,
+                    key_number=key_number,
+                    force_conflict=True,
                 )
-                if notified_count:
-                    logger.info(
-                        f"Key conflict notification sent for user_id={user_id}, "
-                        f"key={key_number}, admins_notified={notified_count}"
-                    )
-                else:
-                    logger.warning(
-                        f"Key conflict notification was not delivered for "
-                        f"user_id={user_id}, key={key_number}"
-                    )
-            except Exception as notify_error:
-                logger.error(
-                    f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",
-                    exc_info=True
-                )
-            
+
             # Submit registration
             await submit_registration(context, session, messenger_adapter, chat_id, user_id)
     
@@ -1363,7 +1324,7 @@ async def _finalize_registration(
     context: MemoryContext,
     messenger_adapter: MAXMessengerAdapter,
     chat_id: int,
-    user: "User",
+    user: User,
     inn: str,
     key_number: str | None,
 ) -> None:

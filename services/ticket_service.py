@@ -156,7 +156,9 @@ async def create_ticket(
         #            which is called by the handler AFTER assignment is committed.
         #            Do NOT schedule here for those types to avoid double-scheduling.
         if ticket.ticket_status == TicketStatus.NEW and ticket.ticket_type not in (
-            TicketType.TECHNICAL_SUPPORT, TicketType.CONSULTATION
+            TicketType.TECHNICAL_SUPPORT,
+            TicketType.CONSULTATION,
+            TicketType.KEY_CONFLICT,
         ):
             try:
                 # Check current work mode - escalation only when the ticket is actively

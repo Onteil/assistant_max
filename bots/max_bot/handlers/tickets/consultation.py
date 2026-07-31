@@ -58,13 +58,11 @@ from bots.max_bot.texts import (
     ERROR_VALIDATION_KEY,
     FLOW_CANCELLED,
 )
-from database.models import KeyConflictStatus, SubscriptionStatus, TicketType, WorkMode
+from database.models import SubscriptionStatus, TicketType, User, WorkMode
 from services.calendar_service import get_current_work_mode
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
-    KeyConflictError,
-    add_user_key,
     add_user_organization,
     get_user_by_max_id,
     get_user_keys,
@@ -979,9 +977,19 @@ async def process_consultation_new_key(
         return
 
     try:
-        result = await add_user_key(session, user_id, key_number)
+        from services.key_conflict_service import add_key_with_conflict_handling
 
-        if result and hasattr(result, "conflict_status") and result.conflict_status == KeyConflictStatus.PENDING_REVIEW:
+        user = await session.get(User, user_id)
+        if not user:
+            raise ValueError(f"User {user_id} not found")
+
+        key_result = await add_key_with_conflict_handling(
+            session=session,
+            user=user,
+            key_number=key_number,
+        )
+
+        if key_result.has_conflict:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=CONSULTATION_KEY_CONFLICT,
@@ -991,9 +999,8 @@ async def process_consultation_new_key(
 
         data = await context.get_data()
         selected_keys: set[int] = set(data.get("selected_keys", []))
-        if result:
-            selected_keys.add(result.id)
-            await context.update_data(selected_keys=list(selected_keys))
+        selected_keys.add(key_result.key.id)
+        await context.update_data(selected_keys=list(selected_keys))
 
         await context.set_state(ConsultationStates.selecting_keys)
         await messenger_adapter.send_message(
@@ -1009,22 +1016,6 @@ async def process_consultation_new_key(
             chat_id=chat_id,
             text="ℹ️ Этот ключ уже добавлен в ваш профиль. Вы не можете добавить свой же ключ повторно.",
             parse_mode="HTML"
-        )
-    except KeyConflictError as e:
-        logger.warning(
-            f"Key conflict (DB fallback) in consultation: key={key_number}, "
-            f"owner_user_id={e.existing_user_id}"
-        )
-        await session.commit()
-        try:
-            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-            await notify_admins_key_conflict(session, user_id, key_number)
-        except Exception as notify_error:
-            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=CONSULTATION_KEY_CONFLICT,
-            parse_mode="HTML",
         )
     except Exception as e:
         logger.error(f"Error adding key in consultation: {e}", exc_info=True)

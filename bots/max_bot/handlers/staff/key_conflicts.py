@@ -601,7 +601,14 @@ async def handle_key_transfer(
         
         # Update GS_Key.conflict_status to RESOLVED
         gs_key.conflict_status = KeyConflictStatus.RESOLVED
-        
+
+        from services.key_conflict_service import close_legacy_key_conflict_tickets
+
+        await close_legacy_key_conflict_tickets(
+            session,
+            key_id=gs_key.id,
+            resolution="Ключ передан новому владельцу",
+        )
         await session.commit()
         
         logger.info(
@@ -900,10 +907,17 @@ async def handle_key_rejection(
         # On rejection: reset conflict status back to NONE so the key is clean again.
         gs_key.conflict_status = KeyConflictStatus.NONE
         gs_key.conflict_reported_at = None
-        
+
+        from services.key_conflict_service import close_legacy_key_conflict_tickets
+
+        await close_legacy_key_conflict_tickets(
+            session,
+            key_id=gs_key.id,
+            resolution="Запрос на передачу ключа отклонён",
+        )
         await session.commit()
         
-        logger.info(f"Updated GS_Key {key_number} conflict status to RESOLVED (rejected)")
+        logger.info(f"Reset GS_Key {key_number} conflict status to NONE (rejected)")
         
         # Send KEY_CONFLICT_REJECTED notification to new user
         if new_user.max_user_id:

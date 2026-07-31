@@ -47,14 +47,10 @@ from bots.max_bot.texts import (
     ADD_KEY_CONFLICT,
     BTN_CANCEL,
 )
-from database.models import KeyConflictStatus, TicketType
-from services.i_tat_service import get_itat_client
+from database.models import KeyConflictStatus
 from services.itat_retry_helper import call_itat_with_retry
-from services.ticket_service import create_ticket
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
-    KeyConflictError,
-    add_user_key,
     add_user_organization,
     get_user_by_id,
     get_user_by_max_id,
@@ -1614,101 +1610,22 @@ async def process_add_key(
             )
             return
         
-        # Check for key conflicts via i-TAT API
-        itat_client = get_itat_client()
-        conflict_response = await itat_client.check_key_conflict(
-            grand_key=normalized_key,
-            user_id=user.max_user_id
+        from services.key_conflict_service import add_key_with_conflict_handling
+
+        key_result = await add_key_with_conflict_handling(
+            session=session,
+            user=user,
+            key_number=normalized_key,
         )
-        
-        logger.info(f"Key conflict check result: {conflict_response}")
-        
-        if conflict_response.get("status") == "conflict":
-            # Conflict detected - create KEY_CONFLICT ticket and flag key
-            owner_info = conflict_response.get("owner", "Неизвестный владелец")
-            
-            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
-            
-            # Add key with PENDING_REVIEW status
-            key = await add_user_key(
-                session,
-                user.id,
-                normalized_key,
-                KeyConflictStatus.PENDING_REVIEW
-            )
-            await session.commit()
-            
-            # Create KEY_CONFLICT ticket
-            ticket_data = {
-                "ticket_type": TicketType.KEY_CONFLICT,
-                "user_id": user.id,
-                "description": f"Конфликт ключа {normalized_key}. Текущий владелец: {owner_info}",
-                "selected_key_ids": [key.id],
-            }
-            
-            ticket = await create_ticket(session, ticket_data)
-            await session.commit()
-            
-            logger.info(
-                f"KEY_CONFLICT ticket created: ticket_id={ticket.id}, key={normalized_key}"
-            )
-            
-            # Notify administrators about key conflict
-            try:
-                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                notified_count = await notify_admins_key_conflict(
-                    session,
-                    user.id,
-                    normalized_key,
-                )
-                if notified_count:
-                    logger.info(
-                        f"Key conflict notification sent for user_id={user.id}, "
-                        f"key={normalized_key}, admins_notified={notified_count}"
-                    )
-                else:
-                    logger.warning(
-                        f"Key conflict notification was not delivered for "
-                        f"user_id={user.id}, key={normalized_key}"
-                    )
-            except Exception as notify_error:
-                logger.error(
-                    f"Failed to send key conflict notification for user_id={user.id}: {notify_error}",
-                    exc_info=True
-                )
-            
-            # Log ticket creation to I-TAT API
-            try:
-                from bots.max_bot.utils.itat_logging import log_ticket_creation_to_itat
-                await log_ticket_creation_to_itat(session, ticket)
-            except Exception as e:
-                # Log error but don't fail ticket creation
-                logger.error(
-                    f"Failed to log key conflict ticket to I-TAT API: ticket_id={ticket.id}, error={e}",
-                    exc_info=True
-                )
-            
-            # Clear FSM state
-            await context.clear()
-            
-            # Send conflict message
+        await context.clear()
+
+        if key_result.has_conflict:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=ADD_KEY_CONFLICT.format(key=normalized_key),
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
-        
         else:
-            # No conflict - add key normally
-            await add_user_key(
-                session,
-                user.id,
-                normalized_key,
-                KeyConflictStatus.NONE
-            )
-            await session.commit()
-            
-            # Update user assets via i-TAT API
             assets_response = await call_itat_with_retry(
                 session=session,
                 operation="update_user_assets",
@@ -1721,23 +1638,19 @@ async def process_add_key(
                 ),
                 user_id=user.id,
             )
-            if assets_response is not None:
-                logger.info(f"Assets update result: {assets_response}")
-            else:
-                logger.warning(f"update_user_assets (add key) queued for retry: user_id={user.id}, key={normalized_key}")
-            
-            logger.info(f"GS_Key added to profile: user_id={user.id}, key={normalized_key}")
-            
-            # Clear FSM state
-            await context.clear()
-            
-            # Send success message
+            if assets_response is None:
+                logger.warning(
+                    "update_user_assets queued for retry: user_id=%s, key=%s",
+                    user.id,
+                    normalized_key,
+                )
+
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=ADD_KEY_SUCCESS.format(key_number=normalized_key),
-                parse_mode="HTML"
+                parse_mode="HTML",
             )
-        
+
         # Show keys list
         await show_keys_list(chat_id, user.id, session, messenger_adapter)
     
@@ -1764,37 +1677,6 @@ async def process_add_key(
             parse_mode="HTML"
         )
 
-    except KeyConflictError as e:
-        logger.warning(
-            f"Key conflict (DB fallback): user_id={user.id}, key={normalized_key}, "
-            f"owner_user_id={e.existing_user_id}"
-        )
-        await session.commit()
-        await context.clear()
-
-        try:
-            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-            await notify_admins_key_conflict(session, user.id, normalized_key)
-        except Exception as notify_error:
-            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
-
-        from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton
-        from bots.max_bot.payloads import ProfileViewPayload
-        keyboard = Keyboard(
-            buttons=[
-                [KeyboardButton(
-                    text="⬅️ Назад к ключам",
-                    payload=ProfileViewPayload(section="keys", page=0).pack()
-                )]
-            ],
-            inline=True
-        )
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=ADD_KEY_CONFLICT.format(key=normalized_key),
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
 
     except IntegrityError as e:
         logger.warning(

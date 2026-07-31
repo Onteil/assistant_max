@@ -204,7 +204,7 @@ async def _process_pending_tickets_async() -> dict:
                         await session.commit()
                         
                         sent = await _process_support_ticket(
-                            ticket, max_bot, session, stats
+                            ticket, max_bot, session, stats, work_mode=work_mode
                         )
                     
                     elif ticket.ticket_type == TicketType.CONSULTATION:
@@ -215,7 +215,7 @@ async def _process_pending_tickets_async() -> dict:
                         await session.commit()
                         
                         sent = await _process_consultation_ticket(
-                            ticket, max_bot, session, stats
+                            ticket, max_bot, session, stats, work_mode=work_mode
                         )
                     else:
                         sent = False
@@ -389,55 +389,31 @@ async def _process_invoice_ticket(
     Process INVOICE ticket - notify manager or admins.
     Supports MAX messenger only.
     
-    Re-checks manager availability at the time of processing: if the originally
-    assigned manager is now inactive or not working today, the backup chain is
-    traversed and the ticket is reassigned before sending the notification.
+    Re-runs the manager assignment chain at processing time so changes made
+    while the ticket was queued are respected.
     
     Returns True if at least one notification was sent successfully.
     """
     from database.models import MAX_Messenger_Data, Staff_Member
 
-    if ticket.assigned_staff_id:
-        # Re-check that the assigned manager is still available right now.
-        # The ticket may have been created hours ago; the manager could have
-        # set is_working_today=False since then.
-        stmt_mgr = select(Staff_Member).where(Staff_Member.id == ticket.assigned_staff_id)
-        result_mgr = await session.execute(stmt_mgr)
-        current_manager = result_mgr.scalar_one_or_none()
+    from services.ticket_service import determine_assigned_manager
 
-        manager_available = (
-            current_manager is not None
-            and current_manager.is_active
-            and current_manager.is_working_today
-        )
-
-        if not manager_available:
-            logger.warning(
-                f"Assigned manager for invoice ticket {ticket.id} is unavailable "
-                f"(staff_id={ticket.assigned_staff_id}, "
-                f"is_active={current_manager.is_active if current_manager else 'N/A'}, "
-                f"is_working_today={current_manager.is_working_today if current_manager else 'N/A'}). "
-                f"Re-running assignment via backup chain."
-            )
-            # Re-run the full backup chain to find an available manager
-            from services.ticket_service import determine_assigned_manager
-            new_staff_id, has_manager = await determine_assigned_manager(
-                session=session,
-                user_id=ticket.user_id,
-                assign_admin_if_no_manager=True,
-            )
-            if new_staff_id:
-                ticket.assigned_staff_id = new_staff_id
-                await session.commit()
-                logger.info(
-                    f"Invoice ticket {ticket.id} reassigned: "
-                    f"old_staff={ticket.assigned_staff_id}, new_staff={new_staff_id}, "
-                    f"has_manager={has_manager}"
-                )
-            else:
-                # No one available at all — fall through to admin notification below
-                ticket.assigned_staff_id = None
-                await session.commit()
+    previous_staff_id = ticket.assigned_staff_id
+    new_staff_id, has_manager = await determine_assigned_manager(
+        session=session,
+        user_id=ticket.user_id,
+        assign_admin_if_no_manager=True,
+    )
+    ticket.assigned_staff_id = new_staff_id
+    await session.commit()
+    logger.info(
+        "Invoice ticket %s assignment refreshed from queue: old_staff=%s, "
+        "new_staff=%s, has_manager=%s",
+        ticket.id,
+        previous_staff_id,
+        new_staff_id,
+        has_manager,
+    )
 
     if ticket.assigned_staff_id:
         # Notify assigned manager
@@ -791,14 +767,15 @@ async def _process_support_ticket(
     ticket: Ticket,
     max_bot,
     session: AsyncSession,
-    stats: dict
+    stats: dict,
+    work_mode: WorkMode = WorkMode.REGULAR,
 ) -> bool:
     """
     Process TECHNICAL_SUPPORT ticket created during non-working hours.
 
-    At the start of working hours, assigns the ticket to the next support staff
-    member via round-robin and notifies only that person. Falls back to admins
-    if no support staff is available. Also notifies the escalation_duty_channel.
+    In REGULAR mode, assigns the ticket through the existing round-robin.
+    In EXTENDED mode, assigns it to the configured duty engineer. Falls back
+    to admins when the recipient for the current mode is unavailable.
     Schedules escalation monitoring after successful notification.
 
     Returns True if at least one notification was sent successfully.
@@ -806,6 +783,7 @@ async def _process_support_ticket(
     from database.models import MAX_Messenger_Data
     from services.escalation_service import get_active_admins
     from services.round_robin_service import get_next_support_staff
+    from services.ticket_service import _get_duty_engineer
     from utils.timezone_helpers import get_moscow_now_naive
 
     # Calculate time since creation (for display in notification)
@@ -831,7 +809,7 @@ async def _process_support_ticket(
 
     notification_text += (
         f"\n⏱ <b>Ожидала в очереди:</b> {minutes} мин\n"
-        f"💬 <b>Клиенту сообщено:</b> \"Техподдержка ответит в начале рабочего дня\"\n"
+        f"💬 <b>Клиенту сообщено:</b> \"Техподдержка ответит в ближайший рабочий период\"\n"
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )
 
@@ -847,14 +825,18 @@ async def _process_support_ticket(
         )
     ]]
 
-    # Round-robin: pick the next support staff member
-    recipient = await get_next_support_staff(session)
+    if work_mode == WorkMode.EXTENDED:
+        recipient = await _get_duty_engineer(session)
+        recipient_kind = "duty engineer"
+    else:
+        recipient = await get_next_support_staff(session)
+        recipient_kind = "round-robin support specialist"
     no_staff_suffix = ""
 
     if recipient is None:
         # No support staff — fall back to ALL admins with reason
         logger.warning(
-            f"No active support staff found for queued support ticket {ticket.id}, "
+            f"No {recipient_kind} found for queued support ticket {ticket.id}, "
             f"falling back to admins"
         )
         admins = await get_active_admins(session)
@@ -864,7 +846,7 @@ async def _process_support_ticket(
 
         no_staff_suffix = (
             "\n\n⚠️ <b>Причина уведомления администратора:</b> "
-            "В системе нет активных сотрудников техподдержки. "
+            f"Не найден получатель для режима {work_mode.value}. "
             "Заявка требует ручного назначения."
         )
 
@@ -1002,20 +984,22 @@ async def _process_consultation_ticket(
     ticket: Ticket,
     max_bot,
     session: AsyncSession,
-    stats: dict
+    stats: dict,
+    work_mode: WorkMode = WorkMode.REGULAR,
 ) -> bool:
     """
     Process CONSULTATION ticket created during non-working hours.
 
-    Assigns the ticket to the next consultation specialist via round-robin
-    and notifies only that person. Falls back to admins with reason if no
-    specialists are configured. Also notifies the duty channel.
+    In REGULAR mode, assigns the ticket through the existing round-robin.
+    In EXTENDED mode, assigns it to the configured duty estimate specialist.
+    Falls back to admins when the recipient for the current mode is unavailable.
 
     Returns True if at least one notification was sent successfully.
     """
     from database.models import MAX_Messenger_Data
     from services.escalation_service import get_active_admins
     from services.round_robin_service import get_next_consultation_specialist
+    from services.ticket_service import _get_duty_estimate_specialist
     from utils.timezone_helpers import get_moscow_now_naive
 
     # Calculate time since creation (for display in notification)
@@ -1051,7 +1035,7 @@ async def _process_consultation_ticket(
 
     notification_text += (
         f"\n⏱ <b>Ожидала в очереди:</b> {minutes} мин\n"
-        f"💬 <b>Клиенту сообщено:</b> \"Специалист ответит в начале рабочего дня\"\n"
+        f"💬 <b>Клиенту сообщено:</b> \"Специалист ответит в ближайший рабочий период\"\n"
         f"⚠️ <b>Требуется взять заявку в работу</b>"
     )
 
@@ -1066,14 +1050,18 @@ async def _process_consultation_ticket(
         )
     ]]
 
-    # Round-robin: pick the next consultation specialist
-    recipient = await get_next_consultation_specialist(session)
+    if work_mode == WorkMode.EXTENDED:
+        recipient = await _get_duty_estimate_specialist(session)
+        recipient_kind = "duty estimate specialist"
+    else:
+        recipient = await get_next_consultation_specialist(session)
+        recipient_kind = "round-robin consultation specialist"
     no_specialist_suffix = ""
 
     if recipient is None:
         # Fall back to ALL admins with reason
         logger.warning(
-            f"No estimate tech specialists found for queued consultation ticket {ticket.id}, "
+            f"No {recipient_kind} found for queued consultation ticket {ticket.id}, "
             f"falling back to admins"
         )
         admins = await get_active_admins(session)
@@ -1083,7 +1071,7 @@ async def _process_consultation_ticket(
 
         no_specialist_suffix = (
             "\n\n⚠️ <b>Причина уведомления администратора:</b> "
-            "В системе не настроен ни один сметный тех. специалист. "
+            f"Не найден получатель для режима {work_mode.value}. "
             "Заявка требует ручного назначения."
         )
 

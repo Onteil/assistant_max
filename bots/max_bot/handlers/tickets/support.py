@@ -78,8 +78,6 @@ from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
-    KeyConflictError,
-    add_user_key,
     add_user_organization,
     get_user_by_id,
     get_user_by_max_id,
@@ -1956,26 +1954,20 @@ async def process_new_key_for_support(
             )
             return
         
-        # Check for key conflicts via i-TAT API
-        itat_client = get_itat_client()
-        conflict_response = await itat_client.check_key_conflict(
-            grand_key=normalized_key,
-            user_id=user.max_user_id
+        from services.key_conflict_service import add_key_with_conflict_handling
+
+        key_result = await add_key_with_conflict_handling(
+            session=session,
+            user=user,
+            key_number=normalized_key,
         )
-        
-        logger.info(f"Key conflict check result: {conflict_response}")
-        
-        conflict_status = KeyConflictStatus.NONE
-        if conflict_response.get("status") == "conflict":
-            conflict_status = KeyConflictStatus.PENDING_REVIEW
-            owner_info = conflict_response.get("owner", "Неизвестный владелец")
-            logger.warning(f"Key conflict detected: key={normalized_key}, owner={owner_info}")
-        
-        # Add key to user profile
-        await add_user_key(session, user_id, normalized_key, conflict_status)
-        
-        # Update user assets via i-TAT API (only if no conflict)
-        if conflict_status == KeyConflictStatus.NONE:
+        conflict_status = (
+            KeyConflictStatus.PENDING_REVIEW
+            if key_result.has_conflict
+            else KeyConflictStatus.NONE
+        )
+
+        if not key_result.has_conflict:
             assets_response = await call_itat_with_retry(
                 session=session,
                 operation="update_user_assets",
@@ -1988,40 +1980,13 @@ async def process_new_key_for_support(
                 ),
                 user_id=user.id,
             )
-            if assets_response is not None:
-                logger.info(f"Assets update result: {assets_response}")
-            else:
-                logger.warning(f"update_user_assets queued for retry: user_id={user.id}, key={normalized_key}")
-        
-        await session.commit()
-        
-        logger.info(f"GS_Key added: user_id={user_id}, key={normalized_key}, conflict={conflict_status.value}")
-        
-        # Notify administrators if key conflict detected
-        if conflict_status == KeyConflictStatus.PENDING_REVIEW:
-            try:
-                from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-                notified_count = await notify_admins_key_conflict(
-                    session,
-                    user_id,
+            if assets_response is None:
+                logger.warning(
+                    "update_user_assets queued for retry: user_id=%s, key=%s",
+                    user.id,
                     normalized_key,
                 )
-                if notified_count:
-                    logger.info(
-                        f"Key conflict notification sent for user_id={user_id}, "
-                        f"key={normalized_key}, admins_notified={notified_count}"
-                    )
-                else:
-                    logger.warning(
-                        f"Key conflict notification was not delivered for "
-                        f"user_id={user_id}, key={normalized_key}"
-                    )
-            except Exception as notify_error:
-                logger.error(
-                    f"Failed to send key conflict notification for user_id={user_id}: {notify_error}",
-                    exc_info=True
-                )
-        
+
         # Return to key context selection state
         await context.set_state(SupportStates.selecting_key_context)
         
@@ -2056,32 +2021,6 @@ async def process_new_key_for_support(
             chat_id=chat_id,
             text="ℹ️ Этот ключ уже добавлен в ваш профиль. Вы не можете добавить свой же ключ повторно.",
             parse_mode="HTML"
-        )
-    except KeyConflictError as e:
-        logger.warning(
-            f"Key conflict (DB fallback) in support: key={key_number}, "
-            f"owner_user_id={e.existing_user_id}"
-        )
-        await session.commit()
-        try:
-            from bots.max_bot.utils.admin_notifications import notify_admins_key_conflict
-            await notify_admins_key_conflict(session, user_id, normalized_key)
-        except Exception as notify_error:
-            logger.error(f"Failed to send key conflict notification: {notify_error}", exc_info=True)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text="⚠️ Ключ добавлен, но обнаружен конфликт. Ключ отправлен на проверку администратору и не может быть выбран.",
-            parse_mode="HTML"
-        )
-        await context.set_state(SupportStates.selecting_key_context)
-        selected_keys = set(data.get("selected_keys", []))
-        await show_key_context_selection(
-            chat_id=chat_id,
-            user_id=user_id,
-            selected_keys=selected_keys,
-            page=0,
-            session=session,
-            messenger_adapter=messenger_adapter
         )
     except Exception as e:
         logger.error(

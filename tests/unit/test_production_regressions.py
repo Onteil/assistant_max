@@ -33,8 +33,20 @@ from celery_app.nps_tasks import (
     build_nps_delivery_key,
     build_nps_task_id,
 )
-from database.models import NPS_Response, SurveyType, TicketStatus, TicketType
-from services import itat_retry_helper, ticket_service, user_service
+from database.models import (
+    KeyConflictStatus,
+    NPS_Response,
+    SurveyType,
+    TicketStatus,
+    TicketType,
+    WorkMode,
+)
+from services import (
+    itat_retry_helper,
+    key_conflict_service,
+    ticket_service,
+    user_service,
+)
 from services.i_tat_service import (
     ITatAPIClient,
     NonRetryableAPIError,
@@ -593,6 +605,228 @@ async def test_max_key_conflict_notification_uses_messenger_data_fallback(
     bot.send_message.assert_awaited_once()
     assert bot.send_message.await_args.kwargs["chat_id"] == 300
     bot.session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shared_key_conflict_flow_notifies_admins_without_ticket(monkeypatch):
+    user = SimpleNamespace(id=10, max_user_id=100)
+    key = SimpleNamespace(id=20)
+    session = SimpleNamespace(commit=AsyncMock())
+    add_key = AsyncMock(return_value=key)
+    notify_admins = AsyncMock(return_value=2)
+
+    monkeypatch.setattr(
+        key_conflict_service,
+        "check_key_conflict",
+        AsyncMock(
+            return_value=key_conflict_service.KeyConflictCheck(
+                has_conflict=True,
+                owner="Existing owner",
+            )
+        ),
+    )
+    monkeypatch.setattr(key_conflict_service, "add_user_key", add_key)
+    monkeypatch.setattr(
+        admin_notifications,
+        "notify_admins_key_conflict",
+        notify_admins,
+    )
+
+    result = await key_conflict_service.add_key_with_conflict_handling(
+        session=session,
+        user=user,
+        key_number="00001_00001",
+    )
+
+    assert result.has_conflict is True
+    add_key.assert_awaited_once_with(
+        session,
+        user.id,
+        "00001_00001",
+        KeyConflictStatus.PENDING_REVIEW,
+    )
+    session.commit.assert_awaited_once()
+    notify_admins.assert_awaited_once_with(session, user.id, "00001_00001")
+
+
+@pytest.mark.asyncio
+async def test_key_conflict_check_falls_back_locally_on_itat_timeout(monkeypatch):
+    api = SimpleNamespace(
+        check_key_conflict=AsyncMock(side_effect=TimeoutError("i-TAT timeout"))
+    )
+    monkeypatch.setattr(key_conflict_service, "get_itat_client", lambda: api)
+    query_result = Mock()
+    query_result.scalar_one_or_none.return_value = None
+    session = SimpleNamespace(execute=AsyncMock(return_value=query_result))
+
+    result = await key_conflict_service.check_key_conflict(
+        session=session,
+        user=SimpleNamespace(max_user_id=100),
+        key_number="00001_00002",
+    )
+
+    assert result.has_conflict is False
+    assert result.source == "local_fallback"
+    api.check_key_conflict.assert_awaited_once_with(
+        grand_key="00001_00002",
+        user_id=100,
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_key_conflict_resolution_closes_only_selected_tickets():
+    legacy_ticket = SimpleNamespace(
+        ticket_status=TicketStatus.NEW,
+        closed_at=None,
+        resolution_comment=None,
+    )
+    query_result = Mock()
+    query_result.scalars.return_value.all.return_value = [legacy_ticket]
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=query_result),
+        flush=AsyncMock(),
+    )
+
+    closed = await key_conflict_service.close_legacy_key_conflict_tickets(
+        session=session,
+        key_id=25,
+        resolution="Resolved by admin",
+    )
+
+    assert closed == 1
+    assert legacy_ticket.ticket_status == TicketStatus.CLOSED
+    assert legacy_ticket.resolution_comment == "Resolved by admin"
+    assert legacy_ticket.closed_at is not None
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("processor_name", "duty_selector_name", "round_robin_name", "ticket_type"),
+    [
+        (
+            "_process_support_ticket",
+            "_get_duty_engineer",
+            "get_next_support_staff",
+            TicketType.TECHNICAL_SUPPORT,
+        ),
+        (
+            "_process_consultation_ticket",
+            "_get_duty_estimate_specialist",
+            "get_next_consultation_specialist",
+            TicketType.CONSULTATION,
+        ),
+    ],
+)
+async def test_extended_queue_uses_duty_staff_without_round_robin(
+    monkeypatch,
+    processor_name,
+    duty_selector_name,
+    round_robin_name,
+    ticket_type,
+):
+    from celery_app import escalation_tasks, ticket_notification_tasks
+    from services import round_robin_service
+
+    user = SimpleNamespace(full_name="Test User", phone_number="+70000000000")
+    ticket = SimpleNamespace(
+        id=291,
+        ticket_type=ticket_type,
+        user=user,
+        created_at=datetime.now(),
+        description=None,
+        organization_inn=None,
+        organization=None,
+        gs_keys=[],
+        file_attachments=[],
+        assigned_staff_id=None,
+    )
+    duty = SimpleNamespace(id=15, max_chat_id=5015, max_user_id=1500)
+    session = SimpleNamespace(commit=AsyncMock())
+    bot = SimpleNamespace(send_message=AsyncMock())
+    duty_selector = AsyncMock(return_value=duty)
+    round_robin = AsyncMock()
+
+    monkeypatch.setattr(ticket_service, duty_selector_name, duty_selector)
+    monkeypatch.setattr(round_robin_service, round_robin_name, round_robin)
+    monkeypatch.setattr(
+        escalation_tasks,
+        "schedule_technical_support_monitoring",
+        AsyncMock(),
+    )
+
+    processor = getattr(ticket_notification_tasks, processor_name)
+    stats = {"notifications_sent": 0}
+    sent = await processor(
+        ticket,
+        bot,
+        session,
+        stats,
+        work_mode=WorkMode.EXTENDED,
+    )
+
+    assert sent is True
+    assert ticket.assigned_staff_id == duty.id
+    assert stats["notifications_sent"] == 1
+    duty_selector.assert_awaited_once_with(session)
+    round_robin.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_invoice_queue_refreshes_manager_before_notification(monkeypatch):
+    from celery_app import escalation_tasks, ticket_notification_tasks
+
+    user = SimpleNamespace(
+        id=10,
+        full_name="Test User",
+        phone_number="+70000000000",
+        max_user_id=100,
+    )
+    ticket = SimpleNamespace(
+        id=292,
+        user_id=user.id,
+        user=user,
+        assigned_staff_id=5,
+        created_at=datetime.now(),
+        file_attachments=[],
+    )
+    session = SimpleNamespace(commit=AsyncMock())
+    determine_manager = AsyncMock(return_value=(8, True))
+    send_notification = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(
+        ticket_service,
+        "determine_assigned_manager",
+        determine_manager,
+    )
+    monkeypatch.setattr(
+        ticket_notification_tasks,
+        "send_staff_notification",
+        send_notification,
+    )
+    monkeypatch.setattr(
+        escalation_tasks,
+        "schedule_escalation_monitoring",
+        AsyncMock(),
+    )
+
+    sent = await ticket_notification_tasks._process_invoice_ticket(
+        ticket=ticket,
+        max_bot=SimpleNamespace(),
+        messenger_type="max",
+        messenger_id=user.max_user_id,
+        session=session,
+        stats={"notifications_sent": 0},
+    )
+
+    assert sent is True
+    assert ticket.assigned_staff_id == 8
+    determine_manager.assert_awaited_once_with(
+        session=session,
+        user_id=user.id,
+        assign_admin_if_no_manager=True,
+    )
+    assert send_notification.await_args.kwargs["staff_id"] == 8
 
 
 def test_timezone_migration_does_not_swallow_update_errors(monkeypatch):
