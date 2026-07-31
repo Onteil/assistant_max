@@ -9,7 +9,6 @@ Requirements: 4.1-4.9 - Ticket status synchronization
 """
 
 import logging
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -20,7 +19,7 @@ from api.schemas.ticket_status_schemas import (
     TicketStatusWebhookPayload,
     TicketStatusWebhookResponse,
 )
-from constants import get_session, WEBHOOK_API_KEY
+from constants import WEBHOOK_API_KEY, get_session
 from database.models import (
     Action_Log,
     ActionType,
@@ -28,6 +27,7 @@ from database.models import (
     Ticket,
     TicketStatus,
 )
+from utils.timezone_helpers import get_moscow_now_naive
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -249,6 +249,35 @@ async def ticket_status_update_webhook(
                 ticket_id=payload.ticket_id,
                 new_status=payload.status
             )
+
+        if (
+            old_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}
+            and new_status_enum != old_status
+        ):
+            action_log = Action_Log(
+                action_type=ActionType.STATUS_CHANGED,
+                ticket_id=ticket.id,
+                user_id=ticket.user_id,
+                action_details={
+                    "action": "ticket_status_regression_ignored",
+                    "old_status": old_status.value,
+                    "new_status": new_status_enum.value,
+                    "messenger": payload.messenger,
+                },
+                action_timestamp=get_moscow_now_naive(),
+            )
+            session.add(action_log)
+            await session.commit()
+            logger.warning(
+                f"Ignored obsolete status transition for ticket {ticket.id}: "
+                f"{old_status.value} -> {new_status_enum.value}"
+            )
+            return TicketStatusWebhookResponse(
+                status="success",
+                message="Ignored obsolete status transition from terminal state",
+                ticket_id=payload.ticket_id,
+                new_status=old_status.value,
+            )
         
         # Requirement 4.1: Update Ticket.status to new status
         ticket.ticket_status = new_status_enum
@@ -266,7 +295,7 @@ async def ticket_status_update_webhook(
                 )
             
             # Requirement 4.2: Set closed_at timestamp
-            ticket.closed_at = datetime.now()
+            ticket.closed_at = get_moscow_now_naive()
             
             # Requirement 4.3: Set closed_by_staff_id
             staff = await _find_staff_by_messenger_id(
@@ -368,7 +397,7 @@ async def ticket_status_update_webhook(
                 "notification_messenger": notification_messenger,
                 "closed_by_staff_messenger_id": payload.closed_by_staff_id if new_status_enum == TicketStatus.CLOSED else None,
             },
-            action_timestamp=datetime.now()
+            action_timestamp=get_moscow_now_naive()
         )
         session.add(action_log)
         await session.commit()

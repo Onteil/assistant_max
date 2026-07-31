@@ -2666,7 +2666,7 @@ async def create_invoice_ticket(
         if not is_working:
             # Non-working hours: show queue message
             from bots.max_bot.texts import get_invoice_non_working_hours_message
-            message_text = get_invoice_non_working_hours_message()
+            message_text = get_invoice_non_working_hours_message(ticket.id)
         elif has_manager:
             # Working hours with assigned manager
             response_time_message = INVOICE_RESPONSE_TIME_WORKING

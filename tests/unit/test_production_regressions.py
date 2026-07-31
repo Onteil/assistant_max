@@ -516,8 +516,45 @@ async def test_retry_error_response_is_recorded_as_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_obsolete_ticket_retry_does_not_regress_terminal_ticket():
+    from database.models import RetryStatus
+    from services import retry_service
+
+    ticket = SimpleNamespace(ticket_status=TicketStatus.CLOSED)
+    ticket_result = Mock()
+    ticket_result.scalar_one_or_none.return_value = ticket
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=ticket_result),
+        flush=AsyncMock(),
+    )
+    retry_record = SimpleNamespace(
+        id=43,
+        operation="log_ticket",
+        payload={"ticket_id": "TKT_294", "status": "В работе"},
+        attempt_count=0,
+        status=RetryStatus.PENDING,
+        completed_at=None,
+        last_error="timeout",
+    )
+    api_client = SimpleNamespace(log_ticket=AsyncMock())
+
+    succeeded = await retry_service.process_retry(
+        session=session,
+        retry_record=retry_record,
+        api_client=api_client,
+    )
+
+    assert succeeded is True
+    assert retry_record.status is RetryStatus.SUCCESS
+    assert retry_record.attempt_count == 1
+    assert retry_record.completed_at is not None
+    assert "obsolete" in retry_record.last_error
+    api_client.log_ticket.assert_not_awaited()
+    session.flush.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_retry_task_commits_each_processed_record(monkeypatch):
-    import constants
     from celery_app import retry_tasks
     from services import i_tat_service, retry_service
 
@@ -539,10 +576,15 @@ async def test_retry_task_commits_each_processed_record(monkeypatch):
             return False
 
     client = SimpleNamespace(close=AsyncMock())
+    task_engine = SimpleNamespace(dispose=AsyncMock())
     get_next = AsyncMock(side_effect=[*records, None])
     process = AsyncMock(return_value=True)
 
-    monkeypatch.setattr(constants, "AsyncSessionLocal", lambda: _SessionContext())
+    monkeypatch.setattr(
+        retry_tasks,
+        "_create_task_db",
+        lambda: (task_engine, lambda: _SessionContext()),
+    )
     monkeypatch.setattr(i_tat_service, "ITatAPIClient", lambda: client)
     monkeypatch.setattr(retry_service, "get_next_pending_retry", get_next)
     monkeypatch.setattr(retry_service, "process_retry", process)
@@ -558,6 +600,7 @@ async def test_retry_task_commits_each_processed_record(monkeypatch):
     assert session.commit.await_count == 2
     session.rollback.assert_not_awaited()
     client.close.assert_awaited_once()
+    task_engine.dispose.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -869,6 +912,7 @@ def test_timezone_migration_does_not_swallow_update_errors(monkeypatch):
 @pytest.mark.asyncio
 async def test_max_closure_commits_before_client_message_and_itat(monkeypatch):
     events = []
+    closed_at = datetime(2026, 7, 31, 14, 30, 0)
     final_comment = "Работы завершены"
     user = SimpleNamespace(id=42, max_messenger_data=SimpleNamespace(max_user_id=1001))
     ticket = SimpleNamespace(
@@ -906,6 +950,7 @@ async def test_max_closure_commits_before_client_message_and_itat(monkeypatch):
     session.commit = AsyncMock(side_effect=commit)
     add_ticket_message = AsyncMock()
     monkeypatch.setattr(ticket_service, "_get_staff_internal_id", AsyncMock(return_value=7))
+    monkeypatch.setattr(ticket_service, "get_moscow_now_naive", lambda: closed_at)
     monkeypatch.setattr(ticket_service, "_log_action", AsyncMock())
     monkeypatch.setattr(ticket_service, "schedule_survey", AsyncMock(return_value=(False, "test")))
     monkeypatch.setattr(ticket_service, "send_message_to_client_max", send_client_message)
@@ -925,6 +970,8 @@ async def test_max_closure_commits_before_client_message_and_itat(monkeypatch):
 
     assert result is ticket
     assert events == ["commit", "max", "commit", "itat"]
+    assert ticket.closed_at == closed_at
+    assert ticket.updated_at == closed_at
     add_ticket_message.assert_not_awaited()
     session.rollback.assert_not_awaited()
 
@@ -980,6 +1027,66 @@ async def test_external_closed_webhook_persists_its_comment(monkeypatch):
 
     assert ticket.ticket_status is TicketStatus.CLOSED
     assert ticket.resolution_comment == "Закрыто специалистом"
+
+
+@pytest.mark.asyncio
+async def test_terminal_ticket_webhook_regression_is_ignored():
+    user = SimpleNamespace(id=42, tg_user_id=None)
+    ticket = SimpleNamespace(
+        id=294,
+        user=user,
+        user_id=user.id,
+        ticket_status=TicketStatus.CLOSED,
+        closed_at=datetime(2026, 7, 31, 14, 30, 0),
+        closed_by_staff_id=7,
+        resolution_comment="Тест завершен",
+    )
+    ticket_result = Mock()
+    ticket_result.scalar_one_or_none.return_value = ticket
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=ticket_result),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+        add=Mock(),
+    )
+    payload = TicketStatusWebhookPayload(
+        ticket_id="294",
+        status="in_progress",
+        messenger="max",
+    )
+
+    response = await ticket_status_webhooks.ticket_status_update_webhook(
+        payload=payload,
+        session=session,
+        api_key="test",
+    )
+
+    assert response.status == "success"
+    assert "Ignored obsolete" in response.message
+    assert ticket.ticket_status is TicketStatus.CLOSED
+    action_log = session.add.call_args.args[0]
+    assert action_log.action_details["action"] == "ticket_status_regression_ignored"
+    assert action_log.action_details["new_status"] == TicketStatus.IN_PROGRESS.value
+    session.commit.assert_awaited_once()
+
+
+def test_max_ticket_creation_messages_include_ticket_number():
+    from bots.max_bot.texts import (
+        CONSULTATION_TICKET_CREATED,
+        get_consultation_non_working_hours_message,
+        get_invoice_non_working_hours_message,
+        get_support_non_working_hours_message,
+    )
+
+    messages = [
+        get_invoice_non_working_hours_message(294),
+        get_support_non_working_hours_message(295),
+        CONSULTATION_TICKET_CREATED.format(ticket_id=296),
+        get_consultation_non_working_hours_message(297),
+    ]
+
+    for ticket_id, message in zip(range(294, 298), messages, strict=True):
+        assert f"#{ticket_id}" in message
 
 
 @pytest.mark.asyncio

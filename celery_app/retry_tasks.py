@@ -42,11 +42,8 @@ def process_api_retry_queue(self) -> dict[str, Any]:
     Returns:
         Dict with processing statistics
     """
-    loop = None
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(_process_api_retry_queue_async())
+        result = asyncio.run(_process_api_retry_queue_async())
         logger.info(
             f"process_api_retry_queue completed: "
             f"processed={result['processed']}, "
@@ -64,14 +61,21 @@ def process_api_retry_queue(self) -> dict[str, Any]:
             logger.error("Max retries exceeded for process_api_retry_queue task itself")
             return {"status": "error", "message": str(exc)}
 
-    finally:
-        if loop is not None:
-            try:
-                from constants import engine
-                loop.run_until_complete(engine.dispose())
-                loop.close()
-            except Exception as e:
-                logger.warning(f"Error closing event loop: {e}")
+
+
+def _create_task_db() -> tuple[Any, Any]:
+    """Create database resources bound to one Celery task event loop."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from constants import DB_URL, SQL_ECHO
+
+    task_engine = create_async_engine(DB_URL, echo=SQL_ECHO, pool_pre_ping=True)
+    task_session = async_sessionmaker(
+        bind=task_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    return task_engine, task_session
 
 
 async def _process_api_retry_queue_async() -> dict[str, Any]:
@@ -81,7 +85,6 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
     Returns:
         Dict with keys: processed, succeeded, failed, exhausted
     """
-    from constants import AsyncSessionLocal
     from services.i_tat_service import ITatAPIClient
     from services.retry_service import (
         RETRY_BATCH_SIZE,
@@ -93,49 +96,53 @@ async def _process_api_retry_queue_async() -> dict[str, Any]:
 
     stats = {"processed": 0, "succeeded": 0, "failed": 0, "exhausted": 0}
 
-    async with AsyncSessionLocal() as session:
-        api_client = ITatAPIClient()
-        try:
-            for _ in range(RETRY_BATCH_SIZE):
-                retry_record = await get_next_pending_retry(session)
-                if retry_record is None:
-                    if stats["processed"] == 0:
-                        logger.debug("No pending retries to process")
-                    break
+    task_engine, TaskSession = _create_task_db()
+    try:
+        async with TaskSession() as session:
+            api_client = ITatAPIClient()
+            try:
+                for _ in range(RETRY_BATCH_SIZE):
+                    retry_record = await get_next_pending_retry(session)
+                    if retry_record is None:
+                        if stats["processed"] == 0:
+                            logger.debug("No pending retries to process")
+                        break
 
-                stats["processed"] += 1
-                try:
-                    success = await process_retry(session, retry_record, api_client)
+                    stats["processed"] += 1
+                    try:
+                        success = await process_retry(session, retry_record, api_client)
 
-                    if success:
-                        stats["succeeded"] += 1
-                        logger.info(
-                            f"Retry succeeded: id={retry_record.id}, "
-                            f"operation={retry_record.operation}"
+                        if success:
+                            stats["succeeded"] += 1
+                            logger.info(
+                                f"Retry succeeded: id={retry_record.id}, "
+                                f"operation={retry_record.operation}"
+                            )
+                        else:
+                            stats["failed"] += 1
+                            # Refresh record from DB to get updated status
+                            await session.refresh(retry_record)
+                            # Check if this attempt exhausted all retries
+                            if retry_record.status == RetryStatus.FAILED:
+                                stats["exhausted"] += 1
+                                await _escalate_failed_retry(session, retry_record)
+
+                        # Persist each external operation independently. A later task
+                        # timeout cannot roll back records already processed.
+                        await session.commit()
+
+                    except Exception as e:
+                        await session.rollback()
+                        logger.error(
+                            f"Unexpected error processing retry id={retry_record.id}: {e}",
+                            exc_info=True,
                         )
-                    else:
-                        stats["failed"] += 1
-                        # Refresh record from DB to get updated status
-                        await session.refresh(retry_record)
-                        # Check if this attempt exhausted all retries
-                        if retry_record.status == RetryStatus.FAILED:
-                            stats["exhausted"] += 1
-                            await _escalate_failed_retry(session, retry_record)
+                        raise
 
-                    # Persist each external operation independently. A later task
-                    # timeout cannot roll back records already processed.
-                    await session.commit()
-
-                except Exception as e:
-                    await session.rollback()
-                    logger.error(
-                        f"Unexpected error processing retry id={retry_record.id}: {e}",
-                        exc_info=True,
-                    )
-                    raise
-
-        finally:
-            await api_client.close()
+            finally:
+                await api_client.close()
+    finally:
+        await task_engine.dispose()
 
     return stats
 
@@ -156,21 +163,8 @@ def cleanup_old_api_retries(self) -> dict[str, Any]:
     Returns:
         Dict with count of deleted records
     """
-    loop = None
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def _run():
-            from constants import AsyncSessionLocal
-            from services.retry_service import cleanup_old_retries
-
-            async with AsyncSessionLocal() as session:
-                deleted = await cleanup_old_retries(session, days_old=30)
-                await session.commit()
-                return {"deleted": deleted}
-
-        result = loop.run_until_complete(_run())
+        result = asyncio.run(_cleanup_old_api_retries_async())
         logger.info(f"cleanup_old_api_retries completed: deleted={result['deleted']}")
         return result
 
@@ -181,11 +175,16 @@ def cleanup_old_api_retries(self) -> dict[str, Any]:
         except self.MaxRetriesExceededError:
             return {"status": "error", "message": str(exc)}
 
+
+
+async def _cleanup_old_api_retries_async() -> dict[str, int]:
+    from services.retry_service import cleanup_old_retries
+
+    task_engine, TaskSession = _create_task_db()
+    try:
+        async with TaskSession() as session:
+            deleted = await cleanup_old_retries(session, days_old=30)
+            await session.commit()
+            return {"deleted": deleted}
     finally:
-        if loop is not None:
-            try:
-                from constants import engine
-                loop.run_until_complete(engine.dispose())
-                loop.close()
-            except Exception as e:
-                logger.warning(f"Error closing event loop: {e}")
+        await task_engine.dispose()

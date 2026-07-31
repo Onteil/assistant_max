@@ -1171,7 +1171,7 @@ async def take_ticket_into_work(
             ticket.assigned_staff_id = staff_member.id
         
         ticket.escalated_at = None
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = get_moscow_now_naive()
         
         # Cancel escalation monitoring tasks
         try:
@@ -1307,7 +1307,7 @@ async def set_ticket_waiting_client(
         # Update ticket status
         old_status = ticket.ticket_status
         ticket.ticket_status = TicketStatus.WAITING_CLIENT
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = get_moscow_now_naive()
         
         # Log action
         await _log_action(
@@ -1416,8 +1416,8 @@ async def close_ticket(
         # Update ticket status and set closed_at
         old_status = ticket.ticket_status
         ticket.ticket_status = TicketStatus.CLOSED
-        ticket.closed_at = datetime.utcnow()
-        ticket.updated_at = datetime.utcnow()
+        ticket.closed_at = get_moscow_now_naive()
+        ticket.updated_at = get_moscow_now_naive()
         
         # Log action
         await _log_action(
@@ -1577,8 +1577,8 @@ async def close_ticket_with_notification(
         old_status = ticket.ticket_status
         ticket.ticket_status = TicketStatus.CLOSED
         ticket.resolution_comment = final_comment
-        ticket.closed_at = datetime.utcnow()
-        ticket.updated_at = datetime.utcnow()
+        ticket.closed_at = get_moscow_now_naive()
+        ticket.updated_at = get_moscow_now_naive()
         
         # Log action
         await _log_action(
@@ -1790,7 +1790,7 @@ async def transfer_ticket(
         ticket.assigned_staff_id = target_employee.id  # Use internal ID, not tg_user_id
         if new_ticket_type is not None:
             ticket.ticket_type = new_ticket_type
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = get_moscow_now_naive()
         
         # Get internal staff ID for logging
         target_staff_internal_id = await _get_staff_internal_id(session, target_employee_id, messenger)
@@ -2463,7 +2463,7 @@ async def handle_client_message_to_ticket(
         if ticket.ticket_status == TicketStatus.WAITING_CLIENT:
             old_status = ticket.ticket_status
             ticket.ticket_status = TicketStatus.IN_PROGRESS
-            ticket.updated_at = datetime.utcnow()
+            ticket.updated_at = get_moscow_now_naive()
             
             # Cancel escalation monitoring tasks
             try:
@@ -2761,7 +2761,7 @@ async def forward_client_message_to_manager(
     if ticket.ticket_status == TicketStatus.WAITING_CLIENT:
         old_status = ticket.ticket_status
         ticket.ticket_status = TicketStatus.IN_PROGRESS
-        ticket.updated_at = datetime.utcnow()
+        ticket.updated_at = get_moscow_now_naive()
         try:
             from celery_app.escalation_tasks import cancel_escalation_monitoring
             await cancel_escalation_monitoring(ticket.id)

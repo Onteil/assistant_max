@@ -383,11 +383,16 @@ def _get_time_greeting() -> str:
         return "🌙", "Добрый вечер!"
 
 
-def get_invoice_non_working_hours_message() -> str:
+def _ticket_number_line(ticket_id: int | None) -> str:
+    return f"\n📋 <b>Номер заявки:</b> #{ticket_id}\n" if ticket_id is not None else ""
+
+
+def get_invoice_non_working_hours_message(ticket_id: int | None = None) -> str:
     """Non-working hours message for invoice tickets with time-based greeting."""
     emoji, greeting = _get_time_greeting()
     return f"""
 {emoji} <b>{greeting}</b> 
+{_ticket_number_line(ticket_id)}
 
 Ваша заявка поставлена в очередь. На данный момент нет свободных специалистов.
 
@@ -399,11 +404,12 @@ def get_invoice_non_working_hours_message() -> str:
 """
 
 
-def get_support_non_working_hours_message() -> str:
+def get_support_non_working_hours_message(ticket_id: int | None = None) -> str:
     """Non-working hours message for support tickets with time-based greeting."""
     emoji, greeting = _get_time_greeting()
     return f"""
 {emoji} <b>{greeting}</b> 
+{_ticket_number_line(ticket_id)}
 
 Ваша заявка поставлена в очередь. На данный момент нет свободных специалистов.
 
@@ -482,16 +488,19 @@ CONSULTATION_ENTER_DESCRIPTION = """
 CONSULTATION_TICKET_CREATED = """
 ✅ <b>Заявка на консультацию создана!</b>
 
+📋 <b>Номер заявки:</b> #{ticket_id}
+
 Ваш вопрос передан сметному специалисту. Он свяжется с вами в ближайшее время.
 """
 
-def get_consultation_non_working_hours_message() -> str:
+def get_consultation_non_working_hours_message(ticket_id: int | None = None) -> str:
     """Non-working hours message for consultation tickets with time-based greeting."""
     emoji, greeting = _get_time_greeting()
     return f"""
 {emoji} <b>{greeting}</b>
 
 ✅ <b>Заявка на консультацию создана!</b>
+{_ticket_number_line(ticket_id)}
 
 Ваш вопрос поставлен в очередь.
 

@@ -917,7 +917,11 @@ async def handle_consultation_key_action(
                 await log_ticket_creation_to_itat(session, ticket)
             except Exception as e:
                 logger.error(f"Failed to log consultation ticket to i-TAT: {e}", exc_info=True)
-            confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
+            confirmation_text = (
+                CONSULTATION_TICKET_CREATED.format(ticket_id=ticket.id)
+                if is_working
+                else get_consultation_non_working_hours_message(ticket.id)
+            )
             await messenger_adapter.send_message(chat_id=chat_id, text=confirmation_text, parse_mode="HTML")
             if is_working and ticket.assigned_staff_id:
                 from services.ticket_service import send_staff_notification, route_ticket
@@ -1424,7 +1428,11 @@ async def handle_consultation_description_next(
                 )
 
         # Send confirmation to user
-        confirmation_text = CONSULTATION_TICKET_CREATED if is_working else get_consultation_non_working_hours_message()
+        confirmation_text = (
+            CONSULTATION_TICKET_CREATED.format(ticket_id=ticket.id)
+            if is_working
+            else get_consultation_non_working_hours_message(ticket.id)
+        )
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=confirmation_text,

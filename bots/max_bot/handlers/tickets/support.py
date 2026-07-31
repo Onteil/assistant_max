@@ -2383,7 +2383,7 @@ async def create_support_ticket(
         if work_mode == WorkMode.NON_WORKING:
             # Non-working hours: show queue message instead of standard template
             from bots.max_bot.texts import get_support_non_working_hours_message
-            message_text = get_support_non_working_hours_message()
+            message_text = get_support_non_working_hours_message(ticket.id)
         else:
             # Working hours: use standard template
             response_time_message = response_time_messages[work_mode]

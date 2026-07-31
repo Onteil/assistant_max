@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import API_Retry_Queue, RetryStatus
+from database.models import API_Retry_Queue, RetryStatus, Ticket, TicketStatus
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,19 @@ RETRY_DELAYS = [
 MAX_RETRY_ATTEMPTS = 5
 RETRY_BATCH_SIZE = 100
 SUCCESS_API_STATUSES = frozenset({"ok", "success"})
+TERMINAL_TICKET_STATUSES = frozenset({TicketStatus.CLOSED, TicketStatus.CANCELLED})
+ITAT_TICKET_STATUS_ALIASES = {
+    "new": TicketStatus.NEW,
+    "in_progress": TicketStatus.IN_PROGRESS,
+    "waiting_client": TicketStatus.WAITING_CLIENT,
+    "closed": TicketStatus.CLOSED,
+    "cancelled": TicketStatus.CANCELLED,
+    "новое": TicketStatus.NEW,
+    "в работе": TicketStatus.IN_PROGRESS,
+    "ожидание клиента": TicketStatus.WAITING_CLIENT,
+    "закрыто": TicketStatus.CLOSED,
+    "отменено": TicketStatus.CANCELLED,
+}
 
 
 async def queue_api_retry(
@@ -163,6 +176,59 @@ def _is_successful_api_response(result: Any) -> bool:
     return status.strip().lower() in SUCCESS_API_STATUSES
 
 
+def _parse_ticket_id(value: Any) -> int | None:
+    """Extract the local integer ticket id from i-TAT retry payloads."""
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+    if normalized.upper().startswith("TKT_"):
+        normalized = normalized[4:]
+
+    try:
+        return int(normalized)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _is_obsolete_ticket_retry(
+    session: AsyncSession,
+    retry_record: API_Retry_Queue,
+) -> bool:
+    """Return True when a stale i-TAT log would regress a terminal ticket."""
+    if retry_record.operation != "log_ticket":
+        return False
+
+    payload = retry_record.payload or {}
+    ticket_id = _parse_ticket_id(payload.get("ticket_id"))
+    payload_status = ITAT_TICKET_STATUS_ALIASES.get(
+        str(payload.get("status", "")).strip().lower()
+    )
+    if ticket_id is None or payload_status is None:
+        return False
+
+    result = await session.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ticket = result.scalar_one_or_none()
+    return bool(
+        ticket
+        and ticket.ticket_status in TERMINAL_TICKET_STATUSES
+        and payload_status != ticket.ticket_status
+    )
+
+
+async def _mark_retry_skipped(
+    session: AsyncSession,
+    retry_record: API_Retry_Queue,
+    reason: str,
+) -> None:
+    """Complete a retry that is no longer valid without calling i-TAT."""
+    retry_record.attempt_count += 1
+    retry_record.status = RetryStatus.SUCCESS
+    retry_record.completed_at = datetime.utcnow()
+    retry_record.last_error = reason
+    await session.flush()
+
+
 async def mark_retry_success(session: AsyncSession, retry_id: int) -> None:
     """Mark a retry record as successfully completed."""
     try:
@@ -265,6 +331,14 @@ async def process_retry(
         f"Processing retry: id={retry_record.id}, operation={retry_record.operation}, "
         f"attempt={retry_record.attempt_count + 1}/{MAX_RETRY_ATTEMPTS}"
     )
+
+    if await _is_obsolete_ticket_retry(session, retry_record):
+        reason = "Skipped obsolete ticket status retry for terminal local ticket"
+        await _mark_retry_skipped(session, retry_record, reason)
+        logger.warning(
+            f"{reason}: retry_id={retry_record.id}, payload={retry_record.payload}"
+        )
+        return True
 
     if not hasattr(api_client, retry_record.operation):
         error_msg = f"Unknown API operation: {retry_record.operation}"
