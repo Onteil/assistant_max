@@ -764,6 +764,10 @@ class Message(Base):
     # Timestamp - use Moscow timezone
     from utils.timezone_helpers import get_moscow_now_naive
     sent_at = Column(DateTime, default=get_moscow_now_naive, nullable=False)
+
+    # Delivery state for client messages saved during off-hours.
+    staff_notified_at = Column(DateTime, nullable=True)
+    staff_notification_claimed_at = Column(DateTime, nullable=True)
     
     # Relationships
     ticket = relationship(

@@ -35,6 +35,7 @@ from celery_app.nps_tasks import (
 )
 from database.models import (
     KeyConflictStatus,
+    MessageType,
     NPS_Response,
     SurveyType,
     TicketStatus,
@@ -56,6 +57,172 @@ from services.i_tat_service import (
 from services.nps_handler import handle_rating_response
 from services.retry_service import _is_successful_api_response
 from services.user_service import _insert_gs_key_with_savepoint
+
+
+def _scalar_result(value):
+    result = Mock()
+    result.scalar_one_or_none.return_value = value
+    return result
+
+
+def test_deferred_message_metadata_preserves_supported_attachment_types():
+    from celery_app.ticket_notification_tasks import _stored_client_message_metadata
+
+    cases = [
+        (MessageType.PHOTO, "photo.jpg", "image"),
+        (MessageType.DOCUMENT, "contract.pdf", "file"),
+        (MessageType.VOICE, "voice.ogg", "voice"),
+        (MessageType.VOICE, "audio.mp3", "audio"),
+        (MessageType.VIDEO, "video.mp4", "video"),
+    ]
+
+    for message_type, file_name, expected_type in cases:
+        attachment = SimpleNamespace(
+            max_file_url="https://max.example/file",
+            telegram_file_id="https://fallback.example/file",
+            file_name=file_name,
+            file_size=123,
+        )
+        message = SimpleNamespace(
+            message_text="Тест",
+            message_type=message_type,
+            file_attachments=[attachment],
+        )
+
+        metadata = _stored_client_message_metadata(message)
+
+        assert metadata["attachment_type"] == expected_type
+        assert metadata["file_url"] == "https://max.example/file"
+        assert metadata["file_name"] == file_name
+
+
+@pytest.mark.asyncio
+async def test_existing_client_message_is_marked_only_after_successful_delivery():
+    staff = SimpleNamespace(id=7, max_user_id=700)
+    max_data = SimpleNamespace(max_chat_id=900)
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[_scalar_result(staff), _scalar_result(max_data)]
+        ),
+        add=Mock(),
+        flush=AsyncMock(),
+    )
+    adapter = SimpleNamespace(send_message=AsyncMock())
+    ticket = SimpleNamespace(
+        id=310,
+        assigned_staff_id=7,
+        ticket_status=TicketStatus.IN_PROGRESS,
+    )
+    user = SimpleNamespace(
+        id=27,
+        full_name="Тестовый клиент",
+        first_name="Тест",
+        phone_number=None,
+        email=None,
+    )
+    message = SimpleNamespace(
+        id=501,
+        staff_notified_at=None,
+        staff_notification_claimed_at=datetime(2026, 8, 1, 9, 0),
+    )
+
+    delivered = await ticket_service.forward_client_message_to_manager(
+        session=session,
+        messenger_adapter=adapter,
+        ticket=ticket,
+        user=user,
+        message_text="Тест отложенной доставки",
+        message_type_val=MessageType.TEXT.value,
+        existing_message=message,
+    )
+
+    assert delivered is True
+    assert message.staff_notified_at is not None
+    assert message.staff_notification_claimed_at is None
+    adapter.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_save_only_message_remains_pending_for_working_hours():
+    session = SimpleNamespace(flush=AsyncMock())
+    adapter = SimpleNamespace(send_message=AsyncMock())
+    ticket = SimpleNamespace(
+        id=311,
+        assigned_staff_id=7,
+        ticket_status=TicketStatus.IN_PROGRESS,
+    )
+    user = SimpleNamespace(id=27)
+    message = SimpleNamespace(
+        id=502,
+        staff_notified_at=None,
+        staff_notification_claimed_at=None,
+    )
+
+    delivered = await ticket_service.forward_client_message_to_manager(
+        session=session,
+        messenger_adapter=adapter,
+        ticket=ticket,
+        user=user,
+        message_text="Тест сообщения в нерабочее время",
+        message_type_val=MessageType.TEXT.value,
+        save_only=True,
+        existing_message=message,
+    )
+
+    assert delivered is False
+    assert message.staff_notified_at is None
+    adapter.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_deferred_processor_claims_and_delivers_existing_message(monkeypatch):
+    from celery_app import ticket_notification_tasks
+
+    candidate_result = Mock()
+    candidate_result.scalars.return_value = [503]
+    claim_result = _scalar_result(503)
+    message = SimpleNamespace(
+        id=503,
+        message_text="Тест утренней пересылки",
+        message_type=MessageType.VOICE,
+        file_attachments=[
+            SimpleNamespace(
+                max_file_url="https://max.example/voice",
+                telegram_file_id=None,
+                file_name="voice.ogg",
+                file_size=456,
+            )
+        ],
+        ticket=SimpleNamespace(
+            id=312,
+            user=SimpleNamespace(id=27),
+        ),
+    )
+    loaded_result = Mock()
+    loaded_result.scalar_one.return_value = message
+    session = SimpleNamespace(
+        execute=AsyncMock(
+            side_effect=[candidate_result, claim_result, loaded_result]
+        ),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    deliver = AsyncMock(return_value=True)
+    monkeypatch.setattr(ticket_service, "forward_client_message_to_manager", deliver)
+
+    stats = await ticket_notification_tasks._process_deferred_client_messages(
+        session=session,
+        max_bot=SimpleNamespace(),
+        work_mode=WorkMode.REGULAR,
+    )
+
+    assert stats == {"sent": 1, "failed": 0}
+    assert session.commit.await_count == 2
+    deliver.assert_awaited_once()
+    call = deliver.await_args.kwargs
+    assert call["existing_message"] is message
+    assert call["attachment_type"] == "voice"
+    assert call["file_url"] == "https://max.example/voice"
 
 
 def test_nps_business_key_is_stable_and_event_specific():

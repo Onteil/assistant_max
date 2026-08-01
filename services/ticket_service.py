@@ -2670,7 +2670,8 @@ async def forward_client_message_to_manager(
     file_size: int | None = None,
     manager_in_focus: bool = False,
     save_only: bool = False,
-) -> None:
+    existing_message: Message | None = None,
+) -> bool:
     """
     Store a client message in the database and forward it to the assigned manager.
 
@@ -2696,6 +2697,11 @@ async def forward_client_message_to_manager(
         save_only: If True, save the message to DB and update ticket status but
             do NOT forward to the manager (used during off-hours to preserve
             the message without disturbing staff).
+        existing_message: Previously saved off-hours message. When provided,
+            the function only delivers it and does not create duplicate history.
+
+    Returns:
+        True only when the message was delivered to the assigned staff chat.
     """
     import logging
     import uuid
@@ -2731,18 +2737,20 @@ async def forward_client_message_to_manager(
         else:
             file_type = FileType.OTHER
 
-    # Store message in DB
-    message = await add_ticket_message(
-        session=session,
-        ticket_id=ticket.id,
-        sender_type=SenderType.USER,
-        sender_id=user.id,
-        message_text=message_text,
-        message_type=message_type,
-    )
+    # Store a live message once. Deferred delivery passes the existing row.
+    message = existing_message
+    if message is None:
+        message = await add_ticket_message(
+            session=session,
+            ticket_id=ticket.id,
+            sender_type=SenderType.USER,
+            sender_id=user.id,
+            message_text=message_text,
+            message_type=message_type,
+        )
 
     # Store file attachment record
-    if file_url and file_type is not None:
+    if existing_message is None and file_url and file_type is not None:
         file_attachment = File_Attachment(
             ticket_id=ticket.id,
             message_id=message.id,
@@ -2801,8 +2809,9 @@ async def forward_client_message_to_manager(
             f"save_only=True: message saved to DB but NOT forwarded to manager: "
             f"ticket_id={ticket.id}, user_id={user.id}"
         )
-        return
+        return False
 
+    delivered_to_staff = False
     if ticket.assigned_staff_id:
         try:
             staff_result = await session.execute(
@@ -2913,6 +2922,8 @@ async def forward_client_message_to_manager(
                                         keyboard=notif_keyboard,
                                     )
 
+                                delivered_to_staff = True
+
                                 try:
                                     Path(local_path).unlink()
                                 except Exception as cleanup_err:
@@ -2941,6 +2952,7 @@ async def forward_client_message_to_manager(
                                     parse_mode="HTML",
                                     keyboard=notif_keyboard,
                                 )
+                                delivered_to_staff = True
                         else:
                             # file / video — send as link
                             await messenger_adapter.send_message(
@@ -2952,6 +2964,7 @@ async def forward_client_message_to_manager(
                                 parse_mode="HTML",
                                 keyboard=notif_keyboard,
                             )
+                            delivered_to_staff = True
                             logger.info(
                                 f"File URL sent to manager: ticket_id={ticket.id}, "
                                 f"attachment_type={attachment_type}"
@@ -2963,6 +2976,7 @@ async def forward_client_message_to_manager(
                             parse_mode="HTML",
                             keyboard=notif_keyboard,
                         )
+                        delivered_to_staff = True
                         logger.info(f"Text message sent to manager: ticket_id={ticket.id}")
 
         except Exception as e:
@@ -2972,21 +2986,28 @@ async def forward_client_message_to_manager(
                 exc_info=True,
             )
 
-    await _log_action(
-        session=session,
-        action_type=ActionType.MESSAGE_SENT,
-        ticket_id=ticket.id,
-        user_id=user.id,
-        action_details={
-            "message_type": message_type_val,
-            "has_file": file_url is not None,
-        },
-    )
+    message.staff_notification_claimed_at = None
+    if delivered_to_staff:
+        message.staff_notified_at = get_moscow_now_naive()
+        await _log_action(
+            session=session,
+            action_type=ActionType.MESSAGE_SENT,
+            ticket_id=ticket.id,
+            user_id=user.id,
+            action_details={
+                "message_type": message_type_val,
+                "has_file": file_url is not None,
+                "deferred": existing_message is not None,
+            },
+        )
+    await session.flush()
 
     logger.info(
         f"Client message handled: ticket_id={ticket.id}, "
         f"client_id={user.id}, message_type={message_type_val}"
     )
+
+    return delivered_to_staff
 
 
 

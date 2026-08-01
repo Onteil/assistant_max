@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timedelta
 
 import pytz
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -20,6 +20,9 @@ from celery_app.celery_config import app
 from constants import AsyncSessionLocal, MAX_BOT_TOKEN, TG_BOT_TOKEN
 from database.models import (
     File_Attachment,
+    Message,
+    MessageType,
+    SenderType,
     Staff_Member,
     StaffRole,
     Ticket,
@@ -80,6 +83,8 @@ async def _process_pending_tickets_async() -> dict:
         "support_tickets": 0,
         "consultation_tickets": 0,
         "notifications_sent": 0,
+        "deferred_messages_sent": 0,
+        "deferred_messages_failed": 0,
         "errors": 0,
     }
     
@@ -238,6 +243,15 @@ async def _process_pending_tickets_async() -> dict:
                         f"Error processing ticket {ticket.id}: {e}",
                         exc_info=True
                     )
+
+            if max_bot:
+                deferred_stats = await _process_deferred_client_messages(
+                    session=session,
+                    max_bot=max_bot,
+                    work_mode=work_mode,
+                )
+                stats["deferred_messages_sent"] += deferred_stats["sent"]
+                stats["deferred_messages_failed"] += deferred_stats["failed"]
             
             # Close bot session
             if max_bot and max_bot.session:
@@ -252,6 +266,162 @@ async def _process_pending_tickets_async() -> dict:
         return stats
     finally:
         await task_engine.dispose()
+
+
+def _stored_client_message_metadata(message: Message) -> dict:
+    """Restore MAX attachment metadata without downloading or modifying it."""
+    attachment = message.file_attachments[0] if message.file_attachments else None
+    file_url = None
+    file_name = None
+    file_size = None
+    if attachment:
+        file_url = attachment.max_file_url or attachment.telegram_file_id
+        file_name = attachment.file_name
+        file_size = attachment.file_size
+
+    attachment_type = None
+    if message.message_type == MessageType.PHOTO:
+        attachment_type = "image"
+    elif message.message_type == MessageType.VOICE:
+        attachment_type = (
+            "audio" if file_name and file_name.lower().endswith(".mp3") else "voice"
+        )
+    elif message.message_type == MessageType.AUDIO:
+        attachment_type = "audio"
+    elif message.message_type == MessageType.VIDEO_NOTE:
+        attachment_type = "audio_video_note"
+    elif message.message_type == MessageType.VIDEO:
+        attachment_type = "video"
+    elif message.message_type == MessageType.DOCUMENT:
+        attachment_type = "file"
+
+    return {
+        "message_text": message.message_text,
+        "message_type_val": message.message_type.value,
+        "file_url": file_url,
+        "attachment_type": attachment_type,
+        "file_name": file_name,
+        "file_size": file_size,
+    }
+
+
+async def _process_deferred_client_messages(
+    session: AsyncSession,
+    max_bot,
+    work_mode: WorkMode,
+    batch_size: int = 100,
+) -> dict[str, int]:
+    """Deliver client messages saved while their ticket type was off-hours."""
+    from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+    from services.ticket_service import forward_client_message_to_manager
+    from utils.timezone_helpers import get_moscow_now_naive
+
+    if work_mode == WorkMode.NON_WORKING:
+        return {"sent": 0, "failed": 0}
+
+    ticket_types = [
+        TicketType.TECHNICAL_SUPPORT,
+        TicketType.CONSULTATION,
+    ]
+    if work_mode == WorkMode.REGULAR:
+        ticket_types.extend([TicketType.INVOICE, TicketType.RENEWAL])
+
+    active_statuses = [
+        TicketStatus.NEW,
+        TicketStatus.IN_PROGRESS,
+        TicketStatus.WAITING_CLIENT,
+    ]
+    now = get_moscow_now_naive()
+    stale_claim_before = now - timedelta(minutes=15)
+
+    candidate_result = await session.execute(
+        select(Message.id)
+        .join(Ticket, Ticket.id == Message.ticket_id)
+        .where(
+            Message.sender_type == SenderType.USER,
+            Message.staff_notified_at.is_(None),
+            or_(
+                Message.staff_notification_claimed_at.is_(None),
+                Message.staff_notification_claimed_at < stale_claim_before,
+            ),
+            Ticket.ticket_status.in_(active_statuses),
+            Ticket.ticket_type.in_(ticket_types),
+            Ticket.assigned_staff_id.is_not(None),
+        )
+        .order_by(Message.sent_at, Message.id)
+        .limit(batch_size)
+    )
+    candidate_ids = list(candidate_result.scalars())
+    adapter = MAXMessengerAdapter(bot=max_bot)
+    stats = {"sent": 0, "failed": 0}
+
+    for message_id in candidate_ids:
+        claim_result = await session.execute(
+            update(Message)
+            .where(
+                Message.id == message_id,
+                Message.staff_notified_at.is_(None),
+                or_(
+                    Message.staff_notification_claimed_at.is_(None),
+                    Message.staff_notification_claimed_at < stale_claim_before,
+                ),
+            )
+            .values(staff_notification_claimed_at=now)
+            .returning(Message.id)
+        )
+        claimed_id = claim_result.scalar_one_or_none()
+        await session.commit()
+        if claimed_id is None:
+            continue
+
+        message_result = await session.execute(
+            select(Message)
+            .where(Message.id == message_id)
+            .options(
+                selectinload(Message.ticket).selectinload(Ticket.user),
+                selectinload(Message.file_attachments),
+            )
+        )
+        message = message_result.scalar_one()
+        metadata = _stored_client_message_metadata(message)
+
+        try:
+            delivered = await forward_client_message_to_manager(
+                session=session,
+                messenger_adapter=adapter,
+                ticket=message.ticket,
+                user=message.ticket.user,
+                manager_in_focus=False,
+                save_only=False,
+                existing_message=message,
+                **metadata,
+            )
+            if delivered:
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            await session.execute(
+                update(Message)
+                .where(Message.id == message_id)
+                .values(staff_notification_claimed_at=None)
+            )
+            await session.commit()
+            stats["failed"] += 1
+            logger.exception(
+                "Deferred client message delivery failed: message_id=%s",
+                message_id,
+            )
+
+    logger.info(
+        "Deferred client message delivery completed: candidates=%s, sent=%s, failed=%s",
+        len(candidate_ids),
+        stats["sent"],
+        stats["failed"],
+    )
+    return stats
 
 
 async def _forward_ticket_attachments(
