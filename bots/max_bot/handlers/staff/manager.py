@@ -39,6 +39,7 @@ from services.employee_service import (
     get_employee_active_tickets,
     format_ticket_card,
 )
+from services.ticket_service import TicketAlreadyClosedError
 
 logger = logging.getLogger(__name__)
 
@@ -2308,6 +2309,29 @@ async def handle_ticket_action(
         elif action == "close":
             # Initiate ticket closing flow - prompt for final comment
             from bots.max_bot.states import EmployeeStates
+
+            status_result = await session.execute(
+                select(Ticket.ticket_status).where(Ticket.id == ticket_id)
+            )
+            ticket_status = status_result.scalar_one_or_none()
+            if ticket_status is None:
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text="❌ Заявка не найдена.",
+                    parse_mode="HTML",
+                )
+                return
+            if ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}:
+                await context.clear()
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"ℹ️ Заявка #{ticket_id} уже закрыта или отменена. "
+                        "Повторное закрытие не выполнялось."
+                    ),
+                    parse_mode="HTML",
+                )
+                return
             
             # Set FSM state
             await context.set_state(EmployeeStates.manager_closing_ticket)
@@ -2704,6 +2728,23 @@ async def handle_closing_comment_input(
         
         logger.info(f"Employee {max_user_id} closed ticket {ticket_id} with final comment")
     
+    except TicketAlreadyClosedError as e:
+        await session.rollback()
+        await context.clear()
+        logger.info(
+            "Repeated closing comment ignored: ticket_id=%s, status=%s",
+            e.ticket_id,
+            e.status.value,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"ℹ️ Заявка #{e.ticket_id} уже закрыта или отменена. "
+                "Повторное закрытие не выполнялось."
+            ),
+            parse_mode="HTML",
+        )
+
     except Exception as e:
         logger.error(
             f"Error handling closing comment: max_user_id={max_user_id}, error={e}",

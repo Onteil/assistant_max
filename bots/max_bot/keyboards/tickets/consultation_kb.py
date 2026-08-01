@@ -17,6 +17,7 @@ from bots.max_bot.payloads import (
     ConsultationOrgSelectPayload,
     ConsultationDescriptionNextPayload,
 )
+from database.models import KeyConflictStatus
 
 ITEMS_PER_PAGE = 7
 
@@ -104,6 +105,8 @@ def get_consultation_key_selection_keyboard(
     for key in keys_on_page:
         checkmark = "✅ " if key.id in selected_key_ids else ""
         key_text = f"{checkmark}{key.key_number}"
+        if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
+            key_text += " ⚠️"
         buttons.append([KeyboardButton(
             text=key_text,
             payload=ConsultationKeyTogglePayload(key_id=key.id).pack()

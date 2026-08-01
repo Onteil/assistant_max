@@ -44,6 +44,17 @@ from services.nps_service import schedule_survey
 logger = logging.getLogger(__name__)
 
 
+class TicketAlreadyClosedError(ValueError):
+    """Raised when a terminal ticket receives another close request."""
+
+    def __init__(self, ticket_id: int, status: TicketStatus):
+        self.ticket_id = ticket_id
+        self.status = status
+        super().__init__(
+            f"Ticket {ticket_id} is already terminal: {status.value}"
+        )
+
+
 # ========== Ticket CRUD Operations ==========
 
 
@@ -1562,6 +1573,7 @@ async def close_ticket_with_notification(
             .options(
                 selectinload(Ticket.user).selectinload(User.max_messenger_data)
             )
+            .with_for_update()
         )
         ticket = result.scalar_one_or_none()
         
@@ -1569,6 +1581,14 @@ async def close_ticket_with_notification(
             error_msg = f"Ticket not found: ticket_id={ticket_id}"
             logger.error(error_msg)
             raise ValueError(error_msg)
+
+        if ticket.ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}:
+            logger.info(
+                "Duplicate ticket closure skipped: ticket_id=%s, status=%s",
+                ticket_id,
+                ticket.ticket_status.value,
+            )
+            raise TicketAlreadyClosedError(ticket_id, ticket.ticket_status)
         
         # Get internal staff ID
         staff_id = await _get_staff_internal_id(session, employee_id, messenger)

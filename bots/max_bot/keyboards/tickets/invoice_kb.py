@@ -20,6 +20,7 @@ from bots.max_bot.payloads import (
     EmailConfirmPayload,
     InvoiceDescriptionNextPayload,
 )
+from database.models import KeyConflictStatus
 
 # Константы для пагинации
 ITEMS_PER_PAGE = 7
@@ -137,7 +138,7 @@ def get_key_selection_keyboard(
         key_text = f"{checkmark}{key.key_number}"
         
         # Добавляем статус конфликта если есть
-        if hasattr(key, 'conflict_status') and key.conflict_status and key.conflict_status.value == "pending_review":
+        if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
             key_text += " ⚠️"
         
         buttons.append([KeyboardButton(

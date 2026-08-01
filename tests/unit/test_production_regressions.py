@@ -34,12 +34,17 @@ from celery_app.nps_tasks import (
     build_nps_task_id,
 )
 from database.models import (
+    GS_Key,
     KeyConflictStatus,
     MessageType,
     NPS_Response,
+    Organization,
+    RegistrationStatus,
+    SubscriptionStatus,
     SurveyType,
     TicketStatus,
     TicketType,
+    User,
     WorkMode,
 )
 from services import (
@@ -63,6 +68,184 @@ def _scalar_result(value):
     result = Mock()
     result.scalar_one_or_none.return_value = value
     return result
+
+
+@pytest.mark.asyncio
+async def test_close_ticket_skips_terminal_ticket_before_side_effects(monkeypatch):
+    ticket = SimpleNamespace(
+        id=315,
+        ticket_status=TicketStatus.CLOSED,
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_scalar_result(ticket)),
+        commit=AsyncMock(),
+    )
+    get_staff = AsyncMock()
+    send_client = AsyncMock()
+    monkeypatch.setattr(ticket_service, "_get_staff_internal_id", get_staff)
+    monkeypatch.setattr(ticket_service, "send_message_to_client_max", send_client)
+
+    with pytest.raises(ticket_service.TicketAlreadyClosedError) as error:
+        await ticket_service.close_ticket_with_notification(
+            session=session,
+            ticket_id=ticket.id,
+            employee_id=187660968,
+            final_comment="Повторное закрытие",
+            messenger_adapter=SimpleNamespace(),
+        )
+
+    assert error.value.ticket_id == ticket.id
+    assert error.value.status is TicketStatus.CLOSED
+    get_staff.assert_not_awaited()
+    send_client.assert_not_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_old_close_callback_does_not_restart_closing_flow(monkeypatch):
+    from bots.max_bot.handlers.staff import manager
+    from bots.max_bot.payloads import ManagerTicketActionPayload
+
+    monkeypatch.setattr(manager, "answer_max_callback", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        manager,
+        "is_staff_member",
+        AsyncMock(return_value=SimpleNamespace(id=7)),
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_scalar_result(TicketStatus.CLOSED)),
+    )
+    context = SimpleNamespace(
+        clear=AsyncMock(),
+        set_state=AsyncMock(),
+        update_data=AsyncMock(),
+    )
+    adapter = SimpleNamespace(
+        delete_message=AsyncMock(),
+        send_message=AsyncMock(),
+    )
+    event = SimpleNamespace(
+        callback=SimpleNamespace(
+            user=SimpleNamespace(user_id=187660968),
+            callback_id="close-again",
+        ),
+        message=SimpleNamespace(
+            recipient=SimpleNamespace(chat_id=9263059),
+            body=SimpleNamespace(mid="old-message"),
+        ),
+    )
+
+    await manager.handle_ticket_action(
+        event=event,
+        payload=ManagerTicketActionPayload(action="close", ticket_id=315),
+        context=context,
+        session=session,
+        messenger_adapter=adapter,
+    )
+
+    context.clear.assert_awaited_once()
+    context.set_state.assert_not_awaited()
+    context.update_data.assert_not_awaited()
+    assert "Повторное закрытие не выполнялось" in (
+        adapter.send_message.await_args.kwargs["text"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_organization_query_refreshes_loaded_collection(session):
+    user = User(
+        max_user_id=900001,
+        phone_number="+79990000001",
+        full_name="Тест обновления ИНН",
+        registration_status=RegistrationStatus.ACTIVE,
+        subscription_status=SubscriptionStatus.ACTIVE,
+        notification_preferences=True,
+    )
+    session.add(user)
+    await session.commit()
+
+    assert await user_service.get_user_organizations(session, user.id) == []
+
+    await user_service.add_user_organization(
+        session,
+        user.id,
+        "1111111111",
+        organization_name="Тестовая организация",
+    )
+    await session.commit()
+
+    organizations = await user_service.get_user_organizations(session, user.id)
+
+    assert [organization.inn for organization in organizations] == ["1111111111"]
+
+
+def test_pending_conflict_key_is_marked_in_all_ticket_keyboards():
+    from bots.max_bot.keyboards.tickets.consultation_kb import (
+        get_consultation_key_selection_keyboard,
+    )
+    from bots.max_bot.keyboards.tickets.invoice_kb import (
+        get_key_selection_keyboard,
+    )
+    from bots.max_bot.keyboards.tickets.support_kb import (
+        get_key_context_keyboard,
+    )
+
+    key = GS_Key(
+        id=51,
+        key_number="07485_00255",
+        user_id=40,
+        conflict_status=KeyConflictStatus.PENDING_REVIEW,
+    )
+    keyboards = [
+        get_key_selection_keyboard([key], set()),
+        get_key_context_keyboard([key], set()),
+        get_consultation_key_selection_keyboard([key], set()),
+    ]
+
+    for keyboard in keyboards:
+        assert "⚠️" in keyboard.buttons[0][0].text
+
+
+@pytest.mark.asyncio
+async def test_escalation_task_operation_uses_scoped_db_and_disposes(monkeypatch):
+    from celery_app import escalation_tasks
+
+    task_session = object()
+    task_engine = SimpleNamespace(dispose=AsyncMock())
+    monkeypatch.setattr(
+        escalation_tasks,
+        "_create_task_db",
+        lambda: (task_engine, task_session),
+    )
+
+    async def operation(received_session):
+        assert received_session is task_session
+        return {"status": "success"}
+
+    result = await escalation_tasks._run_task_operation(operation)
+
+    assert result == {"status": "success"}
+    task_engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_escalation_timeout_reuses_task_session(monkeypatch):
+    from celery_app import escalation_tasks
+    from services import settings_service
+
+    task_session = object()
+    get_setting = AsyncMock(return_value="7")
+    monkeypatch.setattr(settings_service, "get_setting", get_setting)
+
+    timeout = await escalation_tasks.get_escalation_timeout(
+        session=task_session,
+    )
+
+    assert timeout == 420
+    get_setting.assert_awaited_once_with(
+        task_session,
+        "manager_response_timeout",
+    )
 
 
 def test_deferred_message_metadata_preserves_supported_attachment_types():

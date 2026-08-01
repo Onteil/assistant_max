@@ -485,6 +485,7 @@ async def get_user_organizations(
             select(User)
             .where(User.id == user_id)
             .options(selectinload(User.organizations))
+            .execution_options(populate_existing=True)
         )
         user = result.scalar_one_or_none()
         

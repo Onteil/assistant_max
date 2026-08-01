@@ -1100,6 +1100,22 @@ async def handle_key_toggle_callback(
         # Prevent selection of PENDING_REVIEW keys
         if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
             logger.warning(f"Attempted to select PENDING_REVIEW key: key_id={payload.key_id}")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"⚠️ Ключ <code>{key.key_number}</code> находится на проверке "
+                    "конфликта и пока не может быть выбран."
+                ),
+                parse_mode="HTML",
+            )
+            await show_key_selection(
+                chat_id=chat_id,
+                user_id=user_id,
+                selected_keys=selected_keys,
+                page=data.get("key_page", 0),
+                session=session,
+                messenger_adapter=messenger_adapter,
+            )
             return
         
         # Toggle selection

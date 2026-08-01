@@ -58,7 +58,13 @@ from bots.max_bot.texts import (
     ERROR_VALIDATION_KEY,
     FLOW_CANCELLED,
 )
-from database.models import SubscriptionStatus, TicketType, User, WorkMode
+from database.models import (
+    KeyConflictStatus,
+    SubscriptionStatus,
+    TicketType,
+    User,
+    WorkMode,
+)
 from services.calendar_service import get_current_work_mode
 from services.ticket_service import create_ticket, route_ticket
 from services.user_service import (
@@ -755,6 +761,38 @@ async def handle_consultation_key_toggle(
 
     data = await context.get_data()
     selected_keys: set[int] = set(data.get("selected_keys", []))
+
+    keys = await get_user_keys(session, user_id)
+    key = next((item for item in keys if item.id == payload.key_id), None)
+    if not key:
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=ERROR_GENERAL,
+            parse_mode="HTML",
+        )
+        return
+    if key.conflict_status == KeyConflictStatus.PENDING_REVIEW:
+        logger.warning(
+            "Attempted to select PENDING_REVIEW consultation key: key_id=%s",
+            payload.key_id,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"⚠️ Ключ <code>{key.key_number}</code> находится на проверке "
+                "конфликта и пока не может быть выбран."
+            ),
+            parse_mode="HTML",
+        )
+        await _show_key_selection(
+            chat_id,
+            user_id,
+            selected_keys,
+            data.get("key_page", 0),
+            session,
+            messenger_adapter,
+        )
+        return
 
     if payload.key_id in selected_keys:
         selected_keys.discard(payload.key_id)

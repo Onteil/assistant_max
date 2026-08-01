@@ -26,11 +26,17 @@ from aiogram.client.default import DefaultBotProperties
 from celery import shared_task
 from celery.utils.log import get_task_logger
 from sqlalchemy import and_, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import selectinload
 
 from celery_app.celery_config import app as celery_app
 from constants import (
+    DB_URL,
+    SQL_ECHO,
     TG_BOT_TOKEN,
     AsyncSessionLocal,
 )
@@ -57,6 +63,33 @@ from bots.tg_bot.utils.escalation_notifications import (
 
 # Use Celery-specific logger
 logger = get_task_logger(__name__)
+
+
+def _create_task_db() -> tuple[Any, Any]:
+    """Create DB resources bound to one Celery task event loop."""
+    task_engine = create_async_engine(
+        DB_URL,
+        echo=SQL_ECHO,
+        pool_pre_ping=True,
+    )
+    task_session = async_sessionmaker(
+        bind=task_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    return task_engine, task_session
+
+
+async def _run_task_operation(operation) -> Any:
+    task_engine, task_session = _create_task_db()
+    try:
+        return await operation(task_session)
+    finally:
+        await task_engine.dispose()
+
+
+def _run_in_task_loop(operation) -> Any:
+    return asyncio.run(_run_task_operation(operation))
 
 
 def _is_max_chat_id(chat_id: str | int | None) -> bool:
@@ -139,7 +172,10 @@ def get_ticket_elapsed_time(ticket: Ticket) -> tuple[int, datetime]:
     return minutes, reference_time
 
 
-async def get_escalation_timeout() -> int:
+async def get_escalation_timeout(
+    session: AsyncSession | None = None,
+    session_factory=None,
+) -> int:
     """
     Get escalation timeout from system settings.
     
@@ -152,16 +188,32 @@ async def get_escalation_timeout() -> int:
     try:
         from services.settings_service import get_setting
         
-        async with AsyncSessionLocal() as session:
-            timeout_minutes = await get_setting(session, "manager_response_timeout")
-            
-            if timeout_minutes is None:
-                logger.warning("manager_response_timeout setting not found, using default 10 minutes")
-                return 600  # 10 minutes default
-            
-            timeout_seconds = int(timeout_minutes) * 60
-            logger.debug(f"Using escalation timeout: {timeout_minutes} minutes ({timeout_seconds} seconds)")
-            return timeout_seconds
+        if session is not None:
+            timeout_minutes = await get_setting(
+                session,
+                "manager_response_timeout",
+            )
+        else:
+            factory = session_factory or AsyncSessionLocal
+            async with factory() as owned_session:
+                timeout_minutes = await get_setting(
+                    owned_session,
+                    "manager_response_timeout",
+                )
+
+        if timeout_minutes is None:
+            logger.warning(
+                "manager_response_timeout setting not found, using default 10 minutes"
+            )
+            return 600  # 10 minutes default
+
+        timeout_seconds = int(timeout_minutes) * 60
+        logger.debug(
+            "Using escalation timeout: %s minutes (%s seconds)",
+            timeout_minutes,
+            timeout_seconds,
+        )
+        return timeout_seconds
     
     except Exception as e:
         logger.error(f"Error getting escalation timeout: {e}", exc_info=True)
@@ -178,13 +230,11 @@ def get_escalation_timeout_sync() -> int:
         Timeout in seconds
     """
     try:
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(get_escalation_timeout())
-        finally:
-            loop.close()
+        return _run_in_task_loop(
+            lambda task_session: get_escalation_timeout(
+                session_factory=task_session,
+            )
+        )
     except Exception as e:
         logger.error(f"Error in sync timeout getter: {e}", exc_info=True)
         return 600  # 10 minutes fallback
@@ -232,13 +282,13 @@ def check_ticket_reminder(self, ticket_id: int) -> dict[str, Any]:
     """
     logger.info(f"Starting check_ticket_reminder for ticket_id={ticket_id}")
     
-    loop = None
     try:
-        # Create and set new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(_check_ticket_reminder_async(ticket_id))
+        result = _run_in_task_loop(
+            lambda task_session: _check_ticket_reminder_async(
+                ticket_id,
+                session_factory=task_session,
+            )
+        )
         
         logger.info(
             f"check_ticket_reminder completed: ticket_id={ticket_id}, "
@@ -266,17 +316,6 @@ def check_ticket_reminder(self, ticket_id: int) -> dict[str, Any]:
                 "ticket_id": ticket_id
             }
     
-    finally:
-        if loop is not None:
-            try:
-                # Dispose engine connections before closing loop (Windows asyncpg fix)
-                from constants import engine
-                loop.run_until_complete(engine.dispose())
-                loop.close()
-            except Exception as e:
-                logger.warning(f"Error closing event loop: {e}")
-
-
 @shared_task(
     name="celery_app.escalation_tasks.check_ticket_escalation",
     bind=True,
@@ -317,13 +356,13 @@ def check_ticket_escalation(self, ticket_id: int) -> dict[str, Any]:
     """
     logger.info(f"Starting check_ticket_escalation for ticket_id={ticket_id}")
     
-    loop = None
     try:
-        # Create and set new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(_check_ticket_escalation_async(ticket_id))
+        result = _run_in_task_loop(
+            lambda task_session: _check_ticket_escalation_async(
+                ticket_id,
+                session_factory=task_session,
+            )
+        )
         
         logger.info(
             f"check_ticket_escalation completed: ticket_id={ticket_id}, "
@@ -351,17 +390,6 @@ def check_ticket_escalation(self, ticket_id: int) -> dict[str, Any]:
                 "ticket_id": ticket_id
             }
     
-    finally:
-        if loop is not None:
-            try:
-                # Dispose engine connections before closing loop (Windows asyncpg fix)
-                from constants import engine
-                loop.run_until_complete(engine.dispose())
-                loop.close()
-            except Exception as e:
-                logger.warning(f"Error closing event loop: {e}")
-
-
 @shared_task(
     name="celery_app.escalation_tasks.check_technical_support_ticket",
     bind=True,
@@ -401,13 +429,13 @@ def check_technical_support_ticket(self, ticket_id: int) -> dict[str, Any]:
     """
     logger.info(f"Starting check_technical_support_ticket for ticket_id={ticket_id}")
     
-    loop = None
     try:
-        # Create and set new event loop
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(_check_technical_support_ticket_async(ticket_id))
+        result = _run_in_task_loop(
+            lambda task_session: _check_technical_support_ticket_async(
+                ticket_id,
+                session_factory=task_session,
+            )
+        )
         
         logger.info(
             f"check_technical_support_ticket completed: ticket_id={ticket_id}, "
@@ -435,21 +463,13 @@ def check_technical_support_ticket(self, ticket_id: int) -> dict[str, Any]:
                 "ticket_id": ticket_id
             }
     
-    finally:
-        if loop is not None:
-            try:
-                # Dispose engine connections before closing loop (Windows asyncpg fix)
-                from constants import engine
-                loop.run_until_complete(engine.dispose())
-                loop.close()
-            except Exception as e:
-                logger.warning(f"Error closing event loop: {e}")
-
-
 # ========== Async Implementation Functions ==========
 
 
-async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
+async def _check_ticket_reminder_async(
+    ticket_id: int,
+    session_factory=None,
+) -> dict[str, Any]:
     """
     Async implementation of backup manager escalation check.
     
@@ -476,7 +496,8 @@ async def _check_ticket_reminder_async(ticket_id: int) -> dict[str, Any]:
     from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
     from maxapi.types import CallbackButton
     
-    async with AsyncSessionLocal() as session:
+    factory = session_factory or AsyncSessionLocal
+    async with factory() as session:
         # Get ticket with relationships
         stmt = (
             select(Ticket)
@@ -1658,7 +1679,10 @@ async def _escalate_to_admins_impl(ticket: Ticket, session: AsyncSession) -> dic
     }
 
 
-async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
+async def _check_ticket_escalation_async(
+    ticket_id: int,
+    session_factory=None,
+) -> dict[str, Any]:
     """
     Async implementation of escalation check (standalone Celery task entry point).
 
@@ -1680,7 +1704,8 @@ async def _check_ticket_escalation_async(ticket_id: int) -> dict[str, Any]:
 
     Requirements: FR-1.3.2, FR-1.3.3, FR-1.3.4, FR-1.10.2
     """
-    async with AsyncSessionLocal() as session:
+    factory = session_factory or AsyncSessionLocal
+    async with factory() as session:
         # Get ticket with relationships
         stmt = (
             select(Ticket)
@@ -2136,7 +2161,7 @@ async def _escalate_technical_support_to_backup_level_1(ticket: Ticket, session:
     session.add(action_log)
     
     # Schedule next escalation check
-    timeout_seconds = await get_escalation_timeout()
+    timeout_seconds = await get_escalation_timeout(session=session)
     reminder_task = check_technical_support_ticket.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -2400,7 +2425,7 @@ async def _escalate_technical_support_to_backup_level_2(ticket: Ticket, session:
     session.add(action_log)
     
     # Schedule final escalation check
-    timeout_seconds = await get_escalation_timeout()
+    timeout_seconds = await get_escalation_timeout(session=session)
     reminder_task = check_technical_support_ticket.apply_async(
         args=[ticket.id],
         countdown=timeout_seconds
@@ -2643,7 +2668,10 @@ async def _escalate_technical_support_to_admins(ticket: Ticket, session: AsyncSe
 
 
 
-async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any]:
+async def _check_technical_support_ticket_async(
+    ticket_id: int,
+    session_factory=None,
+) -> dict[str, Any]:
     """
     Async implementation of technical support ticket escalation check.
     
@@ -2674,7 +2702,8 @@ async def _check_technical_support_ticket_async(ticket_id: int) -> dict[str, Any
     from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
     from maxapi.types import CallbackButton
     
-    async with AsyncSessionLocal() as session:
+    factory = session_factory or AsyncSessionLocal
+    async with factory() as session:
         # Get ticket with relationships
         stmt = (
             select(Ticket)
