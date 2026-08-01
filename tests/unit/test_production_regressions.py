@@ -38,13 +38,9 @@ from database.models import (
     KeyConflictStatus,
     MessageType,
     NPS_Response,
-    Organization,
-    RegistrationStatus,
-    SubscriptionStatus,
     SurveyType,
     TicketStatus,
     TicketType,
-    User,
     WorkMode,
 )
 from services import (
@@ -152,31 +148,18 @@ async def test_old_close_callback_does_not_restart_closing_flow(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_user_organization_query_refreshes_loaded_collection(session):
-    user = User(
-        max_user_id=900001,
-        phone_number="+79990000001",
-        full_name="Тест обновления ИНН",
-        registration_status=RegistrationStatus.ACTIVE,
-        subscription_status=SubscriptionStatus.ACTIVE,
-        notification_preferences=True,
+async def test_user_organization_query_refreshes_loaded_collection():
+    organization = SimpleNamespace(inn="1111111111")
+    user = SimpleNamespace(organizations=[organization])
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=_scalar_result(user)),
     )
-    session.add(user)
-    await session.commit()
 
-    assert await user_service.get_user_organizations(session, user.id) == []
+    organizations = await user_service.get_user_organizations(session, user_id=40)
+    statement = session.execute.await_args.args[0]
 
-    await user_service.add_user_organization(
-        session,
-        user.id,
-        "1111111111",
-        organization_name="Тестовая организация",
-    )
-    await session.commit()
-
-    organizations = await user_service.get_user_organizations(session, user.id)
-
-    assert [organization.inn for organization in organizations] == ["1111111111"]
+    assert organizations == [organization]
+    assert statement.get_execution_options()["populate_existing"] is True
 
 
 def test_pending_conflict_key_is_marked_in_all_ticket_keyboards():
