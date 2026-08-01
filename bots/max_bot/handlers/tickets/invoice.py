@@ -67,6 +67,7 @@ from bots.max_bot.texts import (
     INVOICE_SELECT_KEYS,
     INVOICE_SELECT_ORGANIZATION,
 )
+from constants import ENABLE_API_RETRY_DIAGNOSTICS
 from database.models import DeliveryMethod, KeyConflictStatus, RegistrationStatus, Ticket, TicketType, User
 from services.itat_retry_helper import call_itat_with_retry
 from services.ticket_service import create_ticket
@@ -697,18 +698,18 @@ async def process_new_inn(
     except Exception as api_error:
         logger.error(f"i-TAT API INN check error: {api_error}", exc_info=True)
         organization_name = None
-        # Show error to testers for debugging
-        error_type = type(api_error).__name__
-        error_msg = str(api_error)
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=f"⚠️ <b>Ошибка проверки ИНН через i-TAT API</b>\n\n"
-                 f"<b>Метод:</b> POST /assets/check_inn\n"
-                 f"<b>Тип ошибки:</b> {error_type}\n"
-                 f"<b>Детали:</b> {error_msg}\n\n"
-                 f"<i>Продолжаем с локальной валидацией...</i>",
-            parse_mode="HTML"
-        )
+        if ENABLE_API_RETRY_DIAGNOSTICS:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "⚠️ <b>Ошибка проверки ИНН через i-TAT API</b>\n\n"
+                    "<b>Метод:</b> POST /assets/check_inn\n"
+                    f"<b>Тип ошибки:</b> {type(api_error).__name__}\n"
+                    f"<b>Детали:</b> {api_error}\n\n"
+                    "<i>Продолжаем с локальной валидацией...</i>"
+                ),
+                parse_mode="HTML",
+            )
         # Continue with local validation if API fails
         logger.info(f"Continuing with local INN validation due to API error")
     

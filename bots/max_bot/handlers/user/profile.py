@@ -47,6 +47,7 @@ from bots.max_bot.texts import (
     ADD_KEY_CONFLICT,
     BTN_CANCEL,
 )
+from constants import ENABLE_API_RETRY_DIAGNOSTICS
 from database.models import KeyConflictStatus
 from services.itat_retry_helper import call_itat_with_retry
 from services.user_service import (
@@ -1308,20 +1309,20 @@ async def process_add_inn(
                 
         except Exception as api_error:
             logger.error(f"i-TAT API INN check error: {api_error}", exc_info=True)
-            # Show error to testers for debugging
-            from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
-            keyboard = get_cancel_keyboard()
-            error_type = type(api_error).__name__
-            error_msg = str(api_error)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ <b>Ошибка проверки ИНН через i-TAT API</b>\n\n"
-                     f"<b>Тип ошибки:</b> {error_type}\n"
-                     f"<b>Детали:</b> {error_msg}\n\n"
-                     f"<i>Продолжаем с локальной валидацией...</i>",
-                keyboard=keyboard,
-                parse_mode="HTML"
-            )
+            if ENABLE_API_RETRY_DIAGNOSTICS:
+                from bots.max_bot.keyboards.user.profile_kb import get_cancel_keyboard
+
+                await messenger_adapter.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "⚠️ <b>Ошибка проверки ИНН через i-TAT API</b>\n\n"
+                        f"<b>Тип ошибки:</b> {type(api_error).__name__}\n"
+                        f"<b>Детали:</b> {api_error}\n\n"
+                        "<i>Продолжаем с локальной валидацией...</i>"
+                    ),
+                    keyboard=get_cancel_keyboard(),
+                    parse_mode="HTML",
+                )
             # Continue with local validation if API fails
             logger.info(f"Continuing with local INN validation due to API error")
         

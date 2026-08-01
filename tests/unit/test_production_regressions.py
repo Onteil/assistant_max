@@ -231,6 +231,52 @@ async def test_escalation_timeout_reuses_task_session(monkeypatch):
     )
 
 
+@pytest.mark.asyncio
+async def test_inn_timeout_diagnostics_are_hidden_when_flag_is_disabled(monkeypatch):
+    from bots.max_bot.handlers.user import profile
+    from services import i_tat_service
+
+    user = SimpleNamespace(id=27, max_user_id=187660968)
+    event = SimpleNamespace(
+        message=SimpleNamespace(
+            recipient=SimpleNamespace(chat_id=9263059),
+            sender=SimpleNamespace(user_id=user.max_user_id),
+            body=SimpleNamespace(text="9900000000"),
+        )
+    )
+    context = SimpleNamespace(clear=AsyncMock())
+    session = SimpleNamespace(commit=AsyncMock())
+    adapter = SimpleNamespace(send_message=AsyncMock())
+
+    monkeypatch.setattr(profile, "ENABLE_API_RETRY_DIAGNOSTICS", False)
+    monkeypatch.setattr(profile, "validate_inn", lambda value: (True, ""))
+    monkeypatch.setattr(profile, "get_user_by_max_id", AsyncMock(return_value=user))
+    monkeypatch.setattr(profile, "get_user_organizations", AsyncMock(return_value=[]))
+    monkeypatch.setattr(profile, "add_user_organization", AsyncMock())
+    monkeypatch.setattr(profile, "call_itat_with_retry", AsyncMock(return_value={}))
+    monkeypatch.setattr(profile, "show_organizations_list", AsyncMock())
+    monkeypatch.setattr(
+        i_tat_service,
+        "get_itat_client",
+        lambda: SimpleNamespace(
+            check_inn=AsyncMock(side_effect=TimeoutError("i-TAT timeout"))
+        ),
+    )
+
+    await profile.process_add_inn(
+        event=event,
+        context=context,
+        session=session,
+        messenger_adapter=adapter,
+    )
+
+    sent_texts = [call.kwargs["text"] for call in adapter.send_message.await_args_list]
+    assert len(sent_texts) == 1
+    assert all("i-TAT API" not in text for text in sent_texts)
+    session.commit.assert_awaited_once()
+    context.clear.assert_awaited_once()
+
+
 def test_deferred_message_metadata_preserves_supported_attachment_types():
     from celery_app.ticket_notification_tasks import _stored_client_message_metadata
 
