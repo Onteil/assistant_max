@@ -725,7 +725,9 @@ CREATE TABLE public.messages (
     sender_id bigint,
     message_text character varying NOT NULL,
     message_type public.messagetype NOT NULL,
-    sent_at timestamp without time zone NOT NULL
+    sent_at timestamp without time zone NOT NULL,
+    staff_notified_at timestamp without time zone,
+    staff_notification_claimed_at timestamp without time zone
 );
 
 
@@ -1581,6 +1583,13 @@ CREATE INDEX ix_max_messenger_data_user_id ON public.max_messenger_data USING bt
 
 
 --
+-- Name: ix_messages_pending_staff_notification; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX ix_messages_pending_staff_notification ON public.messages USING btree (id, staff_notification_claimed_at) WHERE ((sender_type = 'USER'::public.sendertype) AND (staff_notified_at IS NULL));
+
+
+--
 -- Name: ix_nps_responses_responded_at; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1917,4 +1926,3 @@ ALTER TABLE ONLY public.users
 --
 
 \unrestrict nzB3q6vHP8fCCjhBFAsbwdwsfJpZ1gXGNb1v5994ZlZ7OPVXhQkdxLc5vagu1Ax
-
