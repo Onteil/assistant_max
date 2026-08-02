@@ -2,6 +2,8 @@
 
 FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и Celery-задачами для интеграции с i-TAT API.
 
+Актуальная техническая документация: [`docs/index.md`](docs/index.md).
+
 ## Краткие ответы по запуску и актуальности
 
 1. **Актуальная инструкция для локального запуска под Windows/PyCharm** находится в разделе `Локальный запуск под Windows/PyCharm` ниже. Короткий путь: открыть корень проекта в PyCharm, выбрать Python 3.10, создать `venv`, установить `requirements.txt`, поднять PostgreSQL/Redis, создать `.env` из `.env.example`, выполнить `alembic upgrade head`, проверить `python scripts/check_setup.py`, затем запускать FastAPI/Celery.
@@ -18,17 +20,18 @@ FastAPI-приложение с ботами Telegram/MAX, PostgreSQL, Redis и 
 
 7. **Актуальный `alembic.ini` находится в корне проекта** и должен быть в git. Alembic берет `DB_URL` из `.env` через `constants.py`/`alembic/env.py`, поэтому команды запускаются из корня проекта. `structure.sql` также находится в корне: это проверенный снимок рабочей структуры prod-БД без данных для переноса проекта на другой сервер.
 
-8. **Актуальная кодовая база синхронизирована в GitHub в ветке `main` (`origin/main`)**. Это default-ветка проекта. Prod на момент проверки 2026-07-07 работал из `/home/razrab/i-tat-bot` на commit `1b3edc619e5e6f5265135908a74504c390bef8a7`; текущая git-версия содержит обновленные инструкции, `.env.example`, `alembic.ini`, prod-примеры systemd/nginx и проверочный скрипт. Для server deployment ориентируйтесь на раздел `Prod systemd и nginx`, `deployment/systemd/` и `deployment/nginx/i-tat-bot.conf`.
+8. **Актуальная кодовая база находится в GitHub в ветке `main` (`origin/main`)**. Это default-ветка проекта. Production был синхронизирован и проверен на commit `6967366`; последующие документационные коммиты могут опережать production без изменения исполняемого кода. Для server deployment ориентируйтесь на раздел `Prod systemd и nginx`, `deployment/systemd/` и `deployment/nginx/i-tat-bot.conf`.
 
 ## Актуальный статус
 
-Проверено 2026-07-07:
+Проверено 2026-08-02:
 
 - prod VM: `/home/razrab/i-tat-bot`
 - prod branch: `main`
-- prod commit: `1b3edc619e5e6f5265135908a74504c390bef8a7` (`1b3edc6 04 05 consultation fix in extended mode`)
+- prod commit: `6967366`
 - prod Python: `3.10.12`
 - prod services: `i-tat-bot`, `i-tat-celery-worker`, `i-tat-celery-beat` активны
+- production regression: `67 passed`, блокирующих ошибок не обнаружено
 
 Текущая актуальная и default-ветка: `main` (`origin/main` на GitHub). Для дальнейших обновлений prod должен использовать GitHub remote `https://github.com/aistrategiya/Aytat-bot.git`; старый GitLab remote не является источником актуальной кодовой базы.
 

@@ -26,6 +26,7 @@ final_checklist.md
 # Project folders
 analysis/
 docs/
+MANUAL_MAX_REGRESSION_CHECKLIST.md
 examples/
 test_results/
 tests/
