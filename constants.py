@@ -101,6 +101,13 @@ ITAT_SSH_PASSWORD = os.getenv("ITAT_SSH_PASSWORD", "")
 ITAT_SSH_SOCKS5_PORT = int(os.getenv("ITAT_SSH_SOCKS5_PORT", "1080"))
 ITAT_VPN_HOST = os.getenv("ITAT_VPN_HOST", "")
 
+# Yandex GPT Lite settings
+YANDEX_GPT_ENABLED = os.getenv("YANDEX_GPT_ENABLED", "false").lower() == "true"
+YANDEX_GPT_API_KEY = os.getenv("YANDEX_GPT_API_KEY", "")
+YANDEX_GPT_FOLDER_ID = os.getenv("YANDEX_GPT_FOLDER_ID", "")
+YANDEX_GPT_MODEL = os.getenv("YANDEX_GPT_MODEL", "yandexgpt-5-lite")
+YANDEX_GPT_TIMEOUT_SECONDS = float(os.getenv("YANDEX_GPT_TIMEOUT_SECONDS", "20"))
+
 # Registration Approval Method
 # Options: "bot" (approve in bot), "crm" (approve via 1C/CRM webhook)
 REGISTRATION_APPROVE_METHOD = os.getenv("REGISTRATION_APPROVE_METHOD", "bot").lower()

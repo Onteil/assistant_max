@@ -35,9 +35,9 @@ async def get_main_menu_inline_keyboard(active_tickets_count: int = 0, show_done
     Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 29.1, 29.3, AC-1.2, AC-1.3, TR-2
     """
     buttons = [
-        # Первый ряд: Счет и Техподдержка
+        # Первый ряд: Менеджер и Техподдержка
         [
-            KeyboardButton(text="💰 Получить счёт", payload=MainMenuActionPayload(action="invoice").pack()),
+            KeyboardButton(text="Менеджер", payload=MainMenuActionPayload(action="invoice").pack()),
             KeyboardButton(text="🆘 Техподдержка", payload=MainMenuActionPayload(action="support").pack())
         ],
         # Второй ряд: Сметная консультация
@@ -84,7 +84,7 @@ async def get_main_menu_keyboard():
     """
     return Keyboard(
         buttons=[
-            # Первый ряд: Счет и Техподдержка
+            # Первый ряд: Менеджер и Техподдержка
             [
                 KeyboardButton(text=MENU_INVOICE),
                 KeyboardButton(text=MENU_SUPPORT)

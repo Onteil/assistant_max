@@ -113,7 +113,7 @@ from bots.max_bot.payloads import (
     SupportOrgPagePayload,
     SupportOrgActionPayload,
 )
-from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates
+from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates, AIAgentStates
 
 from .common.callbacks import (
     process_back_navigation,
@@ -132,6 +132,7 @@ from .tickets.invoice import (
     handle_organization_select_callback,
     handle_organization_page_callback,
     handle_organization_action_callback,
+    process_invoice_org_text_action,
     process_new_inn,
     process_invoice_org_name,
     skip_invoice_org_name,
@@ -154,6 +155,7 @@ from .tickets.support import (
     handle_support_org_page_callback,
     handle_support_org_action_callback,
     handle_support_org_name_action_callback,
+    process_support_org_text_action,
     process_new_inn_for_support,
     process_org_name_for_support,
 )
@@ -162,6 +164,7 @@ from .tickets.consultation import (
     handle_consultation_org_select,
     handle_consultation_org_page,
     handle_consultation_org_action,
+    process_consultation_org_text_action,
     process_consultation_new_inn,
     process_consultation_org_name,
     skip_consultation_org_name,
@@ -203,7 +206,9 @@ from .user.commands import (
     cmd_me,
     handle_main_menu,
 )
+from .user.ai_agent import handle_ai_agent_message, handle_ai_agent_key
 from .user.main_menu_callbacks import handle_main_menu_callback, handle_done_callback
+from services.yandex_gpt_service import is_yandex_gpt_configured
 from .user.renewal import show_subscription_status
 from .staff.manager import (
     cmd_manager,
@@ -529,7 +534,7 @@ def create_user_router() -> Router:
 
     # ========== Main Menu Button Handlers ==========
     
-    user_router.message_created(F.message.body.text == "💰 Получить счет")(handle_main_menu)
+    user_router.message_created(F.message.body.text == "Менеджер")(handle_main_menu)
     user_router.message_created(F.message.body.text == "🆘 Техподдержка")(handle_main_menu)
     user_router.message_created(F.message.body.text == "👤 Мой профиль")(handle_main_menu)
     user_router.message_created(F.message.body.text == "📋 Архив обращений")(handle_client_archive_button)
@@ -1382,18 +1387,53 @@ def create_user_router() -> Router:
                 
                 else:
                     # User has no active tickets
-                    await messenger_adapter.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            "📋 <b>У вас нет активных обращений.</b>\n\n"
-                            "Воспользуйтесь командой /start для вызова главного меню и создания новой заявки:\n\n"
-                            "• 💰 <b>Получить счёт</b> — запросить счет на обновление базы\n"
-                            "• 🆘 <b>Техподдержка</b> — получить помощь по программе\n"
-                            "• 🔄 <b>Продление</b> — продлить подписку"
-                        ),
-                        parse_mode="HTML"
-                    )
+                    if current_state is not None:
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "Я сейчас жду ответ на текущем шаге. "
+                                "Выберите вариант кнопкой или введите данные, которые запрашивает бот. "
+                                "Чтобы выйти из сценария, используйте /cancel."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    elif event.message.body.text and is_yandex_gpt_configured():
+                        user_name = user.first_name or user.full_name or "клиент"
+                        await context.update_data(
+                            user_id=user.id,
+                            ai_user_name=user_name,
+                        )
+                        await handle_ai_agent_message(
+                            event=event,
+                            context=context,
+                            session=session,
+                            messenger_adapter=messenger_adapter,
+                        )
+                    else:
+                        await messenger_adapter.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "📋 <b>У вас нет активных обращений.</b>\n\n"
+                                "Воспользуйтесь командой /start для вызова главного меню "
+                                "и создания новой заявки:\n\n"
+                                "• <b>Менеджер</b> — получить помощь менеджера\n"
+                                "• 🆘 <b>Техподдержка</b> — получить помощь по программе\n"
+                                "• 🔄 <b>Продление</b> — продлить подписку"
+                            ),
+                            parse_mode="HTML"
+                        )
     
+    # ========== AI Manager Assistant Handlers ==========
+    user_router.message_created(
+        F.message.body.text,
+        AIAgentStates.waiting_for_request
+    )(handle_ai_agent_message)
+
+    user_router.message_created(
+        F.message.body.text,
+        AIAgentStates.waiting_for_key
+    )(handle_ai_agent_key)
+
     # Register catch-all message handler
     # This will only trigger if no other handler matched
     user_router.message_created()(handle_client_message_wrapper)
@@ -1445,6 +1485,11 @@ def create_tickets_router() -> Router:
     # ========== Invoice Flow Message Handlers ==========
     # Import InvoiceStates for FSM state filters
     from bots.max_bot.states import InvoiceStates, SupportStates
+
+    tickets_router.message_created(
+        F.message.body.text,
+        InvoiceStates.selecting_organization
+    )(process_invoice_org_text_action)
     
     # Handler for adding new INN
     tickets_router.message_created(
@@ -1540,6 +1585,11 @@ def create_tickets_router() -> Router:
     tickets_router.message_callback(SupportOrgActionPayload.filter())(handle_support_org_action_callback)
     
     # ========== Support Flow Message Handlers ==========
+
+    tickets_router.message_created(
+        F.message.body.text,
+        SupportStates.selecting_organization
+    )(process_support_org_text_action)
     
     # Handler for entering problem description (text, photo, voice, document)
     tickets_router.message_created(
@@ -1596,6 +1646,11 @@ def create_tickets_router() -> Router:
     tickets_router.message_callback(ConsultationKeyActionPayload.filter())(handle_consultation_key_action)
 
     # ========== Consultation Flow Message Handlers ==========
+
+    tickets_router.message_created(
+        F.message.body.text,
+        ConsultationStates.selecting_organization
+    )(process_consultation_org_text_action)
 
     tickets_router.message_created(
         F.message.body.text,

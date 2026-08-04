@@ -95,16 +95,20 @@ async def handle_main_menu_callback(
     
     # Import handlers to avoid circular imports
     from bots.max_bot.handlers.tickets.invoice import cmd_invoice
+    from bots.max_bot.handlers.user.ai_agent import start_ai_agent
     from bots.max_bot.handlers.tickets.support import cmd_support
     from bots.max_bot.handlers.tickets.consultation import cmd_consultation
     from bots.max_bot.handlers.user.profile import cmd_profile
     from bots.max_bot.handlers.user.archive import show_archive_list
     from bots.max_bot.handlers.user.renewal import show_subscription_status
+    from services.yandex_gpt_service import is_yandex_gpt_configured
     
     try:
         if action == "invoice":
-            # Route to invoice handler
-            await cmd_invoice(event, context, session, messenger_adapter)
+            if is_yandex_gpt_configured():
+                await start_ai_agent(event, context, session, messenger_adapter)
+            else:
+                await cmd_invoice(event, context, session, messenger_adapter)
         
         elif action == "support":
             # Route to support handler

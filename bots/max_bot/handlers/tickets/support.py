@@ -465,6 +465,58 @@ async def handle_support_org_action_callback(
         await messenger_adapter.send_message(chat_id=chat_id, text=ERROR_GENERAL, parse_mode="HTML")
 
 
+async def process_support_org_text_action(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Handle text replies on the support organization selection step."""
+    chat_id = event.message.recipient.chat_id
+    text = (event.message.body.text or "").strip()
+
+    from services.yandex_gpt_service import classify_organization_step_action
+    ai_action = await classify_organization_step_action(
+        user_text=text,
+        scenario="заявка в техническую поддержку",
+    )
+
+    if ai_action.action == "add_new_organization":
+        await context.set_state(SupportStates.adding_new_inn)
+        from bots.max_bot.texts import INVOICE_ADD_NEW_INN
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=INVOICE_ADD_NEW_INN,
+            keyboard=_get_support_add_inn_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if ai_action.action == "skip":
+        await context.update_data(selected_inn=None)
+        await context.set_state(SupportStates.entering_problem)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=SUPPORT_CREATE_TICKET,
+            keyboard=get_problem_description_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if ai_action.action == "cancel":
+        await cancel_support_flow(event, context, session, messenger_adapter)
+        return
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=(
+            "Выберите организацию кнопкой, напишите «Новая организация», "
+            "«Пропустить» или «Отмена»."
+        ),
+        parse_mode="HTML",
+    )
+
+
 def _get_support_add_inn_keyboard() -> "Keyboard":
     """Return a simple back/cancel keyboard for the add-INN step."""
     from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton

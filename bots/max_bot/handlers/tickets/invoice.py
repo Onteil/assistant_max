@@ -579,6 +579,72 @@ async def handle_organization_action_callback(
         )
 
 
+async def process_invoice_org_text_action(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Handle text replies on the invoice organization selection step."""
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    text = (event.message.body.text or "").strip()
+
+    user_id = await get_user_id_with_fallback(
+        context=context,
+        max_user_id=max_user_id,
+        session=session,
+        chat_id=chat_id,
+        messenger_adapter=messenger_adapter,
+    )
+    if not user_id:
+        return
+
+    from services.yandex_gpt_service import classify_organization_step_action
+    ai_action = await classify_organization_step_action(
+        user_text=text,
+        scenario="заявка на счет",
+    )
+
+    if ai_action.action == "add_new_organization":
+        await context.set_state(InvoiceStates.adding_new_inn)
+        from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=INVOICE_ADD_NEW_INN,
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if ai_action.action == "skip":
+        await context.update_data(selected_inn=None)
+        await context.set_state(InvoiceStates.selecting_keys)
+        await show_key_selection(
+            chat_id=chat_id,
+            user_id=user_id,
+            selected_keys=set(),
+            page=0,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            message_id=None,
+        )
+        return
+
+    if ai_action.action == "cancel":
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=(
+            "Выберите организацию кнопкой, напишите «Новая организация», "
+            "«Пропустить» или «Отмена»."
+        ),
+        parse_mode="HTML",
+    )
+
+
 async def process_new_inn(
     event: MessageCreated,
     context: MemoryContext,

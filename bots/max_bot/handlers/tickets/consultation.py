@@ -512,6 +512,58 @@ async def handle_consultation_org_action(
         await _cancel_flow(event, context, session, messenger_adapter)
 
 
+async def process_consultation_org_text_action(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Handle text replies on the consultation organization selection step."""
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    text = (event.message.body.text or "").strip()
+
+    user_id = await _get_user_id(context, max_user_id, session, chat_id, messenger_adapter)
+    if not user_id:
+        return
+
+    from services.yandex_gpt_service import classify_organization_step_action
+    ai_action = await classify_organization_step_action(
+        user_text=text,
+        scenario="сметная консультация",
+    )
+
+    if ai_action.action == "add_new_organization":
+        await context.set_state(ConsultationStates.adding_new_inn)
+        from bots.max_bot.keyboards.user.registration_kb import get_cancel_keyboard
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=CONSULTATION_ADD_NEW_INN,
+            keyboard=get_cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
+    if ai_action.action == "skip":
+        await context.update_data(selected_inn=None)
+        await context.set_state(ConsultationStates.selecting_keys)
+        await _show_key_selection(chat_id, user_id, set(), 0, session, messenger_adapter)
+        return
+
+    if ai_action.action == "cancel":
+        await _cancel_flow(event, context, session, messenger_adapter)
+        return
+
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=(
+            "Выберите организацию кнопкой, напишите «Новая организация», "
+            "«Пропустить» или «Отмена»."
+        ),
+        parse_mode="HTML",
+    )
+
+
 async def process_consultation_new_inn(
     event: MessageCreated,
     context: MemoryContext,

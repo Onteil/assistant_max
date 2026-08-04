@@ -336,11 +336,15 @@ async def handle_main_menu(
     from bots.max_bot.handlers.tickets.invoice import cmd_invoice
     from bots.max_bot.handlers.tickets.support import cmd_support
     from bots.max_bot.handlers.user.profile import cmd_profile
+    from bots.max_bot.handlers.user.ai_agent import start_ai_agent
+    from services.yandex_gpt_service import is_yandex_gpt_configured
     
     # Route to appropriate handler based on button text
-    if message_text == MENU_INVOICE:
-        # Route to invoice handler
-        await cmd_invoice(event, context, session, messenger_adapter)
+    if message_text in {MENU_INVOICE, "Менеджер"}:
+        if is_yandex_gpt_configured():
+            await start_ai_agent(event, context, session, messenger_adapter)
+        else:
+            await cmd_invoice(event, context, session, messenger_adapter)
     
     elif message_text == MENU_SUPPORT:
         # Route to support handler

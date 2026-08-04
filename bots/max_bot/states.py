@@ -60,6 +60,13 @@ class ConsultationStates(StatesGroup):
     entering_description = State()
 
 
+class AIAgentStates(StatesGroup):
+    """States for AI manager assistant flow."""
+
+    waiting_for_request = State()
+    waiting_for_key = State()
+
+
 class ProfileStates(StatesGroup):
     """States for profile management."""
 
