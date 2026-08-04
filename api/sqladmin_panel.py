@@ -30,6 +30,7 @@ from database.models import (
     System_Settings,
     NPS_Response,
     MAX_Messenger_Data,
+    TechSupportKnowledge,
 )
 
 
@@ -854,6 +855,49 @@ class MAXMessengerDataAdmin(ModelView, model=MAX_Messenger_Data):
     can_export = True
 
 
+class TechSupportKnowledgeAdmin(ModelView, model=TechSupportKnowledge):
+    """Technical support knowledge base management interface"""
+
+    name = "База ошибки"
+    name_plural = "База ошибок"
+    icon = "fa-solid fa-book-medical"
+    category = "Техподдержка"
+
+    column_list = [
+        TechSupportKnowledge.id,
+        TechSupportKnowledge.title,
+        TechSupportKnowledge.is_active,
+        TechSupportKnowledge.source,
+        TechSupportKnowledge.created_at,
+        TechSupportKnowledge.updated_at,
+    ]
+
+    column_searchable_list = [
+        TechSupportKnowledge.title,
+        TechSupportKnowledge.error_text,
+        TechSupportKnowledge.solution_text,
+        TechSupportKnowledge.keywords,
+    ]
+
+    column_sortable_list = [
+        TechSupportKnowledge.id,
+        TechSupportKnowledge.created_at,
+        TechSupportKnowledge.updated_at,
+    ]
+
+    form_columns = [
+        TechSupportKnowledge.title,
+        TechSupportKnowledge.error_text,
+        TechSupportKnowledge.solution_text,
+        TechSupportKnowledge.keywords,
+        TechSupportKnowledge.screenshot_url,
+        TechSupportKnowledge.source,
+        TechSupportKnowledge.is_active,
+    ]
+
+    can_export = True
+
+
 def setup_admin(app, engine):
     """
     Setup SQLAdmin with all model views.
@@ -905,5 +949,6 @@ def setup_admin(app, engine):
     admin.add_view(SystemSettingsAdmin)
     admin.add_view(NPSResponseAdmin)
     admin.add_view(MAXMessengerDataAdmin)
+    admin.add_view(TechSupportKnowledgeAdmin)
     
     return admin

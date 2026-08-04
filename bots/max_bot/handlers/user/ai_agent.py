@@ -18,6 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import AIAgentStates
+from services.tech_support_knowledge_service import (
+    format_knowledge_answer,
+    search_tech_support_knowledge,
+)
 from services.user_service import get_user_by_max_id
 from services.yandex_gpt_service import (
     INTENT_CONSULTATION,
@@ -128,6 +132,16 @@ async def handle_ai_agent_message(
         _send_processing_message_after_delay(chat_id, messenger_adapter)
     )
     try:
+        knowledge_results = await search_tech_support_knowledge(session, user_text)
+        if knowledge_results:
+            await context.set_state(AIAgentStates.waiting_for_request)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=format_knowledge_answer(knowledge_results[0]),
+                parse_mode="HTML",
+            )
+            return
+
         intent = await classify_ai_agent_intent(user_text, user_name)
     finally:
         processing_task.cancel()

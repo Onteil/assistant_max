@@ -1158,6 +1158,29 @@ class System_Settings(Base):
     updater = relationship("Staff_Member", foreign_keys=[updated_by])
 
 
+class TechSupportKnowledge(Base, TimestampMixin):
+    """
+    Knowledge base entry for known product errors and support solutions.
+
+    Entries are maintained by support staff in the admin panel and used by
+    the AI assistant before routing the client to a support ticket.
+    """
+    __tablename__ = "tech_support_knowledge"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, nullable=False)
+    title = Column(String(255), nullable=False)
+    error_text = Column(Text, nullable=False)
+    solution_text = Column(Text, nullable=False)
+    keywords = Column(Text, nullable=True)
+    screenshot_url = Column(Text, nullable=True)
+    source = Column(String(255), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+
+    __table_args__ = (
+        Index("ix_tech_support_knowledge_title", "title"),
+    )
+
+
 
 class NPS_Response(Base, TimestampMixin):
     """
