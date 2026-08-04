@@ -869,7 +869,6 @@ class TechSupportKnowledgeAdmin(ModelView, model=TechSupportKnowledge):
         TechSupportKnowledge.is_active,
         TechSupportKnowledge.source,
         TechSupportKnowledge.created_at,
-        TechSupportKnowledge.updated_at,
     ]
 
     column_searchable_list = [
@@ -882,7 +881,6 @@ class TechSupportKnowledgeAdmin(ModelView, model=TechSupportKnowledge):
     column_sortable_list = [
         TechSupportKnowledge.id,
         TechSupportKnowledge.created_at,
-        TechSupportKnowledge.updated_at,
     ]
 
     form_columns = [
