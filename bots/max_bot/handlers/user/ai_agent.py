@@ -54,6 +54,36 @@ AI_AGENT_CONTINUE_TEXT = (
     "• Нужна консультация"
 )
 
+AI_QUESTION_MARKERS = (
+    "?",
+    "как ",
+    "где ",
+    "что ",
+    "почему ",
+    "зачем ",
+    "можно ",
+    "можете ",
+    "подскаж",
+    "расскаж",
+    "что делать",
+    "как узнать",
+    "как посмотреть",
+    "как найти",
+    "как получить",
+    "как добавить",
+    "как выписать",
+    "можно ли",
+    "нужен счет",
+    "нужен счёт",
+    "нужна консультация",
+    "не найден ключ",
+    "не видит ключ",
+    "номер ключа",
+    "ключ защиты",
+    "не запускается",
+    "не открывается",
+)
+
 
 def _get_event_ids(event: MessageCreated | MessageCallback) -> tuple[int, int]:
     chat_id = event.message.recipient.chat_id
@@ -66,6 +96,18 @@ def _get_event_ids(event: MessageCreated | MessageCallback) -> tuple[int, int]:
 
 def _get_message_text(event: MessageCreated) -> str:
     return (event.message.body.text or "").strip()
+
+
+def should_route_text_to_ai_assistant(text: str) -> bool:
+    """Return True when a free text message looks like a question to the assistant."""
+    normalized = f" {text.strip().lower()} "
+    if not normalized.strip():
+        return False
+
+    if len(normalized) > 500:
+        return False
+
+    return any(marker in normalized for marker in AI_QUESTION_MARKERS)
 
 
 async def start_ai_agent(
@@ -108,6 +150,7 @@ async def handle_ai_agent_message(
     context: MemoryContext,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
+    keep_ai_state: bool = True,
 ) -> None:
     """Handle free-form client request in AI assistant mode."""
     chat_id, max_user_id = _get_event_ids(event)
@@ -134,7 +177,8 @@ async def handle_ai_agent_message(
     try:
         knowledge_results = await search_tech_support_knowledge(session, user_text)
         if knowledge_results:
-            await context.set_state(AIAgentStates.waiting_for_request)
+            if keep_ai_state:
+                await context.set_state(AIAgentStates.waiting_for_request)
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=format_knowledge_answer(knowledge_results[0]),
@@ -166,6 +210,7 @@ async def handle_ai_agent_message(
         key_number=intent.key_number,
         reply=intent.reply,
         user_name=user_name,
+        keep_ai_state=keep_ai_state,
     )
 
 
@@ -207,6 +252,7 @@ async def _route_ai_intent(
     key_number: str | None,
     reply: str | None,
     user_name: str | None,
+    keep_ai_state: bool = True,
 ) -> None:
     chat_id, _ = _get_event_ids(event)
 
@@ -272,7 +318,8 @@ async def _route_ai_intent(
         return
 
     if intent == INTENT_GREETING:
-        await context.set_state(AIAgentStates.waiting_for_request)
+        if keep_ai_state:
+            await context.set_state(AIAgentStates.waiting_for_request)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=reply or (
@@ -284,7 +331,8 @@ async def _route_ai_intent(
         return
 
     if intent == INTENT_FAQ:
-        await context.set_state(AIAgentStates.waiting_for_request)
+        if keep_ai_state:
+            await context.set_state(AIAgentStates.waiting_for_request)
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=reply or AI_AGENT_SCOPE_TEXT,

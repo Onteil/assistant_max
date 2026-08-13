@@ -206,7 +206,11 @@ from .user.commands import (
     cmd_me,
     handle_main_menu,
 )
-from .user.ai_agent import handle_ai_agent_message, handle_ai_agent_key
+from .user.ai_agent import (
+    handle_ai_agent_message,
+    handle_ai_agent_key,
+    should_route_text_to_ai_assistant,
+)
 from .user.main_menu_callbacks import handle_main_menu_callback, handle_done_callback
 from services.yandex_gpt_service import is_yandex_gpt_configured
 from .user.renewal import show_subscription_status
@@ -1286,6 +1290,34 @@ def create_user_router() -> Router:
                 from services.ticket_service import get_user_active_tickets
                 active_tickets = await get_user_active_tickets(session, user.id)
                 active_tickets_count = len(active_tickets)
+                message_text = (
+                    event.message.body.text
+                    if event.message.body and event.message.body.text
+                    else ""
+                )
+                if (
+                    active_tickets_count > 0
+                    and message_text
+                    and is_yandex_gpt_configured()
+                    and should_route_text_to_ai_assistant(message_text)
+                ):
+                    user_name = user.first_name or user.full_name or "клиент"
+                    await context.update_data(
+                        user_id=user.id,
+                        ai_user_name=user_name,
+                    )
+                    await handle_ai_agent_message(
+                        event=event,
+                        context=context,
+                        session=session,
+                        messenger_adapter=messenger_adapter,
+                        keep_ai_state=False,
+                    )
+                    logger.info(
+                        f"Routed free-form question to AI assistant instead of active ticket: "
+                        f"user_id={max_user_id}, active_tickets={active_tickets_count}"
+                    )
+                    return
                 
                 if active_tickets_count == 1:
                     # Exactly one active ticket — auto-route immediately
