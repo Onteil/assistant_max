@@ -458,7 +458,7 @@ async def format_client_archive_header(
         "invoice": "💰 Счёт",
         "technical_support": "🆘 ТП",
         "consultation": "💬 Консультация",
-        "renewal": "🔄 Продление",
+        "renewal": "🔄 Активация подписки",
     }
     
     filter_text = filter_text_map.get(current_filter, "Все типы")
@@ -529,7 +529,7 @@ async def get_client_archive_keyboard(
         )
         
         # Renewal filter
-        renewal_text = "🟢 🔄 Продление" if current_filter == "renewal" else "🔄 Продление"
+        renewal_text = "🟢 🔄 Активация подписки" if current_filter == "renewal" else "🔄 Активация подписки"
         filter_buttons.append(
             InlineKeyboardButton(
                 text=renewal_text,
@@ -665,7 +665,7 @@ async def format_client_archived_ticket_details(
             "invoice": "💰 Счет",
             "technical_support": "🔧 Техническая поддержка",
             "consultation": "💬 Консультация",
-            "renewal": "🔄 Продление подписки"
+            "renewal": "🔄 Активация подписки"
         }
         ticket_type_str = ticket_type_map.get(ticket.ticket_type.value, str(ticket.ticket_type.value))
         lines.append(f"<b>Тип:</b> {ticket_type_str}")
@@ -835,12 +835,12 @@ async def get_client_archive_keyboard_max(
             row1.append(_filter_btn("🆘 ТП", "technical_support"))
         buttons.append(row1)
 
-        # Row 2: Консультация + Продление (only if present)
+        # Row 2: Консультация + Активация подписки (only if present)
         row2 = []
         if "consultation" in present_types:
             row2.append(_filter_btn("💬 Консультация", "consultation"))
         if "renewal" in present_types:
-            row2.append(_filter_btn("🔄 Продление", "renewal"))
+            row2.append(_filter_btn("🔄 Активация подписки", "renewal"))
         if row2:
             buttons.append(row2)
 
@@ -856,7 +856,7 @@ async def get_client_archive_keyboard_max(
             TicketType.INVOICE: ("💰", "Счёт"),
             TicketType.TECHNICAL_SUPPORT: ("🆘", "ТП"),
             TicketType.CONSULTATION: ("💬", "Консультация"),
-            TicketType.RENEWAL: ("🔄", "Продление"),
+            TicketType.RENEWAL: ("🔄", "Активация подписки"),
         }
 
         for ticket in tickets[start_idx:end_idx]:

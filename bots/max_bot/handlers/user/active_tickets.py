@@ -7,12 +7,14 @@ Requirements: AC-1.3, TR-2
 """
 
 import logging
+from html import escape
 
 from maxapi.context import MemoryContext
-from maxapi.types import MessageCallback
+from maxapi.types import MessageCallback, MessageCreated
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bots.max_bot.states import ClientTicketCloseStates
 from bots.max_bot.keyboards.user.active_tickets_kb import (
     get_active_tickets_keyboard,
     format_ticket_card_for_client
@@ -24,11 +26,19 @@ from bots.max_bot.payloads import (
     TicketSelectPayload,
     TicketsPaginationPayload,
     TicketsFilterPayload,
+    ActiveTicketsClosePayload,
     TicketHistoryPayload,
     TicketHistoryBackPayload,
+    ClientTicketCloseStartPayload,
+    ClientTicketCloseCancelPayload,
 )
 from database.models import TicketStatus
-from services.ticket_service import get_ticket_by_id, get_user_active_tickets
+from services.ticket_service import (
+    TicketAlreadyClosedError,
+    close_ticket_by_client,
+    get_ticket_by_id,
+    get_user_active_tickets,
+)
 from services.user_service import get_user_by_max_id
 
 logger = logging.getLogger(__name__)
@@ -38,7 +48,13 @@ _FILTER_NAMES = {
     "invoice": "Счёт",
     "support": "ТП",
     "consultation": "Консультация",
-    "renewal": "Продление",
+    "renewal": "Активация подписки",
+}
+
+ACTIVE_STATUSES = {
+    TicketStatus.NEW,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_CLIENT,
 }
 
 
@@ -50,6 +66,54 @@ def _build_header(total: int, filtered: int, active_filter: str) -> str:
         f"📥 <b>Активные обращения</b>\n\n"
         f"Фильтр: {filter_name} | Всего: {count_str}\n\n"
         f"Выберите обращение для продолжения общения:"
+    )
+
+
+def _get_ticket_actions_keyboard(ticket_id: int) -> Keyboard:
+    """Build client ticket details keyboard."""
+    return Keyboard(
+        buttons=[
+            [
+                KeyboardButton(
+                    text="📜 История переписки",
+                    payload=TicketHistoryPayload(ticket_id=ticket_id, page=0).pack()
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="✅ Закрыть обращение",
+                    payload=ClientTicketCloseStartPayload(ticket_id=ticket_id).pack()
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="🔙 К списку обращений",
+                    payload=ActiveTicketsClosePayload().pack()
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="🏠 В меню",
+                    payload=MainMenuActionPayload(action="main_menu").pack()
+                )
+            ],
+        ],
+        inline=True,
+    )
+
+
+def _get_cancel_close_keyboard(ticket_id: int) -> Keyboard:
+    """Build cancel keyboard for client ticket closure flow."""
+    return Keyboard(
+        buttons=[
+            [
+                KeyboardButton(
+                    text="❌ Отмена",
+                    payload=ClientTicketCloseCancelPayload(ticket_id=ticket_id).pack(),
+                )
+            ]
+        ],
+        inline=True,
     )
 
 
@@ -146,35 +210,9 @@ async def handle_select_ticket_callback(
         await context.clear()
         await context.update_data(active_ticket_id=ticket_id)
         
-        # Show ticket information with navigation buttons
-        from bots.max_bot.payloads import ActiveTicketsClosePayload, TicketHistoryPayload
-        
         ticket_card = await format_ticket_card_for_client(ticket)
         
-        # Create keyboard with history and back buttons
-        keyboard = Keyboard(
-            buttons=[
-                [
-                    KeyboardButton(
-                        text="📜 История переписки",
-                        payload=TicketHistoryPayload(ticket_id=ticket_id, page=0).pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="🔙 К списку обращений",
-                        payload=ActiveTicketsClosePayload().pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="🏠 В меню",
-                        payload=MainMenuActionPayload(action="main_menu").pack()
-                    )
-                ]
-            ],
-            inline=True
-        )
+        keyboard = _get_ticket_actions_keyboard(ticket_id)
         
         # Delete old message and send new one (replace_message pattern)
         message_id = event.message.body.mid if hasattr(event.message.body, 'mid') else None
@@ -761,35 +799,9 @@ async def handle_ticket_history_back(
             )
             return
         
-        # Show ticket card
-        from bots.max_bot.payloads import ActiveTicketsClosePayload, TicketHistoryPayload
-        
         ticket_card = await format_ticket_card_for_client(ticket)
         
-        # Create keyboard with history and back buttons
-        keyboard = Keyboard(
-            buttons=[
-                [
-                    KeyboardButton(
-                        text="📜 История переписки",
-                        payload=TicketHistoryPayload(ticket_id=ticket_id, page=0).pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="🔙 К списку обращений",
-                        payload=ActiveTicketsClosePayload().pack()
-                    )
-                ],
-                [
-                    KeyboardButton(
-                        text="🏠 В меню",
-                        payload=MainMenuActionPayload(action="main_menu").pack()
-                    )
-                ]
-            ],
-            inline=True
-        )
+        keyboard = _get_ticket_actions_keyboard(ticket_id)
         
         # Delete old message and send new one (replace_message pattern)
         if message_id:
@@ -819,6 +831,184 @@ async def handle_ticket_history_back(
             chat_id=chat_id,
             text="❌ Произошла ошибка.",
             parse_mode="HTML"
+        )
+
+
+async def handle_client_ticket_close_start(
+    event: MessageCallback,
+    payload: ClientTicketCloseStartPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Ask client for a ticket closure reason."""
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.callback.user.user_id
+    ticket_id = payload.ticket_id
+
+    try:
+        user = await get_user_by_max_id(session, max_user_id)
+        if not user:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден",
+                parse_mode="HTML",
+            )
+            return
+
+        ticket = await get_ticket_by_id(session, ticket_id)
+        if not ticket or ticket.user_id != user.id:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Заявка не найдена или недоступна.",
+                parse_mode="HTML",
+            )
+            return
+
+        if ticket.ticket_status not in ACTIVE_STATUSES:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"Заявка #{ticket_id} уже закрыта.",
+                parse_mode="HTML",
+            )
+            return
+
+        await context.clear()
+        await context.update_data(closing_ticket_id=ticket_id)
+        await context.set_state(ClientTicketCloseStates.waiting_for_reason)
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"Укажите причину закрытия обращения #{ticket_id}.\n\n"
+                "Например: вопрос решен, заявка больше не актуальна, "
+                "получил ответ другим способом."
+            ),
+            keyboard=_get_cancel_close_keyboard(ticket_id),
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        logger.error(
+            f"Error starting client ticket close: ticket_id={ticket_id}, "
+            f"max_user_id={max_user_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Не удалось начать закрытие заявки. Попробуйте позже.",
+            parse_mode="HTML",
+        )
+
+
+async def handle_client_ticket_close_cancel(
+    event: MessageCallback,
+    payload: ClientTicketCloseCancelPayload,
+    context: MemoryContext,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Cancel client ticket closure flow."""
+    chat_id = event.message.recipient.chat_id
+    await context.clear()
+    await context.update_data(active_ticket_id=payload.ticket_id)
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text="Закрытие обращения отменено.",
+        keyboard=_get_ticket_actions_keyboard(payload.ticket_id),
+        parse_mode="HTML",
+    )
+
+
+async def process_client_ticket_close_reason(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Close ticket after client sends a reason."""
+    chat_id = event.message.recipient.chat_id
+    max_user_id = event.message.sender.user_id
+    reason = event.message.body.text.strip() if event.message.body and event.message.body.text else ""
+
+    if len(reason) < 3:
+        data = await context.get_data()
+        ticket_id = data.get("closing_ticket_id")
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="Напишите причину закрытия чуть подробнее.",
+            keyboard=_get_cancel_close_keyboard(ticket_id) if ticket_id else None,
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        data = await context.get_data()
+        ticket_id = data.get("closing_ticket_id")
+        if not ticket_id:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="Не нашла заявку для закрытия. Откройте активные обращения и попробуйте ещё раз.",
+                parse_mode="HTML",
+            )
+            return
+
+        user = await get_user_by_max_id(session, max_user_id)
+        if not user:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="❌ Пользователь не найден",
+                parse_mode="HTML",
+            )
+            return
+
+        await close_ticket_by_client(
+            session=session,
+            ticket_id=ticket_id,
+            user_id=user.id,
+            reason=reason,
+        )
+        await session.commit()
+        await context.clear()
+
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"✅ Обращение #{ticket_id} закрыто.\n\n"
+                f"<b>Причина:</b> {escape(reason)}"
+            ),
+            parse_mode="HTML",
+        )
+
+    except TicketAlreadyClosedError:
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="Эта заявка уже закрыта.",
+            parse_mode="HTML",
+        )
+
+    except PermissionError:
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ У вас нет доступа к этой заявке.",
+            parse_mode="HTML",
+        )
+
+    except Exception as e:
+        await session.rollback()
+        logger.error(
+            f"Error closing ticket by client: max_user_id={max_user_id}, error={e}",
+            exc_info=True,
+        )
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="❌ Не удалось закрыть заявку. Попробуйте позже.",
+            parse_mode="HTML",
         )
 
 

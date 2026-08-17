@@ -89,7 +89,7 @@ async def get_main_menu_keyboard():
                 KeyboardButton(text=MENU_INVOICE),
                 KeyboardButton(text=MENU_SUPPORT)
             ],
-            # Второй ряд: Продление и Архив
+            # Второй ряд: Активация подписки и Архив
             [
                 KeyboardButton(text=MENU_RENEWAL),
                 KeyboardButton(text=MENU_ARCHIVE)

@@ -67,6 +67,12 @@ class AIAgentStates(StatesGroup):
     waiting_for_key = State()
 
 
+class ClientTicketCloseStates(StatesGroup):
+    """States for client-side ticket closure."""
+
+    waiting_for_reason = State()
+
+
 class ProfileStates(StatesGroup):
     """States for profile management."""
 

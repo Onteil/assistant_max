@@ -21,7 +21,7 @@ TICKET_TYPE_INFO = {
     "support": ("🆘", "ТП"),
     "technical_support": ("🆘", "ТП"),
     "consultation": ("💬", "Консультация"),
-    "renewal": ("🔄", "Продление"),
+    "renewal": ("🔄", "Активация подписки"),
 }
 
 STATUS_EMOJI = {

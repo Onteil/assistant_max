@@ -175,7 +175,7 @@ async def handle_escalations_list(
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
             TicketType.CONSULTATION: "💬 Консультация",
-            TicketType.RENEWAL: "🔄 Продление"
+            TicketType.RENEWAL: "🔄 Активация подписки"
         }
         
         for esc in page_escalations:
@@ -336,7 +336,7 @@ async def handle_escalation_view(
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 ТП",
             TicketType.CONSULTATION: "💬 Консультация",
-            TicketType.RENEWAL: "🔄 Продление"
+            TicketType.RENEWAL: "🔄 Активация подписки"
         }
         
         ticket_status_names = {
@@ -706,7 +706,7 @@ async def handle_escalation_reassign_confirm(
                     TicketType.INVOICE: "📄 Запрос счета",
                     TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
                     TicketType.CONSULTATION: "💬 Консультация",
-                    TicketType.RENEWAL: "🔄 Продление подписки"
+                    TicketType.RENEWAL: "🔄 Активация подписки"
                 }
                 
                 # Format created_at

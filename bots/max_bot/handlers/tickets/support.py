@@ -12,7 +12,7 @@ Requirements: 3.1-3.18
 """
 
 import logging
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from maxapi import F
 from maxapi.context import MemoryContext
@@ -75,7 +75,13 @@ from database.models import (
 from services.calendar_service import get_current_work_mode
 from services.i_tat_service import get_itat_client
 from services.itat_retry_helper import call_itat_with_retry
-from services.ticket_service import create_ticket, route_ticket
+from services.ticket_service import (
+    ActiveTicketLimitError,
+    create_ticket,
+    format_active_ticket_limit_message,
+    get_user_active_ticket_by_type,
+    route_ticket,
+)
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
     add_user_organization,
@@ -87,6 +93,9 @@ from services.user_service import (
 from services.validation_service import validate_gs_key, validate_inn
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from bots.max_bot.messenger_adapter import Keyboard
 
 
 # ========== /support Command Handler ==========
@@ -132,6 +141,20 @@ async def cmd_support(
                 chat_id=chat_id,
                 text="❌ Пользователь не найден. Пожалуйста, пройдите регистрацию командой /start",
                 parse_mode="HTML"
+            )
+            return
+
+        existing_ticket = await get_user_active_ticket_by_type(
+            session=session,
+            user_id=user.id,
+            ticket_type=TicketType.TECHNICAL_SUPPORT,
+        )
+        if existing_ticket:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=format_active_ticket_limit_message(existing_ticket),
+                parse_mode="HTML",
             )
             return
 
@@ -945,7 +968,7 @@ async def handle_renewal_callback(
             
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"📋 У вас уже есть активная заявка на продление (#{existing_ticket.id}).\n\n"
+                text=f"📋 У вас уже есть активная заявка на активацию подписки (#{existing_ticket.id}).\n\n"
                      f"Ожидайте ответа от менеджера.",
                 parse_mode="HTML"
             )
@@ -958,7 +981,7 @@ async def handle_renewal_callback(
             return
         
         # Create RENEWAL ticket
-        await create_renewal_ticket(session, messenger_adapter, chat_id, user.id)
+        await create_renewal_ticket(session, messenger_adapter, chat_id, user.id, context)
     
     except Exception as e:
         logger.error(
@@ -976,7 +999,8 @@ async def create_renewal_ticket(
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
     chat_id: int,
-    user_id: int
+    user_id: int,
+    context: MemoryContext
 ) -> None:
     """
     Create RENEWAL ticket for subscription renewal.
@@ -1038,7 +1062,7 @@ async def create_renewal_ticket(
             "ticket_type": TicketType.RENEWAL,
             "user_id": user_id,
             "assigned_staff_id": assigned_staff_id,
-            "description": "Запрос на продление подписки на техническую поддержку"
+            "description": "Запрос на активацию подписки на техническую поддержку"
         }
         
         ticket = await create_ticket(session, ticket_data)
@@ -1101,7 +1125,7 @@ async def create_renewal_ticket(
                 "ticket_type": TicketType.TECHNICAL_SUPPORT,
                 "user_id": user_id,
                 "assigned_staff_id": support_assigned_staff_id,
-                "description": "Запрос техподдержки (создан вместе с заявкой на продление подписки)"
+                "description": "Запрос техподдержки (создан вместе с заявкой на активацию подписки)"
             }
             support_ticket = await create_ticket(session, support_ticket_data)
             
@@ -1179,7 +1203,7 @@ async def create_renewal_ticket(
             # Show ticket creation confirmation first
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=f"✅ <b>Заявка на продление создана!</b>\n\nНомер заявки: #{ticket.id}",
+                text=f"✅ <b>Заявка на активацию подписки создана!</b>\n\nНомер заявки: #{ticket.id}",
                 parse_mode="HTML"
             )
             
@@ -1305,6 +1329,19 @@ async def create_renewal_ticket(
                     exc_info=True
                 )
     
+    except ActiveTicketLimitError as e:
+        logger.info(
+            f"Renewal ticket duplicate blocked: user_id={user_id}, "
+            f"existing_ticket_id={e.existing_ticket.id}"
+        )
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=format_active_ticket_limit_message(e.existing_ticket),
+            parse_mode="HTML"
+        )
+
     except Exception as e:
         logger.error(
             f"Error creating renewal ticket: user_id={user_id}, error={e}",
@@ -2790,6 +2827,19 @@ async def create_support_ticket(
                 f"escalation not scheduled (will be processed in next working period)"
             )
     
+    except ActiveTicketLimitError as e:
+        logger.info(
+            f"Support ticket duplicate blocked: user_id={user_id}, "
+            f"existing_ticket_id={e.existing_ticket.id}"
+        )
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=format_active_ticket_limit_message(e.existing_ticket),
+            parse_mode="HTML"
+        )
+
     except Exception as e:
         logger.error(
             f"Error creating support ticket: user_id={user_id}, error={e}",
@@ -2864,10 +2914,10 @@ async def _notify_admin_about_unassigned_user_renewal(
         user_phone = user.phone_number or "Не указано"
         
         notification_text = (
-            f"⚠️ <b>Заявка на продление перенаправлена администратору</b>\n\n"
-            f"У пользователя не был назначен менеджер, поэтому заявка на продление #{ticket.id} "
+            f"⚠️ <b>Заявка на активацию подписки перенаправлена администратору</b>\n\n"
+            f"У пользователя не был назначен менеджер, поэтому заявка на активацию подписки #{ticket.id} "
             f"была автоматически перенаправлена вам.\n\n"
-            f"<b>Тип заявки:</b> 🔄 Продление\n"
+            f"<b>Тип заявки:</b> 🔄 Активация подписки\n"
             f"<b>Клиент:</b> {user_name}\n"
             f"<b>Телефон:</b> {user_phone}\n"
             f"\n💡 <b>Рекомендация:</b> Назначьте пользователю менеджера"
@@ -3163,7 +3213,7 @@ async def notify_manager_about_duplicate_renewal(
         
         # Create notification message
         notification_text = (
-            f"🔔 <b>Повторная попытка создания заявки на продление</b>\n\n"
+            f"🔔 <b>Повторная попытка создания заявки на активацию подписки</b>\n\n"
             f"Пользователь повторно нажал кнопку \"Продлить\", но у него уже есть активная заявка:\n\n"
             f"{ticket_card}"
         )

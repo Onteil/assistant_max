@@ -55,7 +55,85 @@ class TicketAlreadyClosedError(ValueError):
         )
 
 
+ACTIVE_TICKET_STATUSES = (
+    TicketStatus.NEW,
+    TicketStatus.IN_PROGRESS,
+    TicketStatus.WAITING_CLIENT,
+)
+
+SINGLE_ACTIVE_TICKET_TYPES = {
+    TicketType.INVOICE,
+    TicketType.TECHNICAL_SUPPORT,
+    TicketType.CONSULTATION,
+    TicketType.RENEWAL,
+}
+
+TICKET_TYPE_DISPLAY_NAMES = {
+    TicketType.INVOICE: "Менеджер",
+    TicketType.TECHNICAL_SUPPORT: "Техподдержка",
+    TicketType.CONSULTATION: "Сметная консультация",
+    TicketType.RENEWAL: "Активация подписки",
+}
+
+
+class ActiveTicketLimitError(ValueError):
+    """Raised when a user already has an active ticket in this direction."""
+
+    def __init__(self, existing_ticket: Ticket):
+        self.existing_ticket = existing_ticket
+        ticket_type_name = get_ticket_type_display_name(existing_ticket.ticket_type)
+        super().__init__(
+            f"User already has active {ticket_type_name} ticket #{existing_ticket.id}"
+        )
+
+
+def get_ticket_type_display_name(ticket_type: TicketType | str) -> str:
+    """Return user-facing ticket direction name."""
+    if not isinstance(ticket_type, TicketType):
+        try:
+            ticket_type = TicketType(ticket_type)
+        except ValueError:
+            return str(ticket_type)
+    return TICKET_TYPE_DISPLAY_NAMES.get(ticket_type, ticket_type.value)
+
+
+def format_active_ticket_limit_message(existing_ticket: Ticket) -> str:
+    """Build client-facing message for one-active-ticket-per-direction limit."""
+    ticket_type_name = get_ticket_type_display_name(existing_ticket.ticket_type)
+    return (
+        f"У вас уже есть активная заявка по направлению "
+        f"<b>{ticket_type_name}</b> (#{existing_ticket.id}).\n\n"
+        "Новую заявку по этому направлению можно создать после закрытия текущей.\n"
+        "Откройте «Активные обращения», выберите заявку и нажмите "
+        "«Закрыть обращение»."
+    )
+
+
 # ========== Ticket CRUD Operations ==========
+
+
+async def get_user_active_ticket_by_type(
+    session: AsyncSession,
+    user_id: int,
+    ticket_type: TicketType | str,
+) -> Ticket | None:
+    """Return active ticket for user and direction, if it exists."""
+    if not isinstance(ticket_type, TicketType):
+        ticket_type = TicketType(ticket_type)
+
+    stmt = (
+        select(Ticket)
+        .where(
+            and_(
+                Ticket.user_id == user_id,
+                Ticket.ticket_type == ticket_type,
+                Ticket.ticket_status.in_(ACTIVE_TICKET_STATUSES),
+            )
+        )
+        .order_by(Ticket.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    return result.scalars().first()
 
 
 async def create_ticket(
@@ -92,10 +170,23 @@ async def create_ticket(
             raise ValueError("ticket_type is required")
         if "user_id" not in ticket_data:
             raise ValueError("user_id is required")
+
+        ticket_type = ticket_data["ticket_type"]
+        if not isinstance(ticket_type, TicketType):
+            ticket_type = TicketType(ticket_type)
+
+        if ticket_type in SINGLE_ACTIVE_TICKET_TYPES:
+            existing_ticket = await get_user_active_ticket_by_type(
+                session=session,
+                user_id=ticket_data["user_id"],
+                ticket_type=ticket_type,
+            )
+            if existing_ticket:
+                raise ActiveTicketLimitError(existing_ticket)
         
         # Create ticket
         ticket = Ticket(
-            ticket_type=ticket_data["ticket_type"],
+            ticket_type=ticket_type,
             ticket_status=TicketStatus.NEW,
             user_id=ticket_data["user_id"],
             assigned_staff_id=ticket_data.get("assigned_staff_id"),
@@ -700,7 +791,7 @@ async def send_staff_notification(
             TicketType.INVOICE: "📄 Запрос счета",
             TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
             TicketType.CONSULTATION: "💬 Консультация",
-            TicketType.RENEWAL: "🔄 Продление подписки"
+            TicketType.RENEWAL: "🔄 Активация подписки"
         }
         
         # Format created_at as Moscow time (already stored in Moscow timezone)
@@ -1734,6 +1825,97 @@ async def close_ticket_with_notification(
             f"Database error closing ticket with notification: ticket_id={ticket_id}, "
             f"employee_id={employee_id}, error={e}",
             exc_info=True
+        )
+        raise
+
+
+async def close_ticket_by_client(
+    session: AsyncSession,
+    ticket_id: int,
+    user_id: int,
+    reason: str,
+) -> Ticket:
+    """Close an active ticket by its owner and store the client reason."""
+    try:
+        result = await session.execute(
+            select(Ticket)
+            .where(Ticket.id == ticket_id)
+            .with_for_update()
+        )
+        ticket = result.scalar_one_or_none()
+
+        if not ticket:
+            raise ValueError(f"Ticket not found: ticket_id={ticket_id}")
+
+        if ticket.user_id != user_id:
+            raise PermissionError(f"User {user_id} cannot close ticket {ticket_id}")
+
+        if ticket.ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}:
+            raise TicketAlreadyClosedError(ticket_id, ticket.ticket_status)
+
+        closing_reason = reason.strip()
+        old_status = ticket.ticket_status
+        resolution_comment = f"Закрыто клиентом. Причина: {closing_reason}"
+
+        await add_ticket_message(
+            session=session,
+            ticket_id=ticket_id,
+            sender_type=SenderType.USER,
+            sender_id=user_id,
+            message_text=resolution_comment,
+            message_type=MessageType.TEXT,
+        )
+
+        ticket.ticket_status = TicketStatus.CLOSED
+        ticket.resolution_comment = resolution_comment
+        ticket.closed_at = get_moscow_now_naive()
+        ticket.updated_at = get_moscow_now_naive()
+
+        await _log_action(
+            session=session,
+            action_type=ActionType.TICKET_CLOSED,
+            ticket_id=ticket_id,
+            user_id=user_id,
+            action_details={
+                "closed_by": "client",
+                "old_status": old_status.value,
+                "reason_length": len(closing_reason),
+            },
+        )
+
+        try:
+            from bots.max_bot.utils.itat_logging import log_ticket_status_change_to_itat
+            await log_ticket_status_change_to_itat(
+                session=session,
+                ticket=ticket,
+                old_status=old_status,
+                new_status=TicketStatus.CLOSED,
+                staff_id=None,
+                comment=resolution_comment[:120],
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to log client ticket closure to I-TAT API: "
+                f"ticket_id={ticket_id}, error={e}",
+                exc_info=True,
+            )
+
+        logger.info(
+            "Ticket closed by client: ticket_id=%s, user_id=%s, old_status=%s",
+            ticket_id,
+            user_id,
+            old_status.value,
+        )
+        return ticket
+
+    except (ValueError, PermissionError, TicketAlreadyClosedError):
+        raise
+
+    except SQLAlchemyError as e:
+        logger.error(
+            f"Database error closing ticket by client: ticket_id={ticket_id}, "
+            f"user_id={user_id}, error={e}",
+            exc_info=True,
         )
         raise
 

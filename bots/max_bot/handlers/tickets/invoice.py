@@ -70,7 +70,12 @@ from bots.max_bot.texts import (
 from constants import ENABLE_API_RETRY_DIAGNOSTICS
 from database.models import DeliveryMethod, KeyConflictStatus, RegistrationStatus, Ticket, TicketType, User
 from services.itat_retry_helper import call_itat_with_retry
-from services.ticket_service import create_ticket
+from services.ticket_service import (
+    ActiveTicketLimitError,
+    create_ticket,
+    format_active_ticket_limit_message,
+    get_user_active_ticket_by_type,
+)
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
     add_user_organization,
@@ -224,6 +229,20 @@ async def cmd_invoice(
             )
             return
         
+        existing_ticket = await get_user_active_ticket_by_type(
+            session=session,
+            user_id=user.id,
+            ticket_type=TicketType.INVOICE,
+        )
+        if existing_ticket:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=format_active_ticket_limit_message(existing_ticket),
+                parse_mode="HTML",
+            )
+            return
+
         # Initialize FSM context
         await context.update_data(
             user_id=user.id,
@@ -2861,6 +2880,19 @@ async def create_invoice_ticket(
                 f"user_id={user_id}"
             )
     
+    except ActiveTicketLimitError as e:
+        logger.info(
+            f"Invoice ticket duplicate blocked: user_id={user_id}, "
+            f"existing_ticket_id={e.existing_ticket.id}"
+        )
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=format_active_ticket_limit_message(e.existing_ticket),
+            parse_mode="HTML"
+        )
+
     except Exception as e:
         logger.error(
             f"Error creating invoice ticket: user_id={user_id}, error={e}",
@@ -3026,7 +3058,7 @@ async def _notify_admin_about_unassigned_user(
             TicketType.INVOICE: "💰 Счёт",
             TicketType.TECHNICAL_SUPPORT: "🛠 Техподдержка",
             TicketType.CONSULTATION: "💬 Консультация",
-            TicketType.RENEWAL: "🔄 Продление"
+            TicketType.RENEWAL: "🔄 Активация подписки"
         }
         
         ticket_type = ticket_type_names.get(ticket.ticket_type, str(ticket.ticket_type))

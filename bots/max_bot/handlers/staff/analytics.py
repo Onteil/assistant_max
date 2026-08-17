@@ -184,7 +184,7 @@ def format_stuck_ticket_line(ticket_data: dict) -> str:
     type_translation = {
         "invoice": "Счет",
         "technical_support": "ТП",
-        "renewal": "Продление"
+        "renewal": "Активация подписки"
     }
     type_text = type_translation.get(ticket_type, ticket_type)
     

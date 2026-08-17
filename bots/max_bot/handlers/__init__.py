@@ -38,6 +38,8 @@ from bots.max_bot.payloads import (
     TicketsPaginationPayload,
     TicketsFilterPayload,
     ActiveTicketsClosePayload,
+    ClientTicketCloseStartPayload,
+    ClientTicketCloseCancelPayload,
     TicketHistoryPayload,
     TicketHistoryBackPayload,
     MessageTicketSelectPayload,
@@ -113,7 +115,7 @@ from bots.max_bot.payloads import (
     SupportOrgPagePayload,
     SupportOrgActionPayload,
 )
-from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates, AIAgentStates
+from bots.max_bot.states import RegistrationStates, ProfileStates, EmployeeManagementStates, AdminCreationStates, EmployeeStates, ConsultationStates, AIAgentStates, ClientTicketCloseStates
 
 from .common.callbacks import (
     process_back_navigation,
@@ -189,6 +191,9 @@ from .user.active_tickets import (
     handle_tickets_pagination_callback,
     handle_tickets_filter_callback,
     handle_close_active_tickets,
+    handle_client_ticket_close_start,
+    handle_client_ticket_close_cancel,
+    process_client_ticket_close_reason,
     handle_ticket_history,
     handle_ticket_history_back,
     handle_reply_to_manager_callback,
@@ -1039,12 +1044,19 @@ def create_user_router() -> Router:
     user_router.message_callback(TicketSelectPayload.filter())(handle_select_ticket_callback)
     user_router.message_callback(TicketsPaginationPayload.filter())(handle_tickets_pagination_callback)
     user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
+    user_router.message_callback(ClientTicketCloseStartPayload.filter())(handle_client_ticket_close_start)
+    user_router.message_callback(ClientTicketCloseCancelPayload.filter())(handle_client_ticket_close_cancel)
     user_router.message_callback(TicketHistoryPayload.filter())(handle_ticket_history)
     user_router.message_callback(TicketHistoryBackPayload.filter())(handle_ticket_history_back)
     user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)
     user_router.message_callback(MessageTicketSelectPayload.filter())(handle_message_ticket_select)
     user_router.message_callback(MessageTicketPaginationPayload.filter())(handle_message_ticket_pagination)
     user_router.message_callback(MessageTicketCancelPayload.filter())(handle_message_ticket_cancel)
+
+    user_router.message_created(
+        F.message.body.text,
+        ClientTicketCloseStates.waiting_for_reason,
+    )(process_client_ticket_close_reason)
 
     # ========== Profile Management Handlers ==========
     
@@ -1450,7 +1462,7 @@ def create_user_router() -> Router:
                                 "и создания новой заявки:\n\n"
                                 "• <b>Менеджер</b> — получить помощь менеджера\n"
                                 "• 🆘 <b>Техподдержка</b> — получить помощь по программе\n"
-                                "• 🔄 <b>Продление</b> — продлить подписку"
+                                "• 🔄 <b>Активация подписки</b> — продлить подписку"
                             ),
                             parse_mode="HTML"
                         )

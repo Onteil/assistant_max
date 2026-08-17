@@ -4091,7 +4091,7 @@ async def handle_transfer_ticket_start(
         ticket_type_names = {
             "INVOICE": "Счет",
             "TECHNICAL_SUPPORT": "Техподдержка",
-            "RENEWAL": "Продление"
+            "RENEWAL": "Активация подписки"
         }
         ticket_type = ticket_type_names.get(ticket.ticket_type.value if hasattr(ticket.ticket_type, 'value') else str(ticket.ticket_type), str(ticket.ticket_type))
         

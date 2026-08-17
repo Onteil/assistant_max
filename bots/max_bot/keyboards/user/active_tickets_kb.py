@@ -23,7 +23,7 @@ FILTER_LABELS = {
     "invoice": "💰 Счёт",
     "support": "🆘 ТП",
     "consultation": "💬 Консультация",
-    "renewal": "🔄 Продление",
+    "renewal": "🔄 Активация подписки",
 }
 
 # Ticket type → filter key mapping
@@ -59,7 +59,7 @@ async def get_active_tickets_keyboard(
 
     Layout:
       Row 1: [✅ Все] [💰 Счёт] [🆘 ТП]
-      Row 2: [💬 Консультация] [🔄 Продление]
+      Row 2: [💬 Консультация] [🔄 Активация подписки]
       ...ticket buttons...
       Pagination: [⏮️] [◀️] X/N [▶️] [⏭️]
       [🏠 В меню]
@@ -105,7 +105,7 @@ async def get_active_tickets_keyboard(
     if row1:
         buttons.append(row1)
 
-    # Row 2: Консультация (if any), Продление (if any)
+    # Row 2: Консультация (if any), Активация подписки (if any)
     row2 = []
     for key in ("consultation", "renewal"):
         if key not in present_types:
@@ -137,7 +137,7 @@ async def get_active_tickets_keyboard(
             "support": ("🆘", "ТП"),
             "technical_support": ("🆘", "ТП"),
             "consultation": ("💬", "Консультация"),
-            "renewal": ("🔄", "Продление"),
+            "renewal": ("🔄", "Активация подписки"),
         }
         ticket_type_emoji, ticket_type_name = ticket_type_info.get(
             ticket.ticket_type.value if hasattr(ticket.ticket_type, 'value') else ticket.ticket_type,
@@ -227,7 +227,7 @@ async def format_ticket_card_for_client(ticket: Ticket) -> str:
         "support": "Техподдержка",
         "technical_support": "Техподдержка",
         "consultation": "Консультация",
-        "renewal": "Продление",
+        "renewal": "Активация подписки",
     }.get(
         ticket.ticket_type.value if hasattr(ticket.ticket_type, 'value') else ticket.ticket_type,
         "Обращение"

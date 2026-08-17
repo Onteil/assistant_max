@@ -94,6 +94,18 @@ class ActiveTicketsClosePayload(CallbackPayload, prefix='close_tickets'):
     pass
 
 
+class ClientTicketCloseStartPayload(CallbackPayload, prefix='client_close_start'):
+    """Payload for starting client-side ticket closure."""
+
+    ticket_id: int
+
+
+class ClientTicketCloseCancelPayload(CallbackPayload, prefix='client_close_cancel'):
+    """Payload for canceling client-side ticket closure."""
+
+    ticket_id: int
+
+
 class TicketHistoryPayload(CallbackPayload, prefix='ticket_history'):
     """Payload for viewing ticket message history with pagination.
     

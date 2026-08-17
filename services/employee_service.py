@@ -1614,7 +1614,7 @@ async def get_active_tickets_keyboard(
         )
         
         # Renewal filter
-        renewal_text = "🟢 🔄 Продление" if current_filter == "renewal" else "🔄 Продление"
+        renewal_text = "🟢 🔄 Активация подписки" if current_filter == "renewal" else "🔄 Активация подписки"
         filter_buttons.append(
             InlineKeyboardButton(
                 text=renewal_text,
@@ -1853,7 +1853,7 @@ async def format_active_tickets_header(
         "all": "Все",
         "invoice": "💰 Счёт",
         "technical_support": "🔧 ТП",
-        "renewal": "🔄 Продление"
+        "renewal": "🔄 Активация подписки"
     }
     
     filter_text = filter_names.get(current_filter, "Все")
@@ -2544,7 +2544,7 @@ async def format_archived_ticket_details(
         ticket_type_map = {
             TicketType.INVOICE: "💰 Счет",
             TicketType.TECHNICAL_SUPPORT: "🔧 Техническая поддержка",
-            TicketType.RENEWAL: "🔄 Продление подписки"
+            TicketType.RENEWAL: "🔄 Активация подписки"
         }
         ticket_type_str = ticket_type_map.get(ticket.ticket_type, str(ticket.ticket_type.value))
         lines.append(f"<b>Тип:</b> {ticket_type_str}")

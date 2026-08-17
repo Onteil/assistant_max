@@ -66,7 +66,13 @@ from database.models import (
     WorkMode,
 )
 from services.calendar_service import get_current_work_mode
-from services.ticket_service import create_ticket, route_ticket
+from services.ticket_service import (
+    ActiveTicketLimitError,
+    create_ticket,
+    format_active_ticket_limit_message,
+    get_user_active_ticket_by_type,
+    route_ticket,
+)
 from services.user_service import (
     KeyAlreadyOwnedByUserError,
     add_user_organization,
@@ -169,6 +175,20 @@ async def cmd_consultation(
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="❌ Пользователь не найден. Пожалуйста, пройдите регистрацию командой /start",
+                parse_mode="HTML",
+            )
+            return
+
+        existing_ticket = await get_user_active_ticket_by_type(
+            session=session,
+            user_id=user.id,
+            ticket_type=TicketType.CONSULTATION,
+        )
+        if existing_ticket:
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=format_active_ticket_limit_message(existing_ticket),
                 parse_mode="HTML",
             )
             return
@@ -388,6 +408,18 @@ async def _create_renewal_ticket_for_consultation(
                     keyboard=keyboard,
                     parse_mode="HTML",
                 )
+
+    except ActiveTicketLimitError as e:
+        logger.info(
+            f"Auto-renewal duplicate blocked from consultation: "
+            f"user_id={user.id}, existing_ticket_id={e.existing_ticket.id}"
+        )
+        await session.rollback()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=format_active_ticket_limit_message(e.existing_ticket),
+            parse_mode="HTML",
+        )
 
     except Exception as e:
         logger.error(
@@ -1036,6 +1068,19 @@ async def handle_consultation_key_action(
                 except Exception as e:
                     logger.error(f"Failed to schedule escalation for consultation {ticket.id}: {e}", exc_info=True)
             await _show_main_menu(chat_id, max_user_id, session, messenger_adapter)
+        except ActiveTicketLimitError as e:
+            logger.info(
+                f"Consultation ticket duplicate blocked (skip_description): "
+                f"user_id={user_id}, existing_ticket_id={e.existing_ticket.id}"
+            )
+            await session.rollback()
+            await context.clear()
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=format_active_ticket_limit_message(e.existing_ticket),
+                parse_mode="HTML",
+            )
+
         except Exception as e:
             logger.error(f"Error creating consultation ticket (skip_description): {e}", exc_info=True)
             await session.rollback()
@@ -1596,6 +1641,19 @@ async def handle_consultation_description_next(
             logger.info(
                 f"Consultation ticket {ticket.id} queued — notifications deferred to working hours."
             )
+
+    except ActiveTicketLimitError as e:
+        logger.info(
+            f"Consultation ticket duplicate blocked: user_id={user_id}, "
+            f"existing_ticket_id={e.existing_ticket.id}"
+        )
+        await session.rollback()
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=format_active_ticket_limit_message(e.existing_ticket),
+            parse_mode="HTML",
+        )
 
     except Exception as e:
         logger.error(f"Error creating consultation ticket: {e}", exc_info=True)

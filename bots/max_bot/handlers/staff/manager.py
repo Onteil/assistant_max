@@ -8,6 +8,7 @@ Requirements: Manager Interface
 """
 
 import logging
+from typing import TYPE_CHECKING
 
 from maxapi.types import MessageCallback, MessageCreated
 from maxapi.context import MemoryContext
@@ -42,6 +43,15 @@ from services.employee_service import (
 from services.ticket_service import TicketAlreadyClosedError
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from bots.max_bot.payloads import (
+        ManagerFocusFromMessagePayload,
+        ManagerTakeFromMessagePayload,
+        StaffSelfServicePayload,
+        StaffSetDutyPayload,
+        StaffToggleWorkingPayload,
+    )
 
 
 # ========== Helper Functions ==========
@@ -118,7 +128,7 @@ def format_ticket_card_detailed(ticket: Ticket) -> str:
         TicketType.INVOICE: "💰 Счет",
         TicketType.TECHNICAL_SUPPORT: "🆘 Техподдержка",
         TicketType.CONSULTATION: "💬 Консультация",
-        TicketType.RENEWAL: "🔄 Продление"
+        TicketType.RENEWAL: "🔄 Активация подписки"
     }
     type_name = type_names.get(ticket.ticket_type, "📋 Заявка")
     lines.append(f"<b>Тип:</b> {type_name}")
@@ -371,7 +381,7 @@ def format_active_tickets_header(
         "invoice": "Счёт",
         "technical_support": "ТП",
         "consultation": "Консультация",
-        "renewal": "Продление",
+        "renewal": "Активация подписки",
     }
     filter_text = filter_names.get(current_filter, "Все заявки")
 
@@ -444,12 +454,12 @@ def get_active_tickets_keyboard(
             row1.append(_make_filter_btn("🆘 ТП", "technical_support"))
         buttons.append(row1)
 
-        # Row 2: Консультация (if present), Продление (if present)
+        # Row 2: Консультация (if present), Активация подписки (if present)
         row2 = []
         if "consultation" in present_types:
             row2.append(_make_filter_btn("💬 Консультация", "consultation"))
         if "renewal" in present_types:
-            row2.append(_make_filter_btn("🔄 Продление", "renewal"))
+            row2.append(_make_filter_btn("🔄 Активация подписки", "renewal"))
         if row2:
             buttons.append(row2)
     
@@ -475,7 +485,7 @@ def get_active_tickets_keyboard(
             TicketType.INVOICE: "Счет",
             TicketType.TECHNICAL_SUPPORT: "ТП",
             TicketType.CONSULTATION: "Консультация",
-            TicketType.RENEWAL: "Продление"
+            TicketType.RENEWAL: "Активация подписки"
         }.get(ticket.ticket_type, "Заявка")
         
         status_emoji = {
@@ -1410,7 +1420,7 @@ def format_archive_header(
         "invoice": "Счёт",
         "technical_support": "ТП",
         "consultation": "Консультация",
-        "renewal": "Продление",
+        "renewal": "Активация подписки",
     }
 
     filter_text = filter_names.get(current_filter, "День")
@@ -1493,12 +1503,12 @@ def get_archive_keyboard(
         row2.append(_type_btn("🆘 ТП", "technical_support"))
     buttons.append(row2)
 
-    # Row 3: Консультация + Продление (only if present)
+    # Row 3: Консультация + Активация подписки (only if present)
     row3 = []
     if "consultation" in present_types:
         row3.append(_type_btn("💬 Консультация", "consultation"))
     if "renewal" in present_types:
-        row3.append(_type_btn("🔄 Продление", "renewal"))
+        row3.append(_type_btn("🔄 Активация подписки", "renewal"))
     if row3:
         buttons.append(row3)
 
@@ -1522,7 +1532,7 @@ def get_archive_keyboard(
             TicketType.INVOICE: "Счет",
             TicketType.TECHNICAL_SUPPORT: "ТП",
             TicketType.CONSULTATION: "Консультация",
-            TicketType.RENEWAL: "Продление",
+            TicketType.RENEWAL: "Активация подписки",
         }.get(ticket.ticket_type, "Заявка")
 
         status_emoji = {
