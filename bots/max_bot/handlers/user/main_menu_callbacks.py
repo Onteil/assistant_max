@@ -16,7 +16,7 @@ Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, AC-1.3, TR-2
 import logging
 
 from maxapi.context import MemoryContext
-from maxapi.types import MessageCallback
+from maxapi.types import MessageCallback, MessageCreated
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
@@ -189,7 +189,7 @@ async def handle_main_menu_callback(
 
 
 async def show_active_tickets_list(
-    event: MessageCallback,
+    event: MessageCallback | MessageCreated,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
@@ -210,8 +210,10 @@ async def show_active_tickets_list(
     Requirements: AC-1.3, TR-2
     """
     chat_id = event.message.recipient.chat_id
-    # In callback events, user_id comes from event.callback.user, not event.message.sender
-    max_user_id = event.callback.user.user_id
+    if isinstance(event, MessageCallback):
+        max_user_id = event.callback.user.user_id
+    else:
+        max_user_id = event.message.sender.user_id
     
     try:
         from services.user_service import get_user_by_max_id

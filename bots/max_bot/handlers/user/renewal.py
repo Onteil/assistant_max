@@ -11,7 +11,7 @@ Requirements: 1.1-1.5, 2.1-2.7, 9.1-9.5, 10.1-10.3
 
 import logging
 from maxapi.context import MemoryContext
-from maxapi.types import MessageCallback
+from maxapi.types import MessageCallback, MessageCreated
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -212,7 +212,7 @@ def get_subscription_status_keyboard(subscription_status: SubscriptionStatus) ->
 
 
 async def show_subscription_status(
-    event: MessageCallback,
+    event: MessageCallback | MessageCreated,
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
@@ -234,7 +234,10 @@ async def show_subscription_status(
     Requirements: 1.1-1.5, 9.1-9.4
     """
     chat_id = event.message.recipient.chat_id
-    max_user_id = event.callback.user.user_id
+    if isinstance(event, MessageCallback):
+        max_user_id = event.callback.user.user_id
+    else:
+        max_user_id = event.message.sender.user_id
     
     try:
         # Get user from database

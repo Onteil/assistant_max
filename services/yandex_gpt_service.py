@@ -69,6 +69,12 @@ class ScenarioAIAction:
     reply: str | None = None
 
 
+@dataclass(slots=True)
+class MenuNavigationIntent:
+    action: str
+    confidence: float = 0.0
+
+
 class YandexGPTService:
     """Small async client for Yandex GPT Lite intent classification."""
 
@@ -243,6 +249,104 @@ class YandexGPTService:
             reply=raw.get("reply"),
         )
 
+    async def classify_menu_navigation(self, user_text: str) -> MenuNavigationIntent:
+        """
+        Classify a free-form client message as an explicit menu navigation action.
+
+        This intentionally does not answer business questions. It only decides
+        whether the user wants to open one of the existing bot menu sections.
+        """
+        if not self.is_configured:
+            logger.info("Yandex GPT is not configured; menu navigation skipped")
+            return MenuNavigationIntent(action="unknown")
+
+        allowed_actions = {
+            "main_menu": "пользователь хочет открыть главное меню, вернуться в меню или посмотреть список функций",
+            "profile": "пользователь хочет открыть свой профиль, данные, ИНН, ключи или настройки",
+            "archive": "пользователь хочет открыть архив, историю или закрытые обращения",
+            "active_tickets": "пользователь хочет посмотреть активные, открытые или текущие обращения",
+            "manager": "пользователь явно хочет открыть сценарий менеджера или получить счет",
+            "support": "пользователь явно хочет открыть техподдержку или создать обращение в техподдержку",
+            "consultation": "пользователь явно хочет открыть сметную консультацию или создать обращение консультанту",
+            "renewal": "пользователь явно хочет открыть активацию подписки, продление подписки или статус подписки",
+            "unknown": "сообщение не является просьбой открыть раздел меню",
+        }
+        actions_text = "\n".join(
+            f"- {action}: {description}"
+            for action, description in allowed_actions.items()
+        )
+
+        try:
+            payload = {
+                "modelUri": self.model_uri,
+                "completionOptions": {
+                    "stream": False,
+                    "temperature": 0,
+                    "maxTokens": "120",
+                },
+                "jsonObject": True,
+                "messages": [
+                    {
+                        "role": "system",
+                        "text": (
+                            "Ты классификатор навигации по меню бота "
+                            "'Ассистент сметчика АЙТАТ'. Верни только JSON. "
+                            "Пользователь может писать с опечатками, например "
+                            "'мнею' вместо 'меню'. Выбери действие только если "
+                            "пользователь явно хочет открыть раздел меню или "
+                            "запустить соответствующий сценарий. Если он просто "
+                            "описывает проблему или задает вопрос, верни unknown."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "text": (
+                            f"Разрешенные действия:\n{actions_text}\n\n"
+                            f"Сообщение клиента: {user_text}\n\n"
+                            "JSON формат: {"
+                            "\"action\":\"одно из разрешенных действий\","
+                            "\"confidence\":0.0"
+                            "}."
+                        ),
+                    },
+                ],
+            }
+            headers = {
+                "Authorization": f"Api-Key {self.api_key}",
+                "Content-Type": "application/json",
+            }
+
+            async with httpx.AsyncClient(
+                timeout=YANDEX_GPT_TIMEOUT_SECONDS
+            ) as client:
+                response = await client.post(
+                    YANDEX_COMPLETION_URL,
+                    headers=headers,
+                    json=payload,
+                )
+                response.raise_for_status()
+
+            text = self._extract_text(response.json())
+            raw = json.loads(text)
+        except Exception as exc:
+            logger.warning(
+                "Yandex GPT menu navigation classification failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return MenuNavigationIntent(action="unknown")
+
+        action = str(raw.get("action") or "unknown")
+        if action not in allowed_actions:
+            action = "unknown"
+
+        try:
+            confidence = float(raw.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0
+
+        return MenuNavigationIntent(action=action, confidence=confidence)
+
     @staticmethod
     def _system_prompt() -> str:
         return (
@@ -317,6 +421,10 @@ async def classify_ai_agent_intent(
     user_name: str | None = None,
 ) -> AIAgentIntent:
     return await YandexGPTService().classify_intent(user_text, user_name)
+
+
+async def classify_menu_navigation(user_text: str) -> MenuNavigationIntent:
+    return await YandexGPTService().classify_menu_navigation(user_text)
 
 
 def is_yandex_gpt_configured() -> bool:
