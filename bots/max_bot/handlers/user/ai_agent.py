@@ -209,6 +209,7 @@ async def handle_ai_agent_message(
         intent=intent.intent,
         key_number=intent.key_number,
         reply=intent.reply,
+        user_text=user_text,
         user_name=user_name,
         keep_ai_state=keep_ai_state,
     )
@@ -251,6 +252,7 @@ async def _route_ai_intent(
     intent: str,
     key_number: str | None,
     reply: str | None,
+    user_text: str,
     user_name: str | None,
     keep_ai_state: bool = True,
 ) -> None:
@@ -277,6 +279,19 @@ async def _route_ai_intent(
 
     if intent == INTENT_INVOICE:
         from bots.max_bot.handlers.tickets.invoice import cmd_invoice
+
+        if _is_manager_handoff_without_invoice(user_text):
+            if keep_ai_state:
+                await context.set_state(AIAgentStates.waiting_for_request)
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Поняла, нужен менеджер. Опишите, пожалуйста, вопрос "
+                    "одним сообщением, и я помогу правильно направить обращение."
+                ),
+                parse_mode="HTML",
+            )
+            return
 
         await messenger_adapter.send_message(
             chat_id=chat_id,
@@ -397,6 +412,34 @@ def _looks_like_key(value: str) -> bool:
         and len(parts[1]) == 5
         and parts[0].isdigit()
         and parts[1].isdigit()
+    )
+
+
+def _is_manager_handoff_without_invoice(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    manager_markers = (
+        "менеджер",
+        "менеджеру",
+        "оператор",
+        "сотрудник",
+        "специалист",
+        "переведи",
+        "перевести",
+        "свяжи",
+        "связаться",
+    )
+    invoice_markers = (
+        "счет",
+        "счёт",
+        "оплат",
+        "выстав",
+        "выпис",
+        "коммерческ",
+        "кп",
+    )
+    return (
+        any(marker in normalized for marker in manager_markers)
+        and not any(marker in normalized for marker in invoice_markers)
     )
 
 

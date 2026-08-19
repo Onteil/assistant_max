@@ -40,6 +40,7 @@ from bots.max_bot.payloads import (
     ActiveTicketsClosePayload,
     ClientTicketCloseStartPayload,
     ClientTicketCloseCancelPayload,
+    ClientTicketCloseSkipPayload,
     TicketHistoryPayload,
     TicketHistoryBackPayload,
     MessageTicketSelectPayload,
@@ -193,6 +194,7 @@ from .user.active_tickets import (
     handle_close_active_tickets,
     handle_client_ticket_close_start,
     handle_client_ticket_close_cancel,
+    handle_client_ticket_close_skip,
     process_client_ticket_close_reason,
     handle_ticket_history,
     handle_ticket_history_back,
@@ -1047,6 +1049,7 @@ def create_user_router() -> Router:
     user_router.message_callback(ActiveTicketsClosePayload.filter())(handle_close_active_tickets)
     user_router.message_callback(ClientTicketCloseStartPayload.filter())(handle_client_ticket_close_start)
     user_router.message_callback(ClientTicketCloseCancelPayload.filter())(handle_client_ticket_close_cancel)
+    user_router.message_callback(ClientTicketCloseSkipPayload.filter())(handle_client_ticket_close_skip)
     user_router.message_callback(TicketHistoryPayload.filter())(handle_ticket_history)
     user_router.message_callback(TicketHistoryBackPayload.filter())(handle_ticket_history_back)
     user_router.message_callback(ReplyToManagerPayload.filter())(handle_reply_to_manager_callback)

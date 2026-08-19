@@ -235,10 +235,15 @@ async def cmd_invoice(
             ticket_type=TicketType.INVOICE,
         )
         if existing_ticket:
+            from bots.max_bot.handlers.user.active_tickets import (
+                get_active_ticket_limit_keyboard,
+            )
+
             await context.clear()
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=format_active_ticket_limit_message(existing_ticket),
+                keyboard=get_active_ticket_limit_keyboard(existing_ticket.id),
                 parse_mode="HTML",
             )
             return
@@ -2881,6 +2886,10 @@ async def create_invoice_ticket(
             )
     
     except ActiveTicketLimitError as e:
+        from bots.max_bot.handlers.user.active_tickets import (
+            get_active_ticket_limit_keyboard,
+        )
+
         logger.info(
             f"Invoice ticket duplicate blocked: user_id={user_id}, "
             f"existing_ticket_id={e.existing_ticket.id}"
@@ -2890,6 +2899,7 @@ async def create_invoice_ticket(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=format_active_ticket_limit_message(e.existing_ticket),
+            keyboard=get_active_ticket_limit_keyboard(e.existing_ticket.id),
             parse_mode="HTML"
         )
 

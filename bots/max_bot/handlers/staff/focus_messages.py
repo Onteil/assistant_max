@@ -16,11 +16,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
 from bots.max_bot.states import EmployeeStates
-from database.models import Staff_Member, FileType
+from database.models import Staff_Member, FileType, Ticket, TicketStatus
 from services.ticket_service import send_message_to_client_max
 from services.validation_service import classify_file_type
 
 logger = logging.getLogger(__name__)
+
+CLOSED_TICKET_STATUSES = {TicketStatus.CLOSED, TicketStatus.CANCELLED}
 
 
 # ========== Helper Functions ==========
@@ -107,6 +109,15 @@ async def handle_focus_message(
                 text="❌ Ошибка состояния. Пожалуйста, выберите заявку заново.\nИспользуйте /manager для возврата в меню.",
                 parse_mode="HTML"
             )
+            return
+
+        if not await _ensure_focused_ticket_is_active(
+            session=session,
+            context=context,
+            messenger_adapter=messenger_adapter,
+            chat_id=chat_id,
+            ticket_id=focused_ticket_id,
+        ):
             return
         
         # Check if message has attachments
@@ -231,6 +242,46 @@ async def handle_focus_text_message(
         else:
             # Re-raise other ValueError exceptions
             raise
+
+
+async def _ensure_focused_ticket_is_active(
+    session: AsyncSession,
+    context: MemoryContext,
+    messenger_adapter: MAXMessengerAdapter,
+    chat_id: int,
+    ticket_id: int,
+) -> bool:
+    result = await session.execute(
+        select(Ticket.ticket_status).where(Ticket.id == ticket_id)
+    )
+    ticket_status = result.scalar_one_or_none()
+
+    if ticket_status is None:
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"❌ Заявка #{ticket_id} не найдена. "
+                "Режим общения с клиентом выключен."
+            ),
+            parse_mode="HTML",
+        )
+        return False
+
+    if ticket_status in CLOSED_TICKET_STATUSES:
+        await context.clear()
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text=(
+                f"❌ Заявка #{ticket_id} уже закрыта. "
+                "Сообщение клиенту не отправлено.\n\n"
+                "Используйте /manager, чтобы выбрать активную заявку."
+            ),
+            parse_mode="HTML",
+        )
+        return False
+
+    return True
 
 
 async def handle_focus_file_message(

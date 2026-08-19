@@ -31,6 +31,7 @@ from bots.max_bot.payloads import (
     TicketHistoryBackPayload,
     ClientTicketCloseStartPayload,
     ClientTicketCloseCancelPayload,
+    ClientTicketCloseSkipPayload,
 )
 from database.models import TicketStatus
 from services.ticket_service import (
@@ -108,10 +109,43 @@ def _get_cancel_close_keyboard(ticket_id: int) -> Keyboard:
         buttons=[
             [
                 KeyboardButton(
+                    text="⏭️ Пропустить",
+                    payload=ClientTicketCloseSkipPayload(ticket_id=ticket_id).pack(),
+                )
+            ],
+            [
+                KeyboardButton(
                     text="❌ Отмена",
                     payload=ClientTicketCloseCancelPayload(ticket_id=ticket_id).pack(),
                 )
             ]
+        ],
+        inline=True,
+    )
+
+
+def get_active_ticket_limit_keyboard(ticket_id: int) -> Keyboard:
+    """Build actions for an existing active ticket in the same direction."""
+    return Keyboard(
+        buttons=[
+            [
+                KeyboardButton(
+                    text="✍️ Написать в существующую",
+                    payload=ReplyToManagerPayload(ticket_id=ticket_id).pack(),
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="✅ Закрыть заявку",
+                    payload=ClientTicketCloseStartPayload(ticket_id=ticket_id).pack(),
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="🏠 Главное меню",
+                    payload=MainMenuActionPayload(action="main_menu").pack(),
+                )
+            ],
         ],
         inline=True,
     )
@@ -919,6 +953,25 @@ async def handle_client_ticket_close_cancel(
     )
 
 
+async def handle_client_ticket_close_skip(
+    event: MessageCallback,
+    payload: ClientTicketCloseSkipPayload,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Close a ticket without requiring the client to enter a reason."""
+    await _close_client_ticket_with_reason(
+        chat_id=event.message.recipient.chat_id,
+        max_user_id=event.callback.user.user_id,
+        ticket_id=payload.ticket_id,
+        reason="Причина не указана",
+        context=context,
+        session=session,
+        messenger_adapter=messenger_adapter,
+    )
+
+
 async def process_client_ticket_close_reason(
     event: MessageCreated,
     context: MemoryContext,
@@ -941,9 +994,30 @@ async def process_client_ticket_close_reason(
         )
         return
 
+    data = await context.get_data()
+    ticket_id = data.get("closing_ticket_id")
+    await _close_client_ticket_with_reason(
+        chat_id=chat_id,
+        max_user_id=max_user_id,
+        ticket_id=ticket_id,
+        reason=reason,
+        context=context,
+        session=session,
+        messenger_adapter=messenger_adapter,
+    )
+
+
+async def _close_client_ticket_with_reason(
+    chat_id: int,
+    max_user_id: int,
+    ticket_id: int | None,
+    reason: str,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    """Close a client ticket with explicit or default reason text."""
     try:
-        data = await context.get_data()
-        ticket_id = data.get("closing_ticket_id")
         if not ticket_id:
             await context.clear()
             await messenger_adapter.send_message(

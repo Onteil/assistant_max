@@ -106,6 +106,12 @@ class ClientTicketCloseCancelPayload(CallbackPayload, prefix='client_close_cance
     ticket_id: int
 
 
+class ClientTicketCloseSkipPayload(CallbackPayload, prefix='client_close_skip'):
+    """Payload for closing a client ticket without a custom reason."""
+
+    ticket_id: int
+
+
 class TicketHistoryPayload(CallbackPayload, prefix='ticket_history'):
     """Payload for viewing ticket message history with pagination.
     

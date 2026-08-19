@@ -104,8 +104,7 @@ def format_active_ticket_limit_message(existing_ticket: Ticket) -> str:
         f"У вас уже есть активная заявка по направлению "
         f"<b>{ticket_type_name}</b> (#{existing_ticket.id}).\n\n"
         "Новую заявку по этому направлению можно создать после закрытия текущей.\n"
-        "Откройте «Активные обращения», выберите заявку и нажмите "
-        "«Закрыть обращение»."
+        "Вы можете написать в существующую заявку или закрыть её, указав причину."
     )
 
 
@@ -3415,6 +3414,14 @@ async def send_message_to_client_max(
         if not ticket:
             error_msg = f"Ticket not found: ticket_id={ticket_id}"
             logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        if ticket.ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}:
+            error_msg = (
+                f"Cannot send message to client for closed ticket: "
+                f"ticket_id={ticket_id}, status={ticket.ticket_status.value}"
+            )
+            logger.warning(error_msg)
             raise ValueError(error_msg)
         
         # Check if client has MAX messenger data

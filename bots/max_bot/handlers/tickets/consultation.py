@@ -185,10 +185,15 @@ async def cmd_consultation(
             ticket_type=TicketType.CONSULTATION,
         )
         if existing_ticket:
+            from bots.max_bot.handlers.user.active_tickets import (
+                get_active_ticket_limit_keyboard,
+            )
+
             await context.clear()
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=format_active_ticket_limit_message(existing_ticket),
+                keyboard=get_active_ticket_limit_keyboard(existing_ticket.id),
                 parse_mode="HTML",
             )
             return
@@ -410,6 +415,10 @@ async def _create_renewal_ticket_for_consultation(
                 )
 
     except ActiveTicketLimitError as e:
+        from bots.max_bot.handlers.user.active_tickets import (
+            get_active_ticket_limit_keyboard,
+        )
+
         logger.info(
             f"Auto-renewal duplicate blocked from consultation: "
             f"user_id={user.id}, existing_ticket_id={e.existing_ticket.id}"
@@ -418,6 +427,7 @@ async def _create_renewal_ticket_for_consultation(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=format_active_ticket_limit_message(e.existing_ticket),
+            keyboard=get_active_ticket_limit_keyboard(e.existing_ticket.id),
             parse_mode="HTML",
         )
 
@@ -1069,6 +1079,10 @@ async def handle_consultation_key_action(
                     logger.error(f"Failed to schedule escalation for consultation {ticket.id}: {e}", exc_info=True)
             await _show_main_menu(chat_id, max_user_id, session, messenger_adapter)
         except ActiveTicketLimitError as e:
+            from bots.max_bot.handlers.user.active_tickets import (
+                get_active_ticket_limit_keyboard,
+            )
+
             logger.info(
                 f"Consultation ticket duplicate blocked (skip_description): "
                 f"user_id={user_id}, existing_ticket_id={e.existing_ticket.id}"
@@ -1078,6 +1092,7 @@ async def handle_consultation_key_action(
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text=format_active_ticket_limit_message(e.existing_ticket),
+                keyboard=get_active_ticket_limit_keyboard(e.existing_ticket.id),
                 parse_mode="HTML",
             )
 
@@ -1643,6 +1658,10 @@ async def handle_consultation_description_next(
             )
 
     except ActiveTicketLimitError as e:
+        from bots.max_bot.handlers.user.active_tickets import (
+            get_active_ticket_limit_keyboard,
+        )
+
         logger.info(
             f"Consultation ticket duplicate blocked: user_id={user_id}, "
             f"existing_ticket_id={e.existing_ticket.id}"
@@ -1652,6 +1671,7 @@ async def handle_consultation_description_next(
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text=format_active_ticket_limit_message(e.existing_ticket),
+            keyboard=get_active_ticket_limit_keyboard(e.existing_ticket.id),
             parse_mode="HTML",
         )
 
