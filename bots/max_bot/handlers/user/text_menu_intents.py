@@ -16,7 +16,8 @@ from maxapi.context import MemoryContext
 from maxapi.types import MessageCreated
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bots.max_bot.messenger_adapter import MAXMessengerAdapter
+from bots.max_bot.messenger_adapter import Keyboard, KeyboardButton, MAXMessengerAdapter
+from bots.max_bot.payloads import MainMenuActionPayload
 from bots.max_bot.texts import MAIN_MENU_WELCOME_TEXT
 from database.models import RegistrationStatus
 from services.ticket_service import get_user_active_tickets_count
@@ -29,8 +30,29 @@ from services.yandex_gpt_service import (
 logger = logging.getLogger(__name__)
 
 MIN_MENU_INTENT_CONFIDENCE = 0.6
+MIN_MENU_CLARIFICATION_CONFIDENCE = 0.35
 MENU_INTENT_TIMEOUT_SECONDS = 2
 NAVIGATION_ACTIONS = {"main_menu", "profile", "archive", "active_tickets"}
+ACTION_LABELS = {
+    "main_menu": "Главное меню",
+    "profile": "Мой профиль",
+    "archive": "Архив",
+    "active_tickets": "Мои заявки",
+    "manager": "Менеджер",
+    "support": "Техподдержка",
+    "consultation": "Сметная консультация",
+    "renewal": "Активация подписки",
+}
+ACTION_PAYLOADS = {
+    "main_menu": "main_menu",
+    "profile": "profile",
+    "archive": "archive",
+    "active_tickets": "active_tickets",
+    "manager": "invoice",
+    "support": "support",
+    "consultation": "consultation",
+    "renewal": "renewal",
+}
 MENU_NAVIGATION_WORDS = (
     "мен",
     "мню",
@@ -109,7 +131,7 @@ async def route_text_menu_intent(
         return False
 
     action = intent.action
-    if action == "unknown" or intent.confidence < MIN_MENU_INTENT_CONFIDENCE:
+    if action == "unknown":
         return False
 
     if current_state is not None and action not in NAVIGATION_ACTIONS:
@@ -119,6 +141,16 @@ async def route_text_menu_intent(
     max_user_id = event.message.sender.user_id
     user = await get_user_by_max_id(session, max_user_id)
     if not user or user.registration_status != RegistrationStatus.ACTIVE:
+        return False
+
+    if intent.confidence < MIN_MENU_INTENT_CONFIDENCE:
+        if intent.confidence >= MIN_MENU_CLARIFICATION_CONFIDENCE:
+            await _send_menu_intent_clarification(
+                chat_id=chat_id,
+                action=action,
+                messenger_adapter=messenger_adapter,
+            )
+            return True
         return False
 
     logger.info(
@@ -189,6 +221,41 @@ async def route_text_menu_intent(
         return True
 
     return False
+
+
+async def _send_menu_intent_clarification(
+    chat_id: int,
+    action: str,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    label = ACTION_LABELS.get(action)
+    payload_action = ACTION_PAYLOADS.get(action)
+    if not label or not payload_action:
+        return
+
+    keyboard = Keyboard(
+        buttons=[
+            [
+                KeyboardButton(
+                    text=label,
+                    payload=MainMenuActionPayload(action=payload_action).pack(),
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="Главное меню",
+                    payload=MainMenuActionPayload(action="main_menu").pack(),
+                )
+            ],
+        ],
+        inline=True,
+    )
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=f"Не совсем понял запрос. Возможно, вы имели в виду «{label}»?",
+        keyboard=keyboard,
+        parse_mode="HTML",
+    )
 
 
 async def _show_main_menu(

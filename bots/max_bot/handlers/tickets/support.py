@@ -25,7 +25,6 @@ from bots.max_bot.keyboards.tickets.support_kb import (
     get_add_key_keyboard,
     get_key_context_keyboard,
     get_problem_description_keyboard,
-    get_renewal_keyboard,
     get_support_organization_keyboard,
 )
 from bots.max_bot.messenger_adapter import MAXMessengerAdapter
@@ -49,10 +48,8 @@ from bots.max_bot.texts import (
     RENEWAL_STATUS_NONE,
     RENEWAL_TICKET_CREATED,
     SUPPORT_CREATE_TICKET,
-    SUPPORT_NO_SUBSCRIPTION,
     SUPPORT_SELECT_KEY_CONTEXT,
     SUPPORT_SELECT_ORGANIZATION,
-    SUPPORT_SUBSCRIPTION_EXPIRED,
     SUPPORT_TICKET_CREATED,
     SUPPORT_ROUTING_REGULAR,
     SUPPORT_ROUTING_EXTENDED,
@@ -65,7 +62,6 @@ from bots.max_bot.texts import (
 )
 from database.models import (
     KeyConflictStatus,
-    SubscriptionStatus,
     Ticket,
     TicketStatus,
     TicketType,
@@ -108,10 +104,9 @@ async def cmd_support(
     messenger_adapter: MAXMessengerAdapter
 ) -> None:
     """
-    Handle /support command or callback and validate the support subscription.
+    Handle /support command or callback and start the support flow.
 
-    Users without an active subscription are offered the existing renewal flow,
-    which creates both RENEWAL and TECHNICAL_SUPPORT tickets.
+    Technical support is available to all active registered users.
 
     Args:
         event: Message or callback event from MAX
@@ -155,34 +150,6 @@ async def cmd_support(
                 chat_id=chat_id,
                 text=format_active_ticket_limit_message(existing_ticket),
                 parse_mode="HTML",
-            )
-            return
-
-        if user.subscription_status != SubscriptionStatus.ACTIVE:
-            await context.clear()
-
-            if user.subscription_status == SubscriptionStatus.EXPIRED:
-                expiry_date = (
-                    user.subscription_end_date.strftime("%d.%m.%Y")
-                    if user.subscription_end_date
-                    else "неизвестно"
-                )
-                message_text = SUPPORT_SUBSCRIPTION_EXPIRED.format(
-                    expiry_date=expiry_date
-                )
-            else:
-                message_text = SUPPORT_NO_SUBSCRIPTION
-
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=message_text,
-                keyboard=get_renewal_keyboard(),
-                parse_mode="HTML",
-            )
-            logger.info(
-                "Support request redirected to renewal: user_id=%s, status=%s",
-                user.id,
-                user.subscription_status.value,
             )
             return
 

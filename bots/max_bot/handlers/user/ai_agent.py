@@ -280,7 +280,7 @@ async def _route_ai_intent(
 
         await messenger_adapter.send_message(
             chat_id=chat_id,
-            text="Поняла, нужен счет. Сейчас соберу данные для заявки менеджеру.",
+            text="Поняла, нужен менеджер. Сейчас соберу данные для обращения.",
             parse_mode="HTML",
         )
         await cmd_invoice(event, context, session, messenger_adapter)
