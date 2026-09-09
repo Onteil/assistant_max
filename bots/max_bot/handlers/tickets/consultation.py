@@ -565,6 +565,11 @@ async def process_consultation_org_text_action(
     max_user_id = event.message.sender.user_id
     text = (event.message.body.text or "").strip()
 
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(text):
+        await _cancel_flow(event, context, session, messenger_adapter)
+        return
+
     user_id = await _get_user_id(context, max_user_id, session, chat_id, messenger_adapter)
     if not user_id:
         return
@@ -615,6 +620,11 @@ async def process_consultation_new_inn(
     """Process new INN input in consultation flow."""
     chat_id = event.message.recipient.chat_id
     inn = event.message.body.text.strip()
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(inn):
+        await _cancel_flow(event, context, session, messenger_adapter)
+        return
 
     is_valid, error_msg = validate_inn(inn)
     if not is_valid:
@@ -725,6 +735,11 @@ async def process_consultation_org_name(
     """
     chat_id = event.message.recipient.chat_id
     org_name = event.message.body.text.strip()
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(org_name):
+        await _cancel_flow(event, context, session, messenger_adapter)
+        return
 
     if len(org_name) > 100:
         from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
@@ -1115,6 +1130,11 @@ async def process_consultation_new_key(
     chat_id = event.message.recipient.chat_id
     key_number = event.message.body.text.strip()
 
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(key_number):
+        await _cancel_flow(event, context, session, messenger_adapter)
+        return
+
     is_valid, error_msg = validate_gs_key(key_number)
     if not is_valid:
         await messenger_adapter.send_message(
@@ -1321,6 +1341,53 @@ async def process_consultation_description(
         # Handle text message
         if event.message.body and event.message.body.text:
             description = event.message.body.text.strip()
+            if not event.message.body.attachments:
+                from bots.max_bot.handlers.user.text_scenario_intents import (
+                    _make_callback_event,
+                    is_description_text_control,
+                )
+
+                control_action = await is_description_text_control(
+                    description,
+                    "сметная консультация",
+                )
+                if control_action == "next":
+                    await handle_consultation_description_next(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
+                if control_action == "back":
+                    user_id = await _get_user_id(
+                        context,
+                        event.message.sender.user_id,
+                        session,
+                        chat_id,
+                        messenger_adapter,
+                    )
+                    if not user_id:
+                        return
+                    selected_keys = set(data.get("selected_keys", []))
+                    await context.set_state(ConsultationStates.selecting_keys)
+                    await _show_key_selection(
+                        chat_id,
+                        user_id,
+                        selected_keys,
+                        0,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
+                if control_action == "cancel":
+                    await _cancel_flow(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
 
             if len(description) > 4000:
                 await messenger_adapter.send_message(

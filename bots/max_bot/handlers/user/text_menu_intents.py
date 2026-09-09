@@ -1,8 +1,8 @@
-"""
-AI-assisted text navigation for MAX bot menu sections.
+"""AI-assisted text routing for MAX bot menu sections and scenarios.
 
-Buttons remain the primary UI. This module only handles explicit free-form
-requests to open an existing menu section when Yandex GPT is configured.
+Buttons remain available. This module lets a client type a request in free
+form and opens the matching existing menu section or scenario when Yandex GPT
+is configured.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import asyncio
 import re
+from html import escape
 from typing import Any
 
 from maxapi.context import MemoryContext
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 MIN_MENU_INTENT_CONFIDENCE = 0.6
 MIN_MENU_CLARIFICATION_CONFIDENCE = 0.35
 MENU_INTENT_TIMEOUT_SECONDS = 2
+MAX_ROUTABLE_TEXT_LENGTH = 500
 NAVIGATION_ACTIONS = {"main_menu", "profile", "archive", "active_tickets"}
 ACTION_LABELS = {
     "main_menu": "Главное меню",
@@ -76,6 +78,21 @@ MENU_NAVIGATION_WORDS = (
     "активац",
     "продл",
 )
+AMBIGUOUS_HELP_WORDS = (
+    "помог",
+    "помощ",
+    "вопрос",
+    "подскаж",
+    "не понимаю",
+    "не понятно",
+    "непонятно",
+    "надо разобраться",
+    "нужно разобраться",
+    "что делать",
+    "как быть",
+    "проблем",
+    "сложно",
+)
 
 
 def _get_message_text(event: MessageCreated) -> str:
@@ -90,10 +107,35 @@ def _looks_like_menu_navigation(text: str) -> bool:
         return False
 
     words = normalized.split()
-    if len(words) > 5:
+    if len(words) > 12:
         return False
 
     return any(marker in normalized for marker in MENU_NAVIGATION_WORDS)
+
+
+def _looks_like_invoice_request(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "счет",
+            "счёт",
+            "оплат",
+            "выстав",
+            "выпис",
+            "коммерческ",
+            "кп",
+        )
+    )
+
+
+def _looks_like_ambiguous_help_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
+    if not normalized:
+        return False
+    if len(normalized.split()) > 20:
+        return False
+    return any(marker in normalized for marker in AMBIGUOUS_HELP_WORDS)
 
 
 async def route_text_menu_intent(
@@ -104,17 +146,15 @@ async def route_text_menu_intent(
     current_state: Any = None,
 ) -> bool:
     """
-    Route explicit text requests like "open menu" or "my profile".
+    Route text requests like "open menu", "my profile" or "need invoice".
 
-    Returns True when the message was handled as menu navigation.
+    Returns True when the message was handled as bot navigation/scenario start.
     """
     if not is_yandex_gpt_configured():
         return False
 
     text = _get_message_text(event)
-    if not text or text.startswith("/") or len(text) > 160:
-        return False
-    if not _looks_like_menu_navigation(text):
+    if not text or text.startswith("/") or len(text) > MAX_ROUTABLE_TEXT_LENGTH:
         return False
 
     try:
@@ -132,6 +172,12 @@ async def route_text_menu_intent(
 
     action = intent.action
     if action == "unknown":
+        if current_state is None and _looks_like_ambiguous_help_request(text):
+            await _send_general_intent_clarification(
+                chat_id=event.message.recipient.chat_id,
+                messenger_adapter=messenger_adapter,
+            )
+            return True
         return False
 
     if current_state is not None and action not in NAVIGATION_ACTIONS:
@@ -148,6 +194,12 @@ async def route_text_menu_intent(
             await _send_menu_intent_clarification(
                 chat_id=chat_id,
                 action=action,
+                messenger_adapter=messenger_adapter,
+            )
+            return True
+        if current_state is None and _looks_like_ambiguous_help_request(text):
+            await _send_general_intent_clarification(
+                chat_id=chat_id,
                 messenger_adapter=messenger_adapter,
             )
             return True
@@ -196,7 +248,19 @@ async def route_text_menu_intent(
         from bots.max_bot.handlers.tickets.invoice import cmd_invoice
         from bots.max_bot.handlers.user.ai_agent import start_ai_agent
 
-        if is_yandex_gpt_configured():
+        if _looks_like_invoice_request(text):
+            user_name = escape(user.first_name or user.full_name or "клиент")
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Здравствуйте, {user_name}! "
+                    "Вижу, что запрашиваете счет. Задам пару уточняющих вопросов "
+                    "и сделаю заявку менеджеру."
+                ),
+                parse_mode="HTML",
+            )
+            await cmd_invoice(event, context, session, messenger_adapter)
+        elif is_yandex_gpt_configured():
             await start_ai_agent(event, context, session, messenger_adapter)
         else:
             await cmd_invoice(event, context, session, messenger_adapter)
@@ -253,6 +317,62 @@ async def _send_menu_intent_clarification(
     await messenger_adapter.send_message(
         chat_id=chat_id,
         text=f"Не совсем понял запрос. Возможно, вы имели в виду «{label}»?",
+        keyboard=keyboard,
+        parse_mode="HTML",
+    )
+
+
+async def _send_general_intent_clarification(
+    chat_id: int,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    keyboard = Keyboard(
+        buttons=[
+            [
+                KeyboardButton(
+                    text="Менеджер",
+                    payload=MainMenuActionPayload(action="invoice").pack(),
+                ),
+                KeyboardButton(
+                    text="Техподдержка",
+                    payload=MainMenuActionPayload(action="support").pack(),
+                ),
+            ],
+            [
+                KeyboardButton(
+                    text="Сметная консультация",
+                    payload=MainMenuActionPayload(action="consultation").pack(),
+                )
+            ],
+            [
+                KeyboardButton(
+                    text="Активация подписки",
+                    payload=MainMenuActionPayload(action="renewal").pack(),
+                ),
+                KeyboardButton(
+                    text="Мои заявки",
+                    payload=MainMenuActionPayload(action="active_tickets").pack(),
+                ),
+            ],
+            [
+                KeyboardButton(
+                    text="Мой профиль",
+                    payload=MainMenuActionPayload(action="profile").pack(),
+                ),
+                KeyboardButton(
+                    text="Главное меню",
+                    payload=MainMenuActionPayload(action="main_menu").pack(),
+                ),
+            ],
+        ],
+        inline=True,
+    )
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text=(
+            "Не совсем понял, что именно нужно сделать. "
+            "Выберите подходящий вариант или напишите подробнее."
+        ),
         keyboard=keyboard,
         parse_mode="HTML",
     )

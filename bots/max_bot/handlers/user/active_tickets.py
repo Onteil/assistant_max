@@ -983,9 +983,36 @@ async def process_client_ticket_close_reason(
     max_user_id = event.message.sender.user_id
     reason = event.message.body.text.strip() if event.message.body and event.message.body.text else ""
 
+    data = await context.get_data()
+    ticket_id = data.get("closing_ticket_id")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    normalized_reason = reason.lower().replace("ё", "е").strip()
+    if normalized_reason in {"пропустить", "без причины", "не указывать", "не хочу указывать"}:
+        await _close_client_ticket_with_reason(
+            chat_id=chat_id,
+            max_user_id=max_user_id,
+            ticket_id=ticket_id,
+            reason="Причина не указана",
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter,
+        )
+        return
+
+    if is_cancel_text(reason):
+        await context.clear()
+        if ticket_id:
+            await context.update_data(active_ticket_id=ticket_id)
+        await messenger_adapter.send_message(
+            chat_id=chat_id,
+            text="Закрытие обращения отменено.",
+            keyboard=_get_ticket_actions_keyboard(ticket_id) if ticket_id else None,
+            parse_mode="HTML",
+        )
+        return
+
     if len(reason) < 3:
-        data = await context.get_data()
-        ticket_id = data.get("closing_ticket_id")
         await messenger_adapter.send_message(
             chat_id=chat_id,
             text="Напишите причину закрытия чуть подробнее.",
@@ -994,8 +1021,6 @@ async def process_client_ticket_close_reason(
         )
         return
 
-    data = await context.get_data()
-    ticket_id = data.get("closing_ticket_id")
     await _close_client_ticket_with_reason(
         chat_id=chat_id,
         max_user_id=max_user_id,

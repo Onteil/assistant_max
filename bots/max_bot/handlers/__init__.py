@@ -219,6 +219,7 @@ from .user.ai_agent import (
     should_route_text_to_ai_assistant,
 )
 from .user.text_menu_intents import route_text_menu_intent
+from .user.text_scenario_intents import route_text_scenario_action
 from .user.main_menu_callbacks import handle_main_menu_callback, handle_done_callback
 from services.yandex_gpt_service import is_yandex_gpt_configured
 from .user.renewal import show_subscription_status
@@ -1256,6 +1257,16 @@ def create_user_router() -> Router:
                 f"Skipping catch-all for user {event.message.sender.user_id} "
                 f"in focus mode (state={current_state})"
             )
+            return
+
+        text_scenario_action_handled = await route_text_scenario_action(
+            event=event,
+            context=context,
+            session=session,
+            messenger_adapter=messenger_adapter,
+            current_state=current_state,
+        )
+        if text_scenario_action_handled:
             return
 
         text_menu_intent_handled = await route_text_menu_intent(

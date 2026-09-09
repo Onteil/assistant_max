@@ -614,6 +614,11 @@ async def process_invoice_org_text_action(
     max_user_id = event.message.sender.user_id
     text = (event.message.body.text or "").strip()
 
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(text):
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
+
     user_id = await get_user_id_with_fallback(
         context=context,
         max_user_id=max_user_id,
@@ -694,6 +699,11 @@ async def process_new_inn(
     inn = event.message.body.text.strip()
     
     logger.info(f"Processing new INN: chat_id={chat_id}, inn={inn}")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(inn):
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
     
     # Validate INN format
     is_valid, error_msg = validate_inn(inn)
@@ -923,6 +933,11 @@ async def process_invoice_org_name(
     """
     chat_id = event.message.recipient.chat_id
     org_name = event.message.body.text.strip()
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(org_name):
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
 
     if len(org_name) > 100:
         from bots.max_bot.keyboards.user.registration_kb import get_skip_keyboard
@@ -1660,6 +1675,11 @@ async def process_new_key(
     key_number = event.message.body.text.strip()
     
     logger.info(f"Processing new key: chat_id={chat_id}, key={key_number}")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(key_number):
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
     
     # Validate GS_Key format
     is_valid, result = validate_gs_key(key_number)
@@ -1820,6 +1840,52 @@ async def process_description(
         # Handle text message
         if event.message.body and event.message.body.text:
             description = event.message.body.text.strip()
+            if not event.message.body.attachments:
+                from bots.max_bot.handlers.user.text_scenario_intents import (
+                    _make_callback_event,
+                    is_description_text_control,
+                )
+
+                control_action = await is_description_text_control(
+                    description,
+                    "получение счета",
+                )
+                if control_action == "next":
+                    await handle_invoice_description_next(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
+                if control_action == "back":
+                    user_id = await get_user_id_with_fallback_from_message(
+                        context,
+                        event,
+                        session,
+                        messenger_adapter,
+                    )
+                    if not user_id:
+                        return
+                    selected_keys = set(data.get("selected_keys", []))
+                    await context.set_state(InvoiceStates.selecting_keys)
+                    await show_key_selection(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        selected_keys=selected_keys,
+                        page=0,
+                        session=session,
+                        messenger_adapter=messenger_adapter,
+                    )
+                    return
+                if control_action == "cancel":
+                    await cancel_invoice_flow(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
             
             # Validate text length
             if len(description) > 2000:
@@ -2294,6 +2360,11 @@ async def process_email(
     email = event.message.body.text.strip()
     
     logger.info(f"Processing email: chat_id={chat_id}, email={email}")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(email):
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return
     
     # Validate email format
     is_valid, error_msg = validate_email(email)

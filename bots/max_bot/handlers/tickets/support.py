@@ -470,6 +470,11 @@ async def process_support_org_text_action(
     chat_id = event.message.recipient.chat_id
     text = (event.message.body.text or "").strip()
 
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(text):
+        await cancel_support_flow(event, context, session, messenger_adapter)
+        return
+
     from services.yandex_gpt_service import classify_organization_step_action
     ai_action = await classify_organization_step_action(
         user_text=text,
@@ -552,6 +557,11 @@ async def process_new_inn_for_support(
 
     logger.info(f"Processing new INN for support: chat_id={chat_id}")
 
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(text):
+        await cancel_support_flow(event, context, session, messenger_adapter)
+        return
+
     try:
         data = await context.get_data()
         user_id = data.get("user_id")
@@ -563,10 +573,11 @@ async def process_new_inn_for_support(
             return
 
         # Validate INN format
-        if not validate_inn(text):
+        is_valid, error_msg = validate_inn(text)
+        if not is_valid:
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text=ERROR_VALIDATION_INN,
+                text=ERROR_VALIDATION_INN.format(error_details=error_msg),
                 keyboard=_get_support_add_inn_keyboard(),
                 parse_mode="HTML"
             )
@@ -661,6 +672,11 @@ async def process_org_name_for_support(
     org_name = (event.message.body.text or "").strip() if event.message.body else ""
 
     logger.info(f"Processing org name for support: chat_id={chat_id}")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(org_name):
+        await cancel_support_flow(event, context, session, messenger_adapter)
+        return
 
     try:
         data = await context.get_data()
@@ -1386,6 +1402,42 @@ async def process_problem_description(
         # Handle text message
         if event.message.body and event.message.body.text:
             text = event.message.body.text.strip()
+            if not event.message.body.attachments:
+                from bots.max_bot.handlers.user.text_scenario_intents import (
+                    _make_callback_event,
+                    is_description_text_control,
+                )
+
+                control_action = await is_description_text_control(
+                    text,
+                    "техподдержка",
+                )
+                if control_action == "next":
+                    await handle_support_description_next(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
+                if control_action == "back":
+                    await context.set_state(SupportStates.selecting_organization)
+                    await show_support_organization_selection(
+                        chat_id=chat_id,
+                        user_id=user_id,
+                        page=0,
+                        session=session,
+                        messenger_adapter=messenger_adapter,
+                    )
+                    return
+                if control_action == "cancel":
+                    await cancel_support_flow(
+                        _make_callback_event(event),
+                        context,
+                        session,
+                        messenger_adapter,
+                    )
+                    return
 
             # Validate text length
             if len(text) > 4000:
@@ -2025,6 +2077,11 @@ async def process_new_key_for_support(
     key_number = event.message.body.text.strip()
     
     logger.info(f"Processing new key for support: chat_id={chat_id}, key={key_number}")
+
+    from bots.max_bot.handlers.user.text_scenario_intents import is_cancel_text
+    if is_cancel_text(key_number):
+        await cancel_support_flow(event, context, session, messenger_adapter)
+        return
     
     # Validate GS_Key format
     is_valid, result = validate_gs_key(key_number)
