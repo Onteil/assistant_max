@@ -1124,16 +1124,11 @@ async def test_legacy_key_conflict_resolution_closes_only_selected_tickets():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("subscription_status", "expected_text"),
-    [
-        ("expired", "истекла"),
-        ("none", "нет активной подписки"),
-    ],
+    "subscription_status", ["expired", "none"],
 )
-async def test_support_without_active_subscription_offers_renewal(
+async def test_support_without_active_subscription_starts_form(
     monkeypatch,
     subscription_status,
-    expected_text,
 ):
     from bots.max_bot.handlers.tickets import support as support_handler
     from database.models import SubscriptionStatus
@@ -1149,6 +1144,9 @@ async def test_support_without_active_subscription_offers_renewal(
         AsyncMock(return_value=user),
     )
     show_organizations = AsyncMock()
+    monkeypatch.setattr(
+        support_handler, "get_user_active_ticket_by_type", AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(
         support_handler,
         "show_support_organization_selection",
@@ -1175,13 +1173,11 @@ async def test_support_without_active_subscription_offers_renewal(
         messenger_adapter=adapter,
     )
 
-    context.clear.assert_awaited_once()
-    context.update_data.assert_not_awaited()
-    context.set_state.assert_not_awaited()
-    show_organizations.assert_not_awaited()
-    sent = adapter.send_message.await_args.kwargs
-    assert expected_text in sent["text"].lower()
-    assert sent["keyboard"] is not None
+    from bots.max_bot.states import SupportStates
+    context.update_data.assert_awaited_once()
+    context.set_state.assert_awaited_once_with(SupportStates.selecting_organization)
+    show_organizations.assert_awaited_once()
+    adapter.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

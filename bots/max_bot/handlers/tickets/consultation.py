@@ -1668,7 +1668,7 @@ async def handle_consultation_description_next(
             )
             await messenger_adapter.send_message(
                 chat_id=chat_id,
-                text="У Вас остались вопросы?\n\nВыберите нужное действие:",
+                text="У Вас остались вопросы?\n\nОпишите новый запрос словами или нажмите подходящую кнопку:",
                 keyboard=keyboard,
                 parse_mode="HTML",
             )

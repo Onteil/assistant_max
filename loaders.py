@@ -81,6 +81,8 @@ max_bot = None
 max_dp = None
 max_bot_router = None
 max_messenger_adapter = None
+max_invoice_followups = None
+max_followup_redis = None
 
 if ENABLE_MAX_BOT:
     try:
@@ -100,6 +102,14 @@ if ENABLE_MAX_BOT:
         max_dp = MAXDispatcher()
         max_bot_router = MAXRouter(router_id="max_bot_main")
         max_messenger_adapter = MAXMessengerAdapter(bot=max_bot)
+        from services.max_invoice_followup_service import InvoiceFollowups, RedisDraftStore
+        from constants import AsyncSessionLocal, MAX_INVOICE_REMINDER_MINUTES, MAX_INVOICE_HANDOFF_MINUTES
+        max_followup_redis = Redis.from_url(url=REDIS, db=AIOGRAM_REDIS_DB_NUMBER)
+        max_invoice_followups = InvoiceFollowups(
+            RedisDraftStore(max_followup_redis), max_messenger_adapter, AsyncSessionLocal,
+            reminder_seconds=MAX_INVOICE_REMINDER_MINUTES * 60,
+            handoff_seconds=MAX_INVOICE_HANDOFF_MINUTES * 60,
+        )
         max_dp.middlewares = [
             MAXDatabaseSessionMiddleware(),
             MessengerAdapterMiddleware(max_messenger_adapter),

@@ -249,6 +249,7 @@ async def cmd_invoice(
             return
 
         # Initialize FSM context
+        await context.clear()
         await context.update_data(
             user_id=user.id,
             selected_inn=None,
@@ -256,7 +257,10 @@ async def cmd_invoice(
             description=None,
             attachments=[],
             delivery_method=None,
-            delivery_email=None
+            delivery_email=None,
+            initial_request=(event.message.body.text or "").strip()
+            if isinstance(event, MessageCreated) and event.message.body
+            and not (event.message.body.text or "").startswith("/") else None,
         )
         
         # Set FSM state
@@ -2001,20 +2005,6 @@ async def handle_invoice_description_next(
     logger.info(f"Invoice description next: chat_id={chat_id}")
 
     try:
-        data = await context.get_data()
-        description = data.get("description")
-        attachments = data.get("attachments") or []
-
-        if not description and not attachments:
-            # Nothing accumulated — ask to enter something
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text="⚠️ Пожалуйста, введите описание или прикрепите файл перед тем как продолжить.",
-                keyboard=get_description_input_keyboard(has_content=False),
-                parse_mode="HTML"
-            )
-            return
-
         # Delete old message with buttons
         if message_id:
             try:
@@ -2584,7 +2574,7 @@ async def show_invoice_confirmation(
         user_id = data.get("user_id")
         selected_inn = data.get("selected_inn")
         selected_keys = data.get("selected_keys", [])
-        description = data.get("description")
+        description = data.get("description") or data.get("initial_request")
         attachments = data.get("attachments") or []
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
@@ -2715,7 +2705,7 @@ async def create_invoice_ticket(
         data = await context.get_data()
         selected_inn = data.get("selected_inn")
         selected_keys = data.get("selected_keys", [])
-        description = data.get("description")
+        description = data.get("description") or data.get("initial_request")
         attachments = data.get("attachments") or []
         delivery_method = data.get("delivery_method")
         delivery_email = data.get("delivery_email")
@@ -2862,11 +2852,22 @@ async def create_invoice_ticket(
                 response_time_message=response_time_message
             )
         
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=message_text,
-            parse_mode="HTML"
-        )
+        if data.get("automatic_handoff"):
+            message_text = (
+                f"Вы не завершили оформление. Обращение №{ticket.id} с собранными данными "
+                "передано менеджеру для уточнения запроса. "
+                "Если вопрос уже неактуален, закройте обращение в разделе «Мои заявки».\n\n"
+                + message_text
+            )
+        try:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=message_text,
+                parse_mode="HTML"
+            )
+        except Exception:
+            # A blocked/unavailable client must not prevent manager notification.
+            logger.exception("Could not notify client about invoice ticket %s", ticket.id)
         
         # Show main menu after successful ticket creation
         from services.ticket_service import get_user_active_tickets_count
@@ -2877,15 +2878,18 @@ async def create_invoice_ticket(
         
         main_menu_text = (
             "У Вас остались вопросы?\n\n"
-            "Выберите нужное действие:"
+            "Опишите новый запрос словами или нажмите подходящую кнопку:"
         )
         
-        await messenger_adapter.send_message(
-            chat_id=chat_id,
-            text=main_menu_text,
-            keyboard=keyboard,
-            parse_mode="HTML"
-        )
+        try:
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=main_menu_text,
+                keyboard=keyboard,
+                parse_mode="HTML"
+            )
+        except Exception:
+            logger.exception("Could not send menu after invoice ticket %s", ticket.id)
         
         # Send notifications
         from services.ticket_service import send_staff_notification, route_ticket

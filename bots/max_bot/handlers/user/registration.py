@@ -173,6 +173,8 @@ async def cmd_start(
     
     try:
         # Parse deep link parameter if present
+        # /start opens a fresh menu, so old form input must not intercept replies.
+        await context.clear()
         deep_link_param = None
         if len(message_text.split()) > 1:
             deep_link_param = message_text.split()[1]

@@ -61,7 +61,17 @@ def _is_cancel(text: str) -> bool:
         "не надо счёт",
         "заявка не нужна",
     )
-    return value in cancel_markers or any(marker in value for marker in cancel_markers)
+    if value.strip(" .,!❌") in cancel_markers:
+        return True
+    # A problem description such as "не могу закрыть программу" is not a
+    # cancellation. Match explicit cancellation phrases, not arbitrary substrings.
+    return bool(re.search(
+        r"\b(?:отмена|отмени|отменить|передумал[аи]?|не\s?актуально)\b"
+        r"|\b(?:счет|заявка|обращение)\s+(?:уже\s+)?не\s+нуж(?:ен|на|но)\b"
+        r"|\bне\s+(?:надо|нужен|нужна|нужно)\s+(?:счет|заявк\w*|обращени\w*|оформлять)\b"
+        r"|\b(?:закрой|закрыть)\s+(?:эту\s+|это\s+|все\s+|мои\s+)*(?:заявк\w*|обращени\w*)\b",
+        value,
+    ))
 
 
 def is_cancel_text(text: str) -> bool:
@@ -153,6 +163,11 @@ async def route_text_scenario_action(
     text = _text(event)
     if not text:
         return False
+
+    if str(current_state) in InvoiceStates.states() and _is_cancel(text):
+        from bots.max_bot.handlers.tickets.invoice import cancel_invoice_flow
+        await cancel_invoice_flow(event, context, session, messenger_adapter)
+        return True
 
     if current_state == InvoiceStates.selecting_keys:
         return await _route_invoice_keys(event, context, session, messenger_adapter, text)
@@ -273,7 +288,9 @@ async def _route_invoice_delivery(event, context, session, messenger_adapter, te
         return True
 
     action = None
-    if _is_chat_delivery(text):
+    if _is_cancel(text):
+        action = "cancel"
+    elif _is_chat_delivery(text):
         action = "chat"
     elif _is_email_delivery(text):
         action = "email"
@@ -281,8 +298,6 @@ async def _route_invoice_delivery(event, context, session, messenger_adapter, te
         action = "confirm"
     elif _is_back(text):
         action = "back"
-    elif _is_cancel(text):
-        action = "cancel"
     else:
         action = await _classify_step_action(
             text,

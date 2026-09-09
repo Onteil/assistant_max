@@ -175,17 +175,17 @@ def get_key_selection_keyboard(
         payload=KeyActionPayload(action="add_new").pack()
     )])
     
-    # Кнопка "Готово" (только если есть выбранные ключи)
+    # Continue with the selected keys (or skip when none are selected).
     if selected_key_ids:
         buttons.append([KeyboardButton(
-            text="✅ Готово",
+            text="➡️ Далее",
             payload=KeyActionPayload(action="done").pack()
         )])
     
     # Кнопка "Пропустить" (если нет выбранных ключей)
     if not selected_key_ids:
         buttons.append([KeyboardButton(
-            text="⏭️️ Пропустить",
+            text="➡️ Далее",
             payload=KeyActionPayload(action="skip").pack()
         )])
     
@@ -275,9 +275,8 @@ def get_description_input_keyboard(has_content: bool = False) -> Keyboard:
     """
     Создает клавиатуру для шага ввода описания.
 
-    Если пользователь уже ввёл текст или прикрепил файлы (has_content=True),
-    показывает кнопку «➡️ Далее» для перехода к следующему шагу.
-    Иначе показывает только «Пропустить», «Назад» и «Отмена».
+    «Далее» продолжает оформление с комментарием или без него.
+    has_content сохранён для совместимости с существующими вызовами.
 
     Args:
         has_content: True если пользователь уже ввёл описание или вложения
@@ -289,15 +288,9 @@ def get_description_input_keyboard(has_content: bool = False) -> Keyboard:
     """
     buttons = []
 
-    if has_content:
-        buttons.append([KeyboardButton(
-            text="➡️ Далее",
-            payload=InvoiceDescriptionNextPayload().pack()
-        )])
-
     buttons.append([KeyboardButton(
-        text="⏭️️ Пропустить",
-        payload=KeyActionPayload(action="skip_description").pack()
+        text="➡️ Далее",
+        payload=InvoiceDescriptionNextPayload().pack()
     )])
     buttons.append([
         KeyboardButton(

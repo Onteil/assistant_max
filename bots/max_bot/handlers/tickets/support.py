@@ -1211,7 +1211,7 @@ async def create_renewal_ticket(
         
         main_menu_text = (
             "У Вас остались вопросы?\n\n"
-            "Выберите нужное действие:"
+            "Опишите новый запрос словами или нажмите подходящую кнопку:"
         )
         
         await messenger_adapter.send_message(
@@ -2579,7 +2579,7 @@ async def create_support_ticket(
         
         main_menu_text = (
             "У Вас остались вопросы?\n\n"
-            "Выберите нужное действие:"
+            "Опишите новый запрос словами или нажмите подходящую кнопку:"
         )
         
         await messenger_adapter.send_message(

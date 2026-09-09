@@ -1,5 +1,6 @@
 import logging
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 import uvicorn
 from aiogram import Bot
@@ -36,6 +37,8 @@ from loaders import (
     main_dp,
     max_bot,
     max_dp,
+    max_invoice_followups,
+    max_followup_redis,
     set_all_webhooks,
 )
 from api.sqladmin_panel import setup_admin
@@ -60,7 +63,16 @@ async def lifespan(app: FastAPI):
     await start_tunnel()
     await on_init()
     await set_all_webhooks()
-    yield
+    followup_task = asyncio.create_task(max_invoice_followups.run()) if max_invoice_followups else None
+    try:
+        yield
+    finally:
+        if followup_task:
+            followup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await followup_task
+        if max_followup_redis:
+            await max_followup_redis.aclose()
     logging.info("Application shutdown...")
     await delete_all_webhooks()
     await close_bot_sessions()
@@ -256,7 +268,10 @@ async def max_feed_update(update_data: dict):
         
         # Handle the event using the dispatcher
         # This triggers the middleware chain and routes to appropriate handlers
-        await max_dp.handle(event_object)
+        if max_invoice_followups:
+            await max_invoice_followups.handle(max_dp, event_object)
+        else:
+            await max_dp.handle(event_object)
         
         logging.debug(f"MAX update processed: {event_object.update_type}")
     except Exception as e:
