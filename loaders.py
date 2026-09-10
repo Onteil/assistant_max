@@ -94,6 +94,7 @@ if ENABLE_MAX_BOT:
         from bots.max_bot.messenger_adapter import MAXMessengerAdapter
         from bots.max_bot.middlewares.database import DatabaseSessionMiddleware as MAXDatabaseSessionMiddleware
         from bots.max_bot.middlewares.messenger_adapter import MessengerAdapterMiddleware
+        from bots.max_bot.middlewares.conversation import ConversationMiddleware
 
         max_bot = MAXBot(
             token=MAX_BOT_TOKEN,
@@ -113,6 +114,7 @@ if ENABLE_MAX_BOT:
         max_dp.middlewares = [
             MAXDatabaseSessionMiddleware(),
             MessengerAdapterMiddleware(max_messenger_adapter),
+            ConversationMiddleware(),
         ]
         register_max_handlers(max_dp, max_bot_router)
         logging.info("MAX bot initialized with handlers and middleware")

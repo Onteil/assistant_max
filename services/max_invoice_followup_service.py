@@ -1,6 +1,7 @@
 """Durable follow-up for unfinished MAX invoice forms.
 
-Redis stores only invoice drafts, in a namespace separate from Telegram/Celery.
+Redis stores invoice drafts and AI/client-close conversation state, separately
+from Telegram/Celery. Only invoice drafts have reminder deadlines.
 The webhook and timer share a renewable lock, so a reply/cancel cannot race a
 handoff. Existing ticket creation handles assignment, working hours and files.
 """
@@ -16,12 +17,13 @@ from enum import Enum
 
 from maxapi.context import MemoryContext
 
-from bots.max_bot.states import InvoiceStates
+from bots.max_bot.states import InvoiceStates, AIAgentStates, ClientTicketCloseStates
 
 logger = logging.getLogger(__name__)
 DUE_KEY = "max:invoice-followup:due"
 DRAFT_PREFIX = "max:invoice-followup:draft:"
 INVOICE_STATES = set(InvoiceStates.states())
+PERSISTED_STATES = INVOICE_STATES | set(AIAgentStates.states()) | set(ClientTicketCloseStates.states())
 INVOICE_CALLBACKS = {
     "org_select", "org_page", "org_action", "key_toggle", "key_page",
     "key_action", "delivery", "email_confirm", "inv_desc_next",
@@ -55,7 +57,10 @@ class RedisDraftStore:
     async def save(self, key, draft):
         async with self.redis.pipeline(transaction=True) as pipe:
             pipe.set(DRAFT_PREFIX + key, encode_draft(draft))
-            pipe.zadd(DUE_KEY, {key: draft["due_at"]})
+            if draft["due_at"] is not None:
+                pipe.zadd(DUE_KEY, {key: draft["due_at"]})
+            else:
+                pipe.zrem(DUE_KEY, key)
             await pipe.execute()
 
     async def delete(self, key):
@@ -115,12 +120,13 @@ class InvoiceFollowups:
             if draft:
                 await context.set_data(restore_data(draft))
                 await context.set_state(draft["state"])
-            elif str(await context.get_state()) in INVOICE_STATES:
+            elif str(await context.get_state()) in PERSISTED_STATES:
                 # Another worker completed/cancelled this persisted form.
                 await context.clear()
 
             payload = getattr(getattr(event, "callback", None), "payload", "") or ""
-            if not draft and isinstance(payload, str) and payload.split("|", 1)[0] in INVOICE_CALLBACKS:
+            invoice_active = draft and draft["state"] in INVOICE_STATES
+            if not invoice_active and isinstance(payload, str) and payload.split("|", 1)[0] in INVOICE_CALLBACKS:
                 from bots.max_bot.utils.callback_utils import answer_max_callback
                 await answer_max_callback(event)
                 await self.adapter.send_message(
@@ -132,13 +138,13 @@ class InvoiceFollowups:
 
             await dispatcher.handle(event)
             state = str(await context.get_state())
-            if state in INVOICE_STATES:
+            if state in PERSISTED_STATES:
                 data = await context.get_data()
                 # A reply or button press restarts both stages of the timer.
                 await self.store.save(key, {
                     "chat_id": chat_id, "max_user_id": max_user_id,
                     "state": state, "data": data,
-                    "due_at": self.clock() + self.reminder_seconds,
+                    "due_at": self.clock() + self.reminder_seconds if state in INVOICE_STATES else None,
                     "reminded": False,
                 })
             else:
@@ -154,7 +160,7 @@ class InvoiceFollowups:
                     if not draft:
                         await self.store.delete(key)
                         continue
-                    if draft["due_at"] > self.clock():
+                    if draft["due_at"] is None or draft["due_at"] > self.clock():
                         continue
                     if not draft["reminded"]:
                         await self.adapter.send_message(

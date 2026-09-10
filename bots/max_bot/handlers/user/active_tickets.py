@@ -7,6 +7,8 @@ Requirements: AC-1.3, TR-2
 """
 
 import logging
+import re
+from types import SimpleNamespace
 from html import escape
 
 from maxapi.context import MemoryContext
@@ -868,6 +870,49 @@ async def handle_ticket_history_back(
         )
 
 
+async def start_ticket_close_from_text(event, context, session, messenger_adapter, user):
+    """Select an owned active ticket, then reuse the normal close form."""
+    chat_id = event.message.recipient.chat_id
+    text = event.message.body.text.strip()
+    tickets = await get_user_active_tickets(session, user.id)
+    ticket_ids = {ticket.id for ticket in tickets}
+    number = re.search(r"(?<!\d)\d+(?!\d)", text)
+    chosen = int(number.group()) if number else None
+    if chosen is not None and chosen not in ticket_ids:
+        await messenger_adapter.send_message(
+            chat_id=chat_id, text="У вас нет активного обращения с таким номером. Укажите номер из списка своих обращений.",
+        )
+        return
+    if not tickets:
+        await context.clear()
+        await messenger_adapter.send_message(chat_id=chat_id, text="У вас нет активных обращений для закрытия.")
+        return
+    if chosen is None and len(tickets) == 1:
+        chosen = tickets[0].id
+    if chosen is not None:
+        callback_event = SimpleNamespace(
+            message=event.message,
+            callback=SimpleNamespace(user=SimpleNamespace(user_id=event.message.sender.user_id)),
+        )
+        await handle_client_ticket_close_start(
+            callback_event, ClientTicketCloseStartPayload(ticket_id=chosen),
+            context, session, messenger_adapter,
+        )
+        return
+    await context.clear()
+    await context.set_state(ClientTicketCloseStates.selecting_ticket)
+    await messenger_adapter.send_message(
+        chat_id=chat_id,
+        text="Какое обращение закрыть? Напишите его номер или нажмите кнопку.\n"
+             + "\n".join(f"• #{ticket.id}" for ticket in tickets)
+             + "\nДля выхода напишите «отмена».",
+        keyboard=Keyboard(buttons=[[
+            KeyboardButton(text=f"Закрыть #{ticket.id}",
+                payload=ClientTicketCloseStartPayload(ticket_id=ticket.id).pack())
+        ] for ticket in tickets], inline=True),
+    )
+
+
 async def handle_client_ticket_close_start(
     event: MessageCallback,
     payload: ClientTicketCloseStartPayload,
@@ -916,7 +961,8 @@ async def handle_client_ticket_close_start(
             text=(
                 f"Укажите причину закрытия обращения #{ticket_id}.\n\n"
                 "Например: вопрос решен, заявка больше не актуальна, "
-                "получил ответ другим способом."
+                "получил ответ другим способом.\n"
+                "Можно написать «пропустить» или нажать кнопку, чтобы закрыть без причины."
             ),
             keyboard=_get_cancel_close_keyboard(ticket_id),
             parse_mode="HTML",

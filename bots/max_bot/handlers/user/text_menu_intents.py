@@ -12,6 +12,7 @@ import asyncio
 import re
 from html import escape
 from typing import Any
+from types import SimpleNamespace
 
 from maxapi.context import MemoryContext
 from maxapi.types import MessageCreated
@@ -35,6 +36,38 @@ MIN_MENU_CLARIFICATION_CONFIDENCE = 0.35
 MENU_INTENT_TIMEOUT_SECONDS = 2
 MAX_ROUTABLE_TEXT_LENGTH = 500
 NAVIGATION_ACTIONS = {"main_menu", "profile", "archive", "active_tickets"}
+
+
+def direct_text_action(text: str) -> str | None:
+    """Conservative commands that must work without an LLM or its availability."""
+    value = re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip(" .!?\n")
+    value = re.sub(r"^(?:пожалуйста[, ]+|бот[, ]+)", "", value)
+    value = re.sub(r"[, ]+пожалуйста$", "", value)
+    if re.fullmatch(r"(?:(?:я )?(?:хочу|нужно|надо) )?(?:закрой|закрыть|закройте)\s+(?:(?:мое|мою|это|эту|текущее|текущую|все|мои)\s+)*(?:заявк[ауи]|обращени[ея])(?:\s*(?:№|#)?\s*\d+)?", value):
+        return "close_ticket"
+    if re.fullmatch(r"(?:открой(?:те)? |открыть |покажи(?:те)? |показать |перейди в |перейти в )?(?:мой |мои )?профиль", value):
+        return "profile"
+    if re.fullmatch(r"(?:(?:открой(?:те)?|покажи(?:те)?|открыть|показать|вернись|вернуться)\s+)?(?:в |на )?(?:главное )?меню", value):
+        return "main_menu"
+    if re.fullmatch(r"(?:(?:открой(?:те)?|покажи(?:те)?|открыть|показать)\s+)?(?:мой |мои )?(?:архив|историю обращений|историю заявок)", value):
+        return "archive"
+    if re.fullmatch(r"(?:(?:открой(?:те)?|покажи(?:те)?|открыть|показать)\s+)?(?:(?:мои|активные|открытые|текущие)\s+)*(?:заявки|обращения)", value):
+        return "active_tickets"
+    section = re.sub(r"^(?:открой(?:те)?|открыть|перейди в|перейти в)\s+", "", value)
+    if section in {"техподдержка", "техподдержку", "техническая поддержка", "техническую поддержку"}:
+        return "support"
+    if section in {"сметная консультация", "сметную консультацию", "консультация"}:
+        return "consultation"
+    if section in {"активация подписки", "активацию подписки"}:
+        return "renewal"
+    if "подпис" in value and (
+        any(word in value for word in ("ключ", "гранд", "фснб", "годов"))
+        or re.search(r"\b(?:какие|узнать|посмотреть|проверить)\b", value)
+    ) and not re.search(r"\b(?:активир\w*|продл\w*|купить|оформить)\b", value):
+        return "subscription_lookup"
+    if value in {"отмена", "отмени", "выйти", "выход"}:
+        return "cancel"
+    return None
 ACTION_LABELS = {
     "main_menu": "Главное меню",
     "profile": "Мой профиль",
@@ -144,21 +177,44 @@ async def route_text_menu_intent(
     session: AsyncSession,
     messenger_adapter: MAXMessengerAdapter,
     current_state: Any = None,
+    explicit_only: bool = False,
 ) -> bool:
     """
     Route text requests like "open menu", "my profile" or "need invoice".
 
     Returns True when the message was handled as bot navigation/scenario start.
     """
-    if not is_yandex_gpt_configured():
-        return False
-
     text = _get_message_text(event)
     if not text or text.startswith("/") or len(text) > MAX_ROUTABLE_TEXT_LENGTH:
         return False
 
+    from bots.max_bot.states import ClientTicketCloseStates
+    state_name = str(current_state) if current_state is not None else ""
+    allowed_groups = ("AIAgentStates:", "InvoiceStates:", "SupportStates:",
+                      "ConsultationStates:", "ProfileStates:", "ClientTicketCloseStates:")
+    if state_name and not state_name.startswith(allowed_groups):
+        return False
+    direct_action = direct_text_action(text)
+    # A reason is form data: "вопрос решен, закрыть заявку" must remain a reason.
+    if current_state == ClientTicketCloseStates.waiting_for_reason and direct_action == "close_ticket":
+        await messenger_adapter.send_message(
+            chat_id=event.message.recipient.chat_id,
+            text="Закрытие уже начато. Напишите причину или «пропустить», чтобы закрыть без причины.",
+        )
+        return True
+    if current_state == ClientTicketCloseStates.selecting_ticket and direct_action is None:
+        direct_action = "close_ticket"
+    if direct_action == "cancel":
+        if not state_name.startswith("AIAgentStates:") and current_state != ClientTicketCloseStates.selecting_ticket:
+            return False  # Other forms have their own cancellation handlers.
+        direct_action = "main_menu"
+    if explicit_only and direct_action is None:
+        return False
+    if direct_action is None and not is_yandex_gpt_configured():
+        return False
+
     try:
-        intent = await asyncio.wait_for(
+        intent = SimpleNamespace(action=direct_action, confidence=1.0) if direct_action else await asyncio.wait_for(
             classify_menu_navigation(text),
             timeout=MENU_INTENT_TIMEOUT_SECONDS,
         )
@@ -180,7 +236,7 @@ async def route_text_menu_intent(
             return True
         return False
 
-    if current_state is not None and action not in NAVIGATION_ACTIONS:
+    if current_state is not None and action not in NAVIGATION_ACTIONS | {"close_ticket", "subscription_lookup"} and not direct_action:
         return False
 
     chat_id = event.message.recipient.chat_id
@@ -190,6 +246,12 @@ async def route_text_menu_intent(
         return False
 
     if intent.confidence < MIN_MENU_INTENT_CONFIDENCE:
+        if action == "subscription_lookup":
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text="Вы хотите узнать подписки на ГРАНД-Смету по ключу? Напишите «подписки на моем ключе» или уточните запрос.",
+            )
+            return True
         if intent.confidence >= MIN_MENU_CLARIFICATION_CONFIDENCE:
             await _send_menu_intent_clarification(
                 chat_id=chat_id,
@@ -211,6 +273,16 @@ async def route_text_menu_intent(
         action,
         intent.confidence,
     )
+
+    if action == "close_ticket":
+        from bots.max_bot.handlers.user.active_tickets import start_ticket_close_from_text
+        await start_ticket_close_from_text(event, context, session, messenger_adapter, user)
+        return True
+
+    if action == "subscription_lookup":
+        from bots.max_bot.handlers.user.ai_agent import start_subscription_lookup
+        await start_subscription_lookup(event, context, session, messenger_adapter)
+        return True
 
     await context.clear()
 
@@ -246,7 +318,6 @@ async def route_text_menu_intent(
 
     if action == "manager":
         from bots.max_bot.handlers.tickets.invoice import cmd_invoice
-        from bots.max_bot.handlers.user.ai_agent import start_ai_agent
 
         if _looks_like_invoice_request(text):
             user_name = escape(user.first_name or user.full_name or "клиент")
@@ -262,7 +333,11 @@ async def route_text_menu_intent(
             )
             await cmd_invoice(event, context, session, messenger_adapter)
         elif is_yandex_gpt_configured():
-            await start_ai_agent(event, context, session, messenger_adapter)
+            from bots.max_bot.handlers.user.ai_agent import handle_ai_agent_message
+            await context.update_data(user_id=user.id, ai_user_name=user.first_name or user.full_name)
+            # Process the request already supplied by the client instead of
+            # discarding it and repeatedly asking for the same question.
+            await handle_ai_agent_message(event, context, session, messenger_adapter)
         else:
             await cmd_invoice(event, context, session, messenger_adapter)
         return True

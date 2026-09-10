@@ -32,7 +32,7 @@ class DraftStore:
         self.drafts.pop(key, None)
 
     async def due(self, now):
-        return [k for k, d in self.drafts.items() if d['due_at'] <= now]
+        return [k for k, d in self.drafts.items() if d['due_at'] is not None and d['due_at'] <= now]
 
 
 @pytest.fixture
@@ -197,6 +197,32 @@ def test_delivery_enum_survives_persistence():
     from database.models import DeliveryMethod
     data = restore_data(json.loads(encode_draft({'data': {'delivery_method': DeliveryMethod.EMAIL}})))
     assert data['delivery_method'] is DeliveryMethod.EMAIL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', ['AIAgentStates:waiting_for_key', 'ClientTicketCloseStates:selecting_ticket',
+                                  'ClientTicketCloseStates:waiting_for_reason'])
+async def test_conversation_state_survives_worker_change_without_invoice_timer(setup, state):
+    service, dispatcher, event, now = setup
+    async def start(_):
+        context = dispatcher.contexts[(10, 20)]
+        await context.update_data(user_id=30, closing_ticket_id=330)
+        await context.set_state(state)
+    dispatcher.handle.side_effect = start
+    await service.handle(dispatcher, event)
+    assert (await service.store.get('10:20'))['due_at'] is None
+    dispatcher.contexts.clear()
+    async def restored(_):
+        context = dispatcher.contexts[(10, 20)]
+        assert await context.get_state() == state
+        assert (await context.get_data())['closing_ticket_id'] == 330
+        await context.clear()
+    dispatcher.handle.side_effect = restored
+    now[0] = 10000
+    await service.process_due()
+    service.adapter.send_message.assert_not_awaited()
+    await service.handle(dispatcher, event)
+    assert not service.store.drafts
 
 
 @pytest.mark.asyncio

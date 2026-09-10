@@ -1278,6 +1278,20 @@ def create_user_router() -> Router:
         )
         if text_menu_intent_handled:
             return
+
+        # Unhandled form input must never be forwarded to an existing ticket.
+        # Explicit navigation has already had a chance to run above/in middleware.
+        if current_state is not None:
+            await messenger_adapter.send_message(
+                chat_id=event.message.recipient.chat_id,
+                text=(
+                    "Не понял ответ на текущем шаге. Введите запрошенные данные "
+                    "или выберите кнопку. Можно написать «меню» для выхода "
+                    "или «отмена», чтобы отменить оформление."
+                ),
+                parse_mode="HTML",
+            )
+            return
         
         # Try to route message to active ticket
         was_routed = await route_client_message_to_ticket(

@@ -70,6 +70,7 @@ class AIAgentStates(StatesGroup):
 class ClientTicketCloseStates(StatesGroup):
     """States for client-side ticket closure."""
 
+    selecting_ticket = State()
     waiting_for_reason = State()
 
 
