@@ -1666,6 +1666,7 @@ async def handle_consultation_description_next(
             keyboard = await get_main_menu_inline_keyboard(
                 active_tickets_count, show_done_button=True
             )
+            await context.update_data(awaiting_more_questions=True)
             await messenger_adapter.send_message(
                 chat_id=chat_id,
                 text="У Вас остались вопросы?\n\nОпишите новый запрос словами или нажмите подходящую кнопку:",

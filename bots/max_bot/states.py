@@ -65,6 +65,7 @@ class AIAgentStates(StatesGroup):
 
     waiting_for_request = State()
     waiting_for_key = State()
+    waiting_for_manager_description = State()
 
 
 class ClientTicketCloseStates(StatesGroup):

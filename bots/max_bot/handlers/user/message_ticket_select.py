@@ -237,7 +237,7 @@ async def handle_message_ticket_select(
             return
         # --- End checks ---
 
-        await forward_client_message_to_manager(
+        delivered = await forward_client_message_to_manager(
             session=session,
             messenger_adapter=messenger_adapter,
             ticket=ticket,
@@ -252,6 +252,10 @@ async def handle_message_ticket_select(
         )
 
         # Determine display name for confirmation
+        if not delivered:
+            from bots.max_bot.handlers.user.messages import undelivered_message_text
+            await messenger_adapter.send_message(chat_id=chat_id, text=undelivered_message_text(ticket_id))
+            return
         type_display = {
             "text": "текст",
             "photo": "фото",

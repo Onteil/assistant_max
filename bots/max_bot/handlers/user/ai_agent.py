@@ -254,11 +254,14 @@ async def start_subscription_lookup(event, context, session, messenger_adapter):
     if not user:
         return
     name = user.first_name or user.full_name or "клиент"
+    previous = await context.get_data()
     await context.clear()
-    await context.update_data(user_id=user.id, ai_user_name=name)
+    await context.update_data(user_id=user.id, ai_user_name=name,
+                              subscription_request=_get_message_text(event))
     match = re.search(r"\b\d{5}_\d{5}\b", _get_message_text(event))
-    if match:
-        await _send_subscription_stub(event.message.recipient.chat_id, name, match.group(), context, messenger_adapter)
+    key = match.group() if match else previous.get('last_subscription_key')
+    if key:
+        await _send_subscription_stub(event.message.recipient.chat_id, name, key, context, messenger_adapter)
         return
     await context.set_state(AIAgentStates.waiting_for_key)
     await messenger_adapter.send_message(
@@ -282,6 +285,9 @@ async def _route_ai_intent(
     chat_id, _ = _get_event_ids(event)
 
     if intent == INTENT_SUBSCRIPTION:
+        data = await context.get_data()
+        await context.update_data(subscription_request=user_text)
+        key_number = key_number or data.get('last_subscription_key')
         if not key_number:
             await context.set_state(AIAgentStates.waiting_for_key)
             await messenger_adapter.send_message(
@@ -304,16 +310,7 @@ async def _route_ai_intent(
         from bots.max_bot.handlers.tickets.invoice import cmd_invoice
 
         if _is_manager_handoff_without_invoice(user_text):
-            if keep_ai_state:
-                await context.set_state(AIAgentStates.waiting_for_request)
-            await messenger_adapter.send_message(
-                chat_id=chat_id,
-                text=(
-                    "Поняла, нужен менеджер. Опишите, пожалуйста, вопрос "
-                    "одним сообщением, и я помогу правильно направить обращение."
-                ),
-                parse_mode="HTML",
-            )
+            await start_manager_handoff(event, context, session, messenger_adapter)
             return
 
         await messenger_adapter.send_message(
@@ -393,6 +390,44 @@ async def _route_ai_intent(
     from bots.max_bot.handlers.user.text_menu_intents import _send_general_intent_clarification
     await context.clear()
     await _send_general_intent_clarification(chat_id, messenger_adapter)
+
+
+async def start_manager_handoff(event, context, session, messenger_adapter):
+    user = await get_user_by_max_id(session, event.message.sender.user_id)
+    if not user:
+        return
+    await context.update_data(user_id=user.id)
+    await context.set_state(AIAgentStates.waiting_for_manager_description)
+    await messenger_adapter.send_message(
+        chat_id=event.message.recipient.chat_id,
+        text="Напишите вопрос для менеджера одним сообщением. Если вопрос уже указан, напишите «передать». Номер ключа повторять не нужно. Для выхода — «меню».",
+    )
+
+
+async def handle_manager_description(
+    event: MessageCreated,
+    context: MemoryContext,
+    session: AsyncSession,
+    messenger_adapter: MAXMessengerAdapter,
+) -> None:
+    from bots.max_bot.handlers.tickets.invoice import create_invoice_ticket
+    text = _get_message_text(event)
+    data = await context.get_data()
+    original = data.get('manager_request') or data.get('subscription_request')
+    if text.lower().strip(' .!') == 'передать':
+        text = original or ''
+    if not text or len(text) > 2000:
+        await messenger_adapter.send_message(chat_id=event.message.recipient.chat_id,
+            text="Опишите вопрос для менеджера текстом (до 2000 символов).")
+        return
+    parts = ["Вопрос для менеджера", text]
+    if original and original != text:
+        parts.append(f"Предыдущий вопрос: {original}")
+    if data.get('last_subscription_key'):
+        parts.append(f"Номер ключа: {data['last_subscription_key']}")
+    await context.update_data(description='\n\n'.join(parts), selected_keys=[], attachments=[])
+    await create_invoice_ticket(context, session, messenger_adapter,
+                                event.message.recipient.chat_id, data['user_id'])
 
 
 async def _send_subscription_stub(

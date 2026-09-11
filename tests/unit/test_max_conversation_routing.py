@@ -23,6 +23,86 @@ def event(text):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('state', [None, InvoiceStates.adding_new_inn, InvoiceStates.entering_email,
+    AIAgentStates.waiting_for_key, AIAgentStates.waiting_for_manager_description,
+    ClientTicketCloseStates.waiting_for_reason, 'ProfileStates:editing_email',
+    'SupportStates:entering_problem', 'ConsultationStates:selecting_keys'])
+@pytest.mark.parametrize('text, target', [('переведи на оператора', 'manager_handoff'),
+    ('нужна техподдержка', 'support'), ('хочу поговорить с консультантом', 'consultation')])
+async def test_specialist_request_interrupts_client_scenarios(bot, monkeypatch, state, text, target):
+    from bots.max_bot.handlers.tickets import support, consultation
+    handler = AsyncMock()
+    if target == 'manager_handoff':
+        monkeypatch.setattr(ai_agent, 'start_manager_handoff', handler)
+    elif target == 'support':
+        monkeypatch.setattr(support, 'cmd_support', handler)
+    else:
+        monkeypatch.setattr(consultation, 'cmd_consultation', handler)
+    await bot.context.set_state(state)
+    await bot.dp.handle(event(text))
+    handler.assert_awaited_once()
+    bot.forwarded.assert_not_awaited()
+    bot.classifier.assert_not_awaited()
+
+
+@pytest.mark.parametrize('text', ['менеджер не ответил на вопрос',
+    'консультант сказал переустановить программу', 'не нужна техподдержка',
+    'ошибка при подключении к оператору'])
+def test_mentioning_staff_in_description_is_not_transfer(text):
+    assert text_menu_intents.explicit_specialist_action(text) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('text', ['вопросов нет', 'нет, не осталось', 'нет'])
+async def test_no_more_questions_does_not_reach_ticket(bot, text):
+    await bot.context.update_data(awaiting_more_questions=True, active_ticket_id=334)
+    await bot.dp.handle(event(text))
+    bot.forwarded.assert_not_awaited()
+    assert 'Если появятся вопросы' in bot.adapter.send_message.await_args.kwargs['text']
+    assert await bot.context.get_state() is None
+    assert not await bot.context.get_data()
+
+
+@pytest.mark.asyncio
+async def test_no_in_email_form_remains_form_input(bot):
+    await bot.context.set_state(InvoiceStates.confirming_email)
+    await bot.dp.handle(event('нет'))
+    bot.forwarded.assert_awaited_once()
+    assert await bot.context.get_state() == InvoiceStates.confirming_email
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('state', [None, AIAgentStates.waiting_for_key])
+async def test_buy_new_key_does_not_request_existing_key(bot, monkeypatch, state):
+    from bots.max_bot.handlers.tickets import invoice
+    await bot.context.set_state(state)
+    await bot.context.update_data(last_subscription_key='99999_99999')
+    captured = []
+    async def create(context, *args):
+        captured.append(await context.get_data())
+        await context.clear()
+    monkeypatch.setattr(invoice, 'create_invoice_ticket', AsyncMock(side_effect=create))
+    await bot.dp.handle(event('хочу купить новый ключ'))
+    assert await bot.context.get_state() == AIAgentStates.waiting_for_manager_description
+    await bot.dp.handle(event('передать'))
+    assert len(captured) == 1
+    assert 'хочу купить новый ключ' in captured[0]['description']
+    assert '99999_99999' not in captured[0]['description']
+    bot.forwarded.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_selected_ticket_question_is_not_reclassified(bot, monkeypatch):
+    await bot.context.update_data(active_ticket_id=334)
+    monkeypatch.setattr(text_menu_intents, 'is_yandex_gpt_configured', lambda: True)
+    handled = await text_menu_intents.route_text_menu_intent(
+        event('Как исправить ошибку программы?'), bot.context, SimpleNamespace(), bot.adapter)
+    assert not handled
+    bot.classifier.assert_not_awaited()
+    assert (await bot.context.get_data())['active_ticket_id'] == 334
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('text', ['Проблема с профилем после обновления', '12345_12345',
                                   '7707083893', 'client@example.org', 'далее', 'отмена'])
 async def test_ordinary_form_input_reaches_original_handler(bot, text):
@@ -93,6 +173,7 @@ def bot(monkeypatch):
     router = Router(router_id='regression')
     router.message_created(AIAgentStates.waiting_for_request)(ai_agent.handle_ai_agent_message)
     router.message_created(AIAgentStates.waiting_for_key)(ai_agent.handle_ai_agent_key)
+    router.message_created(AIAgentStates.waiting_for_manager_description)(ai_agent.handle_manager_description)
     router.message_created(ClientTicketCloseStates.waiting_for_reason)(active_tickets.process_client_ticket_close_reason)
     forwarded = AsyncMock()
     async def fallback(event):
@@ -139,6 +220,55 @@ async def test_subscription_question_key_then_profile(bot, monkeypatch):
     open_profile.assert_awaited_once()
     renewal_status.assert_not_awaited()
     bot.forwarded.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('question', ['Хочу уточнить, есть ли у меня подписка на ФСНБ',
+                                    'хочу обновить версию программы', 'передать'])
+async def test_manager_receives_question_and_known_key_without_reclassification(bot, monkeypatch, question):
+    from bots.max_bot.handlers.tickets import invoice
+    captured = []
+    async def create(context, session, adapter, chat_id, user_id):
+        captured.append(await context.get_data())
+        await context.clear()
+    create_ticket = AsyncMock(side_effect=create)
+    monkeypatch.setattr(invoice, 'create_invoice_ticket', create_ticket)
+    ai_classifier = AsyncMock(side_effect=AssertionError('manager request reclassified'))
+    monkeypatch.setattr(ai_agent, 'classify_ai_agent_intent', ai_classifier)
+    await bot.dp.handle(event('Хочу уточнить, есть ли у меня подписка на ФСНБ'))
+    await bot.dp.handle(event('12345_12345'))
+    await bot.dp.handle(event('нужен менеджер'))
+    assert await bot.context.get_state() == AIAgentStates.waiting_for_manager_description
+    await bot.dp.handle(event(question))
+    create_ticket.assert_awaited_once()
+    assert '12345_12345' in captured[0]['description']
+    assert 'подписка на ФСНБ' in captured[0]['description']
+    if question != 'передать':
+        assert question in captured[0]['description']
+    assert await bot.context.get_state() is None
+    ai_classifier.assert_not_awaited()
+    bot.forwarded.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_manager_command_interrupts_key_prompt_and_menu_exits(bot, monkeypatch):
+    show_menu = AsyncMock()
+    monkeypatch.setattr(text_menu_intents, '_show_main_menu', show_menu)
+    await bot.context.set_state(AIAgentStates.waiting_for_key)
+    await bot.dp.handle(event('переведи на менеджера'))
+    assert await bot.context.get_state() == AIAgentStates.waiting_for_manager_description
+    await bot.dp.handle(event('меню'))
+    show_menu.assert_awaited_once()
+    assert await bot.context.get_state() is None
+
+
+@pytest.mark.asyncio
+async def test_subscription_followup_reuses_key(bot):
+    await bot.dp.handle(event('подписки на моем ключе'))
+    await bot.dp.handle(event('12345_12345'))
+    await bot.dp.handle(event('а подписка на ФСНБ?'))
+    assert await bot.context.get_state() == AIAgentStates.waiting_for_request
+    assert '12345_12345' in bot.adapter.send_message.await_args.kwargs['text']
 
 
 @pytest.mark.asyncio

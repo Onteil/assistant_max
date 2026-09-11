@@ -17,13 +17,17 @@ from enum import Enum
 
 from maxapi.context import MemoryContext
 
-from bots.max_bot.states import InvoiceStates, AIAgentStates, ClientTicketCloseStates
+from bots.max_bot.states import InvoiceStates, AIAgentStates, ClientTicketCloseStates, EmployeeStates
 
 logger = logging.getLogger(__name__)
 DUE_KEY = "max:invoice-followup:due"
 DRAFT_PREFIX = "max:invoice-followup:draft:"
 INVOICE_STATES = set(InvoiceStates.states())
-PERSISTED_STATES = INVOICE_STATES | set(AIAgentStates.states()) | set(ClientTicketCloseStates.states())
+PERSISTED_STATES = INVOICE_STATES | set(AIAgentStates.states()) | set(ClientTicketCloseStates.states()) | set(EmployeeStates.states())
+
+
+def has_ticket_context(data):
+    return bool(data.get('active_ticket_id') or data.get('awaiting_more_questions') or any(key.startswith('pending_message') and value for key, value in data.items()))
 INVOICE_CALLBACKS = {
     "org_select", "org_page", "org_action", "key_toggle", "key_page",
     "key_action", "delivery", "email_confirm", "inv_desc_next",
@@ -120,7 +124,7 @@ class InvoiceFollowups:
             if draft:
                 await context.set_data(restore_data(draft))
                 await context.set_state(draft["state"])
-            elif str(await context.get_state()) in PERSISTED_STATES:
+            elif str(await context.get_state()) in PERSISTED_STATES or has_ticket_context(await context.get_data()):
                 # Another worker completed/cancelled this persisted form.
                 await context.clear()
 
@@ -137,9 +141,10 @@ class InvoiceFollowups:
                 return
 
             await dispatcher.handle(event)
-            state = str(await context.get_state())
-            if state in PERSISTED_STATES:
-                data = await context.get_data()
+            state = await context.get_state()
+            state = str(state) if state is not None else None
+            data = await context.get_data()
+            if str(state) in PERSISTED_STATES or (state is None and has_ticket_context(data)):
                 # A reply or button press restarts both stages of the timer.
                 await self.store.save(key, {
                     "chat_id": chat_id, "max_user_id": max_user_id,

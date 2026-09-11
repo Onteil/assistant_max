@@ -102,6 +102,10 @@ def extract_attachment_metadata(event: MessageCreated) -> dict[str, Any]:
 
             break  # only first attachment
 
+    # Preserve the client's caption when the message also contains a file.
+    if event.message.body.text:
+        message_text = event.message.body.text
+
     return {
         "message_text": message_text,
         "message_type": message_type_val,
@@ -208,9 +212,13 @@ async def route_client_message_to_ticket(
                 f"Ticket {active_ticket_id} is no longer active "
                 f"(status: {ticket.ticket_status})"
             )
-            # Clear closed ticket from context and fall through to auto-routing logic
+            # Do not silently redirect a reply to another active ticket.
             await context.update_data(active_ticket_id=None)
-            return False
+            await messenger_adapter.send_message(
+                chat_id=chat_id,
+                text=f"Обращение #{active_ticket_id} уже закрыто. Сообщение не отправлено. Выберите другое обращение или создайте новое.",
+            )
+            return True
 
         # --- Off-hours check ---
         work_mode = await get_current_work_mode(session)
@@ -301,12 +309,15 @@ async def route_client_message_to_ticket(
         # --- End checks ---
 
         # Route message to manager
-        await handle_client_message_to_ticket_max(
+        delivered = await handle_client_message_to_ticket_max(
             event=event,
             session=session,
             ticket=ticket,
             messenger_adapter=messenger_adapter
         )
+        if not delivered:
+            await messenger_adapter.send_message(chat_id=chat_id, text=undelivered_message_text(ticket.id))
+            return True
         
         # Acknowledge receipt to client with "Exit reply mode" button
         message_type_name = get_message_type_name(event)
@@ -359,7 +370,7 @@ async def handle_client_message_to_ticket_max(
     ticket,
     messenger_adapter: MAXMessengerAdapter,
     save_only: bool = False,
-) -> None:
+) -> bool:
     """
     Handle incoming client message to ticket (MAX version).
     
@@ -381,7 +392,7 @@ async def handle_client_message_to_ticket_max(
     user = await get_user_by_max_id(session, event.message.sender.user_id)
     if not user:
         logger.error(f"User not found: max_user_id={event.message.sender.user_id}")
-        return
+        raise ValueError("Client not found for message delivery")
 
     meta = extract_attachment_metadata(event)
 
@@ -419,7 +430,7 @@ async def handle_client_message_to_ticket_max(
     except Exception as e:
         logger.warning(f"Could not check manager focus state: {e}")
 
-    await forward_client_message_to_manager(
+    return await forward_client_message_to_manager(
         session=session,
         messenger_adapter=messenger_adapter,
         ticket=ticket,
@@ -433,6 +444,11 @@ async def handle_client_message_to_ticket_max(
         manager_in_focus=manager_in_focus,
         save_only=save_only,
     )
+
+
+def undelivered_message_text(ticket_id: int) -> str:
+    return (f"Сообщение сохранено в обращении #{ticket_id}, но доставить уведомление специалисту пока не удалось. "
+            "Оно остаётся в очереди доставки.")
 
 
 def get_message_type_name(event: MessageCreated) -> str:

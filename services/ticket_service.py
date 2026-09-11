@@ -8,6 +8,7 @@ Requirements: 10.1-10.8, 11.1-11.5, 15.1-15.6
 """
 
 import logging
+from html import escape
 from datetime import date, datetime, time
 from typing import Any
 
@@ -1758,7 +1759,7 @@ async def close_ticket_with_notification(
         # through its idempotency check without producing a second message.
         if ticket.user.max_messenger_data:
             try:
-                closure_message = f"✅ <b>Заявка #{ticket_id} закрыта</b>\n\n{final_comment}"
+                closure_message = f"✅ Заявка #{ticket_id} закрыта\n\n{final_comment}"
                 await send_message_to_client_max(
                     messenger_adapter=messenger_adapter,
                     session=session,
@@ -1770,6 +1771,7 @@ async def close_ticket_with_notification(
                     max_media_type=max_media_type,
                     messenger=messenger,
                     include_reply_button=False,
+                    closure_notification=True,
                 )
                 await session.commit()
                 logger.info(
@@ -3047,8 +3049,8 @@ async def forward_client_message_to_manager(
 
                     context_text = (
                         f"💬 <b>Новое сообщение от клиента (Заявка #{ticket.id})</b>\n\n"
-                        f"{client_info}\n\n"
-                        f"💬 Сообщение:\n{message_text}"
+                        f"{escape(client_info)}\n\n"
+                        f"💬 Сообщение:\n{escape(message_text)}"
                     )
 
                     # Build action buttons for manager notification
@@ -3364,7 +3366,8 @@ async def send_message_to_client_max(
     file_type: Any | None = None,
     max_media_type: str | None = None,
     messenger: str = "max",
-    include_reply_button: bool = True
+    include_reply_button: bool = True,
+    closure_notification: bool = False,
 ) -> Any:
     """
     Send message from employee to client via MAX messenger.
@@ -3416,7 +3419,10 @@ async def send_message_to_client_max(
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        if ticket.ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED}:
+        if ticket.ticket_status in {TicketStatus.CLOSED, TicketStatus.CANCELLED} and not (
+            closure_notification and ticket.ticket_status == TicketStatus.CLOSED
+            and not include_reply_button
+        ):
             error_msg = (
                 f"Cannot send message to client for closed ticket: "
                 f"ticket_id={ticket_id}, status={ticket.ticket_status.value}"
@@ -3435,7 +3441,7 @@ async def send_message_to_client_max(
         signature = await get_employee_signature(session, employee_id)
         
         # Format message with signature at top
-        message_with_signature = f"📋 Заявка #{ticket_id}\n\n 👤 {signature}\n\n{message_text}"
+        message_with_signature = f"📋 Заявка #{ticket_id}\n\n 👤 {escape(signature)}\n\n{escape(message_text)}"
         
         # Get client's MAX chat ID from MAX messenger data table
         client_chat_id = ticket.user.max_messenger_data.max_chat_id

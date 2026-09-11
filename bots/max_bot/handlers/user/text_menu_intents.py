@@ -36,6 +36,21 @@ MIN_MENU_CLARIFICATION_CONFIDENCE = 0.35
 MENU_INTENT_TIMEOUT_SECONDS = 2
 MAX_ROUTABLE_TEXT_LENGTH = 500
 NAVIGATION_ACTIONS = {"main_menu", "profile", "archive", "active_tickets"}
+SPECIALIST_ACTIONS = {"manager_handoff", "support", "consultation"}
+
+
+def explicit_specialist_action(value: str) -> str | None:
+    prefix = r"(?:(?:я )?хочу (?:поговорить|связаться|пообщаться) |(?:мне )?(?:нужен|нужна|нужны|нужно) |(?:переведи(?:те)?|перевести|свяжи(?:те)?|соедини(?:те)?|позови(?:те)?|пригласи(?:те)?|подключи(?:те)?|вызови(?:те)?|открой(?:те)?|открыть|перейди|перейти) )?"
+    connector = r"(?:с |со |на |к |в )?"
+    targets = {
+        'manager_handoff': r"(?:живой |живого |живым )?(?:менеджер(?:а|у|ом)?|оператор(?:а|у|ом)?)",
+        'support': r"(?:техподдержк[ауи]|техподдержкой|техническ(?:ая|ую|ой) поддержк(?:а|у|и|ой)|специалист(?:а|у|ом)? (?:техподдержки|технической поддержки))",
+        'consultation': r"(?:сметн(?:ый|ого|ым) )?консультант(?:а|у|ом)?|(?:сметн(?:ая|ую|ой) )?консультаци(?:я|ю|и|ей)",
+    }
+    for action, target in targets.items():
+        if re.fullmatch(prefix + connector + '(?:' + target + ')', value):
+            return action
+    return None
 
 
 def direct_text_action(text: str) -> str | None:
@@ -43,6 +58,15 @@ def direct_text_action(text: str) -> str | None:
     value = re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip(" .!?\n")
     value = re.sub(r"^(?:пожалуйста[, ]+|бот[, ]+)", "", value)
     value = re.sub(r"[, ]+пожалуйста$", "", value)
+    specialist = explicit_specialist_action(value)
+    if specialist:
+        return specialist
+    if re.fullmatch(r"(?:(?:я )?хочу |нужно |нужен )?(?:купить|приобрести|заказать) (?:новый |еще один |дополнительный )?ключ(?: гранд[ -]сметы)?", value):
+        return "buy_key"
+    if re.fullmatch(r"(?:нет[, ]+)?(?:больше )?вопросов (?:больше )?(?:нет|не осталось)(?:[, ]+спасибо)?|нет[, ]+не осталось(?:[, ]+спасибо)?", value):
+        return "goodbye"
+    if re.fullmatch(r"(?:(?:нужен|позови|пригласи) )?(?:менеджер|оператор)|(?:переведи|переведите|перевести|свяжи|свяжите|соедини|соедините|связаться) (?:с |на |к )?(?:менеджер(?:ом|у|а)?|оператор(?:ом|у|а)?)", value):
+        return "manager_handoff"
     if re.fullmatch(r"(?:(?:я )?(?:хочу|нужно|надо) )?(?:закрой|закрыть|закройте)\s+(?:(?:мое|мою|это|эту|текущее|текущую|все|мои)\s+)*(?:заявк[ауи]|обращени[ея])(?:\s*(?:№|#)?\s*\d+)?", value):
         return "close_ticket"
     if re.fullmatch(r"(?:открой(?:те)? |открыть |покажи(?:те)? |показать |перейди в |перейти в )?(?:мой |мои )?профиль", value):
@@ -192,9 +216,20 @@ async def route_text_menu_intent(
     state_name = str(current_state) if current_state is not None else ""
     allowed_groups = ("AIAgentStates:", "InvoiceStates:", "SupportStates:",
                       "ConsultationStates:", "ProfileStates:", "ClientTicketCloseStates:")
-    if state_name and not state_name.startswith(allowed_groups):
-        return False
     direct_action = direct_text_action(text)
+    client_specialist_request = direct_action in SPECIALIST_ACTIONS and state_name.startswith(('RegistrationStates:', 'NPSStates:', 'FormStates:'))
+    if state_name and not state_name.startswith(allowed_groups) and not client_specialist_request:
+        return False
+    data = await context.get_data()
+    if current_state is None and data.get('awaiting_more_questions') and text.lower().strip(' .!,') in {'нет', 'нет спасибо', 'нет, спасибо'}:
+        direct_action = 'goodbye'
+    if direct_action == 'goodbye' and current_state is not None and not state_name.startswith('AIAgentStates:'):
+        return False
+    if direct_action is None and (await context.get_data()).get('active_ticket_id'):
+        return False  # Free-form replies in a selected ticket belong to staff.
+    from bots.max_bot.states import AIAgentStates
+    if current_state == AIAgentStates.waiting_for_manager_description and direct_action not in NAVIGATION_ACTIONS | SPECIALIST_ACTIONS | {"cancel", "close_ticket", "buy_key", "goodbye"}:
+        return False  # The next message is for the manager, not a new AI query.
     # A reason is form data: "вопрос решен, закрыть заявку" must remain a reason.
     if current_state == ClientTicketCloseStates.waiting_for_reason and direct_action == "close_ticket":
         await messenger_adapter.send_message(
@@ -282,6 +317,25 @@ async def route_text_menu_intent(
     if action == "subscription_lookup":
         from bots.max_bot.handlers.user.ai_agent import start_subscription_lookup
         await start_subscription_lookup(event, context, session, messenger_adapter)
+        return True
+
+    if action == "manager_handoff":
+        from bots.max_bot.handlers.user.ai_agent import start_manager_handoff
+        await start_manager_handoff(event, context, session, messenger_adapter)
+        return True
+
+    if action == 'goodbye':
+        await context.clear()
+        await messenger_adapter.send_message(chat_id=chat_id, text='Хорошо! Если появятся вопросы, пишите — будем рады помочь.')
+        return True
+
+    if action == 'buy_key':
+        from bots.max_bot.handlers.user.ai_agent import start_manager_handoff
+        await context.clear()
+        await context.update_data(manager_request=text)
+        await start_manager_handoff(event, context, session, messenger_adapter)
+        await messenger_adapter.send_message(chat_id=chat_id,
+            text='Для покупки нового ключа номер существующего не нужен. Запрос сохранён. Напишите «передать», чтобы оформить обращение менеджеру, или добавьте пожелания.')
         return True
 
     await context.clear()

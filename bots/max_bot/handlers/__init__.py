@@ -216,6 +216,7 @@ from .user.commands import (
 from .user.ai_agent import (
     handle_ai_agent_message,
     handle_ai_agent_key,
+    handle_manager_description,
     should_route_text_to_ai_assistant,
 )
 from .user.text_menu_intents import route_text_menu_intent
@@ -1430,12 +1431,16 @@ def create_user_router() -> Router:
                             f"user_id={max_user_id}, ticket_id={ticket.id}"
                         )
                     else:
-                        await handle_client_message_to_ticket_max(
+                        delivered = await handle_client_message_to_ticket_max(
                             event=event,
                             session=session,
                             ticket=ticket,
                             messenger_adapter=messenger_adapter
                         )
+                        if not delivered:
+                            from bots.max_bot.handlers.user.messages import undelivered_message_text
+                            await messenger_adapter.send_message(chat_id=chat_id, text=undelivered_message_text(ticket.id))
+                            return
                         message_type_name = get_message_type_name(event)
                         await messenger_adapter.send_message(
                             chat_id=chat_id,
@@ -1516,6 +1521,11 @@ def create_user_router() -> Router:
         F.message.body.text,
         AIAgentStates.waiting_for_key
     )(handle_ai_agent_key)
+
+    user_router.message_created(
+        F.message.body.text,
+        AIAgentStates.waiting_for_manager_description
+    )(handle_manager_description)
 
     # Register catch-all message handler
     # This will only trigger if no other handler matched

@@ -12,6 +12,28 @@ from bots.max_bot.states import InvoiceStates
 from services.max_invoice_followup_service import InvoiceFollowups, encode_draft, restore_data
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('data', [{'active_ticket_id': 334}, {'pending_message_text': 'вопрос специалисту'}, {'awaiting_more_questions': True}])
+async def test_ticket_selection_survives_worker_change_without_fsm_state(setup, data):
+    service, dispatcher, event, now = setup
+    async def select(_):
+        await dispatcher.contexts[(10, 20)].update_data(**data)
+    dispatcher.handle.side_effect = select
+    await service.handle(dispatcher, event)
+    snapshot = await service.store.get('10:20')
+    assert snapshot['state'] is None
+    assert snapshot['due_at'] is None
+    dispatcher.contexts.clear()
+    async def reply(_):
+        context = dispatcher.contexts[(10, 20)]
+        assert await context.get_state() is None
+        assert await context.get_data() == data
+        await context.clear()
+    dispatcher.handle.side_effect = reply
+    await service.handle(dispatcher, event)
+    assert not service.store.drafts
+
+
 class DraftStore:
     def __init__(self):
         self.drafts = {}
@@ -201,7 +223,9 @@ def test_delivery_enum_survives_persistence():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('state', ['AIAgentStates:waiting_for_key', 'ClientTicketCloseStates:selecting_ticket',
-                                  'ClientTicketCloseStates:waiting_for_reason'])
+                                  'ClientTicketCloseStates:waiting_for_reason',
+                                  'AIAgentStates:waiting_for_manager_description',
+                                  'EmployeeStates:in_focus', 'EmployeeStates:manager_closing_ticket'])
 async def test_conversation_state_survives_worker_change_without_invoice_timer(setup, state):
     service, dispatcher, event, now = setup
     async def start(_):

@@ -18,4 +18,6 @@ class ConversationMiddleware(BaseMiddleware):
                 current_state=state, explicit_only=not ai_navigation,
             ):
                 return
+            if (await context.get_data()).get('awaiting_more_questions'):
+                await context.update_data(awaiting_more_questions=False)
         return await handler(event, data)

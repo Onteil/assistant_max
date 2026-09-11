@@ -2876,6 +2876,7 @@ async def create_invoice_ticket(
         active_tickets_count = await get_user_active_tickets_count(session, user.id)
         keyboard = await get_main_menu_inline_keyboard(active_tickets_count, show_done_button=True)
         
+        await context.update_data(awaiting_more_questions=True)
         main_menu_text = (
             "У Вас остались вопросы?\n\n"
             "Опишите новый запрос словами или нажмите подходящую кнопку:"
